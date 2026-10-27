@@ -169,6 +169,7 @@ struct PresetEditor {
     wallet: adw::EntryRow,
     worker: adw::EntryRow,
     pool_fee: adw::SpinRow,
+    miner_fee: adw::SpinRow,
     extra: adw::EntryRow,
     info_desc: adw::ActionRow,
     info_fee: adw::ActionRow,
@@ -180,6 +181,7 @@ struct PresetEditor {
     current_id: RefCell<String>,
     syncing: Cell<bool>,
     delete_button: gtk::Button,
+    duplicate_button: gtk::Button,
 }
 
 struct SettingsWidgets {
@@ -636,6 +638,16 @@ fn build_presets_page() -> (adw::PreferencesPage, PresetEditor) {
         0.0,
         20.0,
     );
+    let miner_fee = spin_row(
+        &tr("Miner fee override", "Переопределение комиссии майнера"),
+        &tr(
+            "Editable only when the miner supports it",
+            "Редактируется только если майнер это поддерживает",
+        ),
+        0.0,
+        0.0,
+        100.0,
+    );
     let extra = adw::EntryRow::builder()
         .title(tr("Extra arguments", "Доп. аргументы"))
         .build();
@@ -648,6 +660,7 @@ fn build_presets_page() -> (adw::PreferencesPage, PresetEditor) {
     form_group.add(&worker);
     form_group.add(&extra);
     form_group.add(&pool_fee);
+    form_group.add(&miner_fee);
     editor_page.add(&form_group);
 
     let options_group = adw::PreferencesGroup::builder()
@@ -669,11 +682,16 @@ fn build_presets_page() -> (adw::PreferencesPage, PresetEditor) {
         .label(tr("Save and apply", "Сохранить и применить"))
         .css_classes(["suggested-action", "pill"])
         .build();
+    let duplicate_button = gtk::Button::builder()
+        .label(tr("Duplicate", "Дублировать"))
+        .css_classes(["pill"])
+        .build();
     let delete_button = gtk::Button::builder()
         .label(tr("Delete", "Удалить"))
         .css_classes(["destructive-action", "pill"])
         .build();
     actions.append(&save);
+    actions.append(&duplicate_button);
     actions.append(&delete_button);
     let actions_group = adw::PreferencesGroup::new();
     actions_group.add(&actions);
@@ -695,6 +713,7 @@ fn build_presets_page() -> (adw::PreferencesPage, PresetEditor) {
         wallet,
         worker,
         pool_fee,
+        miner_fee,
         extra,
         info_desc,
         info_fee,
@@ -706,6 +725,7 @@ fn build_presets_page() -> (adw::PreferencesPage, PresetEditor) {
         current_id: RefCell::new(String::new()),
         syncing: Cell::new(false),
         delete_button,
+        duplicate_button,
     };
     // The new/back/save/delete buttons are connected after the Rc<App> exists.
     NEW_PRESET_BUTTON.with(|slot| *slot.borrow_mut() = Some(new_button));
@@ -1078,6 +1098,11 @@ fn connect_signals(app: &Rc<App>) {
     }
     {
         let app = app.clone();
+        let button = app.editor.duplicate_button.clone();
+        button.connect_clicked(move |_| duplicate_preset(&app));
+    }
+    {
+        let app = app.clone();
         let miner = app.editor.miner.clone();
         miner.connect_notify_local(Some("selected"), move |_, _| {
             if app.editor.syncing.get() {
@@ -1259,6 +1284,24 @@ fn load_preset_into_editor(app: &Rc<App>, id: &str) {
     app.editor.wallet.set_text(&preset.wallet);
     app.editor.worker.set_text(&preset.worker);
     app.editor.pool_fee.set_value(preset.pool_fee_pct);
+    app.editor.miner_fee.set_value(
+        preset
+            .miner_fee_override_pct
+            .unwrap_or(preset.miner_fee_pct),
+    );
+    let fee_configurable = catalog::miner(&preset.miner)
+        .map(|m| m.fee_configurable)
+        .unwrap_or(false);
+    app.editor.miner_fee.set_sensitive(fee_configurable);
+    let fee_hint = if fee_configurable {
+        tr("Passed to the miner", "Передаётся майнеру")
+    } else {
+        tr(
+            "Fixed by the miner; shown for reference",
+            "Фиксирована майнером; показана справочно",
+        )
+    };
+    app.editor.miner_fee.set_subtitle(&fee_hint);
     app.editor.extra.set_text(&preset.extra_args);
     update_versions(app);
     if let Some(index) = catalog::miner(&preset.miner).and_then(|m| {
@@ -1420,6 +1463,16 @@ fn update_miner_info(app: &Rc<App>) {
         .map(|p| p.total_fee_pct())
         .unwrap_or(miner.fee_pct);
     app.editor.info_desc.set_subtitle(miner.short_description());
+    app.editor.miner_fee.set_sensitive(miner.fee_configurable);
+    let fee_hint = if miner.fee_configurable {
+        tr("Passed to the miner", "Передаётся майнеру")
+    } else {
+        tr(
+            "Fixed by the miner; shown for reference",
+            "Фиксирована майнером; показана справочно",
+        )
+    };
+    app.editor.miner_fee.set_subtitle(&fee_hint);
     app.editor.info_fee.set_subtitle(&format!(
         "{}: {:.2}% · {}: {:.2}% · {}: {:.2}%",
         tr("miner", "майнер"),
@@ -1545,20 +1598,25 @@ fn extension_settings() -> Option<gio::Settings> {
 }
 
 fn refresh_extension_state(app: &Rc<App>) {
-    let output = std::process::Command::new("gnome-extensions")
+    let info = std::process::Command::new("gnome-extensions")
         .args(["info", "trommel@nayvok.github.io"])
         .output();
-    let (text, enabled) = match output {
-        Ok(output) => {
-            let text = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let enabled = text.contains("Включено: Да") || text.contains("Enabled: Yes");
-            (text, enabled)
-        }
-        Err(_) => (String::new(), false),
+    let enabled = std::process::Command::new("gnome-extensions")
+        .args(["list", "--enabled"])
+        .output()
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.trim() == "trommel@nayvok.github.io")
+        })
+        .unwrap_or(false);
+    let text = match info {
+        Ok(output) => format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Err(_) => String::new(),
     };
     if text.contains("не найден") || text.contains("not found") || text.is_empty() {
         app.settings.extension_state.set_subtitle(&tr(
@@ -1618,6 +1676,7 @@ fn gpu_tune_dialog(app: &Rc<App>, uuid: &str, name: &str) {
         return;
     };
     let tuning = profile.tuning_for(uuid);
+    let enabled = tuning.enabled;
     let window = gtk::Window::builder()
         .title(format!("{name} · {}", tr("GPU tuning", "Настройка GPU")))
         .modal(true)
@@ -1681,7 +1740,7 @@ fn gpu_tune_dialog(app: &Rc<App>, uuid: &str, name: &str) {
         let uuid = uuid.to_string();
         save.connect_clicked(move |_| {
             let tuning = GpuTuning {
-                enabled: true,
+                enabled,
                 power_limit_w: nonzero(power.value() as u32),
                 core_clock_mhz: nonzero(core.value() as u32),
                 memory_clock_mhz: nonzero(memory.value() as u32),
@@ -2019,7 +2078,13 @@ fn save_editor(app: &Rc<App>) {
         preset.worker = app.editor.worker.text().to_string();
         preset.extra_args = app.editor.extra.text().to_string();
         preset.miner_options = options;
-        preset.miner_fee_pct = catalog::miner(&miner_id).map(|m| m.fee_pct).unwrap_or(0.0);
+        let def = catalog::miner(&miner_id);
+        preset.miner_fee_pct = def.map(|m| m.fee_pct).unwrap_or(0.0);
+        preset.miner_fee_override_pct = if def.map(|m| m.fee_configurable).unwrap_or(false) {
+            Some(app.editor.miner_fee.value())
+        } else {
+            None
+        };
         preset.updated_at = util::now_unix();
     }
     drop(cfg);
@@ -2041,6 +2106,27 @@ fn new_preset(app: &Rc<App>) {
     cfg.active_preset = Some(id.clone());
     drop(cfg);
     load_preset_into_editor(app, &id);
+    app.editor.stack.set_visible_child_name("editor");
+    mark_dirty(app);
+    refresh_preset_list(app);
+}
+
+fn duplicate_preset(app: &Rc<App>) {
+    let id = app.editor.current_id.borrow().clone();
+    let mut cfg = app.config.borrow_mut();
+    let Some(base) = cfg.presets.get(&id).cloned() else {
+        return;
+    };
+    let new_id = format!("preset-{}", util::now_unix());
+    let mut copy = base;
+    copy.id = new_id.clone();
+    copy.name = format!("{} {}", copy.name, tr("(copy)", "(копия)"));
+    copy.created_at = util::now_unix();
+    copy.updated_at = copy.created_at;
+    cfg.presets.insert(new_id.clone(), copy);
+    cfg.active_preset = Some(new_id.clone());
+    drop(cfg);
+    load_preset_into_editor(app, &new_id);
     app.editor.stack.set_visible_child_name("editor");
     mark_dirty(app);
     refresh_preset_list(app);
