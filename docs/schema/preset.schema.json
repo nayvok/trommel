@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nayvok/trommel/docs/schema/preset.schema.json",
+  "title": "Trommel preset",
+  "type": "object",
+  "required": ["id", "name", "coin", "algo", "miner", "miner_version", "pool", "pool_url", "gpu_profile"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "name": {"type": "string", "minLength": 1},
+    "coin": {"type": "string"},
+    "algo": {"type": "string"},
+    "miner": {"type": "string"},
+    "miner_version": {"type": "string"},
+    "pool": {"type": "string"},
+    "pool_url": {"type": "string", "pattern": ":"},
+    "wallet": {"type": "string"},
+    "worker": {"type": "string"},
+    "gpu_profile": {"type": "string"},
+    "api_port": {"type": "integer", "minimum": 0, "maximum": 65535},
+    "expected_hashrate": {"type": ["number", "null"]},
+    "miner_options": {"type": "object"},
+    "miner_fee_override_pct": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+    "miner_fee_pct": {"type": "number", "minimum": 0, "maximum": 100},
+    "pool_fee_pct": {"type": "number", "minimum": 0, "maximum": 100},
+    "extra_args": {"type": "string"},
+    "env": {"type": "object", "additionalProperties": {"type": "string"}},
+    "created_at": {"type": "integer", "minimum": 0},
+    "updated_at": {"type": "integer", "minimum": 0}
+  },
+  "additionalProperties": true
+}

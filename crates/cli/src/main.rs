@@ -12,12 +12,13 @@ use trommel_core::util;
 
 #[cfg(feature = "gui")]
 mod gui;
+mod mcp;
 
 #[derive(Parser)]
 #[command(
     name = "trommel",
     version = trommel_core::VERSION,
-    about = "Pearl (PRL) miner: быстрый старт/стоп, статистика и настройки"
+    about = "Trommel: local NVIDIA mining rig manager"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -66,6 +67,22 @@ enum Cmd {
         #[command(subcommand)]
         command: MinerCmd,
     },
+    /// Показать GPU так, как их видит nvidia-smi
+    Gpus {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Собрать диагностику для внешнего агента/ChatGPT
+    Diagnose {
+        #[arg(long)]
+        json: bool,
+    },
+    /// MCP server over stdio for Codex and other agents (read-only by default)
+    Mcp {
+        /// Allow start/stop/apply tools
+        #[arg(long)]
+        allow_write: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -84,6 +101,14 @@ enum PresetCmd {
     },
     /// Показать активный пресет
     Show,
+    /// Экспортировать пресет в JSON
+    Export {
+        id: String,
+        /// Файл (по умолчанию stdout)
+        path: Option<String>,
+    },
+    /// Импортировать пресет из JSON
+    Import { path: String },
 }
 
 #[derive(Subcommand)]
@@ -118,6 +143,20 @@ enum ConfigCmd {
     Get,
     /// Сбросить конфиг к значениям по умолчанию
     Reset,
+    /// Проверить конфиг (или файл) без применения
+    Validate { path: Option<String> },
+    /// Экспортировать конфиг
+    Export { path: Option<String> },
+    /// Показать diff между текущим и предложенным конфигом
+    Diff { path: String },
+    /// Применить конфиг из файла
+    Apply {
+        path: String,
+        #[arg(long)]
+        restart: bool,
+        #[arg(long)]
+        stop: bool,
+    },
 }
 
 #[tokio::main]
@@ -130,23 +169,64 @@ async fn main() -> anyhow::Result<()> {
         Some(Cmd::Daemon) => run_daemon(),
         Some(Cmd::Preset { command }) => run_preset_command(command).await,
         Some(Cmd::Miner { command }) => run_miner_command(command).await,
-        Some(Cmd::Config { command }) => match command {
-            ConfigCmd::Path => {
-                println!("{}", paths::config_path().display());
-                Ok(())
+        Some(Cmd::Config { command }) => run_config_command(command).await,
+        Some(Cmd::Gpus { json }) => {
+            let gpus = trommel_core::nvidia::query_all()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&gpus)?);
+            } else {
+                for gpu in gpus {
+                    println!(
+                        "#{} {} [{}] {}°C {}W/{}W {}%",
+                        gpu.index,
+                        gpu.name,
+                        gpu.uuid,
+                        gpu.temp_c.unwrap_or(0),
+                        gpu.power_w.unwrap_or(0.0),
+                        gpu.power_limit_w.unwrap_or(0.0),
+                        gpu.fan_pct.unwrap_or(0)
+                    );
+                }
             }
-            ConfigCmd::Get => {
-                let cfg = Config::load()?;
-                println!("{}", serde_json::to_string_pretty(&cfg)?);
-                Ok(())
+            Ok(())
+        }
+        Some(Cmd::Mcp { allow_write }) => mcp::run(allow_write),
+        Some(Cmd::Diagnose { json }) => {
+            let status = match connect().await {
+                Ok(proxy) => proxy
+                    .refresh()
+                    .await
+                    .ok()
+                    .and_then(|raw| Status::from_json(&raw).ok()),
+                Err(_) => None,
+            };
+            let cfg = Config::load_or_default();
+            let mut redacted = cfg.clone();
+            if let Some(preset) = redacted.preset_mut() {
+                preset.wallet = if preset.wallet.is_empty() {
+                    String::new()
+                } else {
+                    "<redacted>".into()
+                };
             }
-            ConfigCmd::Reset => {
-                let cfg = Config::default();
-                cfg.save()?;
-                println!("Конфиг сброшен: {}", paths::config_path().display());
-                Ok(())
+            let report = serde_json::json!({
+                "app": "Trommel",
+                "version": trommel_core::VERSION,
+                "contract_version": trommel_core::status::CONTRACT_VERSION,
+                "config_path": paths::config_path(),
+                "state_path": paths::state_path(),
+                "config": redacted,
+                "status": status,
+                "gpus": trommel_core::nvidia::query_all().ok(),
+            });
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("# Trommel diagnostics");
+                println!("{}", serde_json::to_string_pretty(&report)?);
             }
-        },
+            Ok(())
+        }
         Some(Cmd::Status { json }) => {
             let proxy = connect().await?;
             let raw = proxy.refresh().await?;
@@ -278,6 +358,101 @@ fn open_gui() -> anyhow::Result<()> {
     }
 }
 
+async fn run_config_command(command: ConfigCmd) -> anyhow::Result<()> {
+    match command {
+        ConfigCmd::Path => {
+            println!("{}", paths::config_path().display());
+            Ok(())
+        }
+        ConfigCmd::Get => {
+            let cfg = Config::load()?;
+            println!("{}", serde_json::to_string_pretty(&cfg)?);
+            Ok(())
+        }
+        ConfigCmd::Reset => {
+            let cfg = Config::default();
+            cfg.save()?;
+            println!("config reset: {}", paths::config_path().display());
+            Ok(())
+        }
+        ConfigCmd::Validate { path } => {
+            let cfg = load_config_arg(path.as_deref())?;
+            let warnings = cfg.warnings();
+            if warnings.is_empty() {
+                println!("config is valid (schema {})", cfg.schema_version);
+            } else {
+                for warning in &warnings {
+                    println!("warning: {warning}");
+                }
+            }
+            Ok(())
+        }
+        ConfigCmd::Export { path } => {
+            let cfg = Config::load()?;
+            let json = serde_json::to_string_pretty(&cfg)?;
+            write_or_stdout(path.as_deref(), &json)
+        }
+        ConfigCmd::Diff { path } => {
+            let current = Config::load()?;
+            let next = load_config_arg(Some(&path))?;
+            let diff = current.diff(&next);
+            println!("{:?}: {}", diff.class, diff.reasons.join("; "));
+            Ok(())
+        }
+        ConfigCmd::Apply {
+            path,
+            restart,
+            stop,
+        } => {
+            let cfg = load_config_arg(Some(&path))?;
+            cfg.save()?;
+            let mode = if stop {
+                "stop"
+            } else if restart {
+                "restart"
+            } else {
+                "live"
+            };
+            if let Ok(proxy) = connect().await {
+                let json = serde_json::to_string(&cfg)?;
+                proxy
+                    .apply_config(&json, mode)
+                    .await
+                    .map_err(|e| anyhow!("apply failed: {e}"))?;
+                println!("config applied ({mode})");
+            } else {
+                println!("config saved; daemon is not running");
+            }
+            Ok(())
+        }
+    }
+}
+
+fn load_config_arg(path: Option<&str>) -> anyhow::Result<Config> {
+    match path {
+        None => Config::load(),
+        Some(path) => {
+            let text =
+                std::fs::read_to_string(path).map_err(|e| anyhow!("cannot read {path}: {e}"))?;
+            serde_json::from_str(&text).map_err(|e| anyhow!("cannot parse {path}: {e}"))
+        }
+    }
+}
+
+fn write_or_stdout(path: Option<&str>, text: &str) -> anyhow::Result<()> {
+    match path {
+        Some(path) => {
+            std::fs::write(path, text).map_err(|e| anyhow!("cannot write {path}: {e}"))?;
+            println!("written {path}");
+            Ok(())
+        }
+        None => {
+            println!("{text}");
+            Ok(())
+        }
+    }
+}
+
 async fn run_preset_command(command: PresetCmd) -> anyhow::Result<()> {
     let mut cfg = Config::load_or_default();
     match command {
@@ -305,6 +480,31 @@ async fn run_preset_command(command: PresetCmd) -> anyhow::Result<()> {
                 .cloned()
                 .ok_or_else(|| anyhow!("no active preset"))?;
             println!("{}", serde_json::to_string_pretty(&preset)?);
+            Ok(())
+        }
+        PresetCmd::Export { id, path } => {
+            let preset = cfg
+                .presets
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| anyhow!("unknown preset {id}"))?;
+            let json = serde_json::to_string_pretty(&preset)?;
+            write_or_stdout(path.as_deref(), &json)
+        }
+        PresetCmd::Import { path } => {
+            let text =
+                std::fs::read_to_string(&path).map_err(|e| anyhow!("cannot read {path}: {e}"))?;
+            let mut preset: trommel_core::config::Preset =
+                serde_json::from_str(&text).map_err(|e| anyhow!("cannot parse {path}: {e}"))?;
+            if preset.id.is_empty() {
+                preset.id = format!("imported-{}", trommel_core::util::now_unix());
+            }
+            if preset.name.is_empty() {
+                preset.name = preset.id.clone();
+            }
+            cfg.presets.insert(preset.id.clone(), preset);
+            cfg.save()?;
+            println!("preset imported: {path}");
             Ok(())
         }
         PresetCmd::Use { id, restart, stop } => {

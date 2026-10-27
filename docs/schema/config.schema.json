@@ -1,0 +1,302 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nayvok/trommel/docs/schema/config.schema.json",
+  "title": "Trommel config v2",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "presets",
+    "gpu_profiles",
+    "miner_installs",
+    "behavior"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "active_preset": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "presets": {
+      "type": "object",
+      "additionalProperties": {
+        "title": "Trommel preset",
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "coin",
+          "algo",
+          "miner",
+          "miner_version",
+          "pool",
+          "pool_url",
+          "gpu_profile"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "coin": {
+            "type": "string"
+          },
+          "algo": {
+            "type": "string"
+          },
+          "miner": {
+            "type": "string"
+          },
+          "miner_version": {
+            "type": "string"
+          },
+          "pool": {
+            "type": "string"
+          },
+          "pool_url": {
+            "type": "string",
+            "pattern": ":"
+          },
+          "wallet": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          },
+          "gpu_profile": {
+            "type": "string"
+          },
+          "api_port": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "expected_hashrate": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "miner_options": {
+            "type": "object"
+          },
+          "miner_fee_override_pct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 100
+          },
+          "miner_fee_pct": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "pool_fee_pct": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "extra_args": {
+            "type": "string"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "gpu_profiles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "name",
+          "default"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "default": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "power_limit_w": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 50,
+                "maximum": 1000
+              },
+              "core_clock_mhz": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 4000
+              },
+              "memory_clock_mhz": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 12000
+              },
+              "fan_pct": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 100
+              },
+              "temp_limit_c": {
+                "type": "integer",
+                "minimum": 60,
+                "maximum": 100
+              },
+              "temp_resume_c": {
+                "type": "integer",
+                "minimum": 40,
+                "maximum": 95
+              }
+            }
+          },
+          "per_gpu": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "power_limit_w": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 50,
+                  "maximum": 1000
+                },
+                "core_clock_mhz": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 4000
+                },
+                "memory_clock_mhz": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 12000
+                },
+                "fan_pct": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "temp_limit_c": {
+                  "type": "integer",
+                  "minimum": 60,
+                  "maximum": 100
+                },
+                "temp_resume_c": {
+                  "type": "integer",
+                  "minimum": 40,
+                  "maximum": 95
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "miner_installs": {
+      "type": "object"
+    },
+    "custom_miners": {
+      "type": "object"
+    },
+    "pools": {
+      "type": "object"
+    },
+    "behavior": {
+      "type": "object",
+      "required": [
+        "auto_restart",
+        "restart_delay_s",
+        "poll_interval_s",
+        "restore_stock_on_stop",
+        "notifications",
+        "language"
+      ],
+      "properties": {
+        "auto_restart": {
+          "type": "boolean"
+        },
+        "restart_delay_s": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "poll_interval_s": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        },
+        "restore_stock_on_stop": {
+          "type": "boolean"
+        },
+        "start_mining_on_login": {
+          "type": "boolean"
+        },
+        "notifications": {
+          "type": "boolean"
+        },
+        "language": {
+          "enum": [
+            "system",
+            "en",
+            "ru"
+          ]
+        },
+        "simple_mode": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}
