@@ -1,0 +1,26 @@
+// polkit-правило Pearl Miner: активный локальный пользователь @USER@ может
+// запускать ровно один root-хелпер без запроса пароля.
+//
+// Ставится в /etc/polkit-1/rules.d/50-pearl-miner.rules (install.sh подставляет
+// имя пользователя вместо @USER@). Если файл удалить — pkexec начнёт спрашивать
+// пароль, как обычная авторизация.
+polkit.addRule(function (action, subject) {
+    if (action.id !== "org.freedesktop.policykit.exec") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (!subject.local || !subject.active) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (subject.user !== "@USER@") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var program = action.lookup("program");
+    if (program !== "/usr/local/sbin/pearl-oc") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var command = action.lookup("argv1");
+    if (command !== "apply" && command !== "reset" && command !== "status") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    return polkit.Result.YES;
+});

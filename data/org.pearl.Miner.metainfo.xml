@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.pearl.Miner</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Pearl Miner</name>
+  <summary>Управление майнингом Pearl (PRL)</summary>
+
+  <description>
+    <p>
+      Небольшое приложение для видеокарты, которая майнит Pearl (PRL) на пуле
+      PearlHash. Позволяет запускать и останавливать майнер одной кнопкой,
+      смотреть хешрейт, температуру, мощность, шары и баланс пула, а также
+      держать разгон (лимит питания, частоты, вентилятор) в одном месте.
+    </p>
+    <p>
+      Разгон и питание применяются через polkit без ввода пароля каждый раз,
+      при остановке майнинга карта возвращается в сток.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">org.pearl.Miner.desktop</launchable>
+
+  <url type="homepage">https://pearlhash.xyz</url>
+
+  <categories>
+    <category>Utility</category>
+    <category>System</category>
+  </categories>
+
+  <keywords>
+    <keyword>pearl</keyword>
+    <keyword>prl</keyword>
+    <keyword>mining</keyword>
+    <keyword>майнинг</keyword>
+    <keyword>gpu</keyword>
+  </keywords>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-10-28">
+      <description>
+        <p>Первый выпуск: дашборд, настройки GPU, сравнение майнеров и расширение панели GNOME.</p>
+      </description>
+    </release>
+  </releases>
+</component>

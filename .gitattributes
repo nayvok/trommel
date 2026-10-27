@@ -1,0 +1,11 @@
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.mo binary
+*.deb binary
+*.rpm binary
+*.AppImage binary
+*.po text
+*.pot text

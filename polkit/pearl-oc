@@ -1,0 +1,101 @@
+#!/bin/bash
+# pearl-oc — узкий root-хелпер для разгона/питания NVIDIA (Pearl Miner).
+#
+# Устанавливается в /usr/local/sbin/pearl-oc и вызывается через pkexec:
+#   pkexec /usr/local/sbin/pearl-oc apply --pl 300 --lgc 1620 --lmc 810
+#   pkexec /usr/local/sbin/pearl-oc reset --pl 350
+#
+# Принимает только строго перечисленные флаги и только числовые значения,
+# никакие пути и shell-метасимволы не проходят.
+set -euo pipefail
+
+NVIDIA_SMI=/usr/bin/nvidia-smi
+
+die() { echo "pearl-oc: $*" >&2; exit 1; }
+usage() {
+    cat >&2 <<'EOF'
+использование:
+  pearl-oc apply [--pl W] [--lgc MHz] [--lmc MHz]
+  pearl-oc reset --pl W
+  pearl-oc status
+EOF
+    exit 2
+}
+
+[ "$(id -u)" -eq 0 ] || die "нужны права root (запускай через pkexec)"
+[ -x "$NVIDIA_SMI" ] || die "nvidia-smi не найден"
+
+num() {
+    # $1 — значение, $2 — флаг, $3..$4 — допустимый диапазон
+    local value=$1 flag=$2 min=$3 max=$4
+    [[ $value =~ ^[0-9]{1,4}$ ]] || die "$flag: «$value» не число"
+    (( value >= min && value <= max )) || die "$flag: $value вне диапазона $min..$max"
+}
+
+wait_for_pl() {
+    # nvidia-smi -pl на некоторых картах применяется асинхронно
+    local want=$1
+    for _ in $(seq 1 20); do
+        local current
+        current=$("$NVIDIA_SMI" --query-gpu=power.limit --format=csv,noheader,nounits -i 0 2>/dev/null || echo 0)
+        case $current in
+            "$want"*|"$want".*) return 0 ;;
+        esac
+        sleep 0.15
+    done
+    return 0
+}
+
+apply() {
+    local applied=0
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --pl)
+                [ $# -ge 2 ] || die "--pl: нет значения"
+                num "$2" --pl 50 1000
+                "$NVIDIA_SMI" -i 0 -pl "$2" >/dev/null || die "nvidia-smi -pl $2 не удалось"
+                wait_for_pl "$2"
+                applied=1
+                shift 2
+                ;;
+            --lgc)
+                [ $# -ge 2 ] || die "--lgc: нет значения"
+                num "$2" --lgc 100 4000
+                "$NVIDIA_SMI" -i 0 -lgc "$2,$2" >/dev/null || die "nvidia-smi -lgc $2 не удалось"
+                applied=1
+                shift 2
+                ;;
+            --lmc)
+                [ $# -ge 2 ] || die "--lmc: нет значения"
+                num "$2" --lmc 100 12000
+                "$NVIDIA_SMI" -i 0 -lmc "$2" >/dev/null || die "nvidia-smi -lmc $2 не удалось"
+                applied=1
+                shift 2
+                ;;
+            *)
+                die "неизвестный флаг: $1"
+                ;;
+        esac
+    done
+    [ "$applied" -eq 1 ] || die "нужен хотя бы один параметр"
+    echo "apply ok"
+}
+
+reset() {
+    [ $# -eq 2 ] && [ "$1" = "--pl" ] || die "использование: reset --pl <Ватт>"
+    num "$2" --pl 50 1000
+    "$NVIDIA_SMI" -i 0 -rgc >/dev/null 2>&1 || true
+    "$NVIDIA_SMI" -i 0 -rmc >/dev/null 2>&1 || true
+    "$NVIDIA_SMI" -i 0 -pl "$2" >/dev/null || die "nvidia-smi -pl $2 не удалось"
+    wait_for_pl "$2"
+    echo "reset ok"
+}
+
+command=${1:-}
+[ $# -gt 0 ] && shift
+case $command in
+    apply) apply "$@" ;;
+    reset) reset "$@" ;;
+    status) "$NVIDIA_SMI" -q -d CLOCK,POWER,TEMPERATURE | head -40 ;;
+    *) usage ;;
+esac

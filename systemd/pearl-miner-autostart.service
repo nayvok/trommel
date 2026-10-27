@@ -1,0 +1,14 @@
+[Unit]
+Description=Pearl Miner: запуск майнинга при входе в систему
+After=pearl-minerd.service
+Requires=pearl-minerd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/.local/bin/pearl-miner start
+ExecStop=%h/.local/bin/pearl-miner stop
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

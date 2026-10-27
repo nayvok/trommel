@@ -1,0 +1,55 @@
+# Local, private and generated files — never commit these.
+/local/
+/legacy/
+
+# Rust
+/target/
+/.cargo-home/
+**/*.rs.bk
+
+# Build/packaging artifacts
+/dist/
+/build/
+/out/
+*.deb
+*.rpm
+*.AppImage
+*.flatpak
+*.flatpakrepo
+*.tar.gz
+*.tar.xz
+*.zip
+*.shell-extension.zip
+
+# Translation binaries (POT/PO are tracked)
+*.mo
+*.gmo
+
+# Test/screenshot scratch directories
+/.e2e/
+/.shots/
+/.uicheck/
+/.fake-pc/
+/.fakelibs/
+/.testtmp/
+
+# Runtime and local config
+*.log
+*.pid
+.env
+.env.*
+/config.json
+/state.json
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Python caches used by helper scripts
+__pycache__/
+*.pyc

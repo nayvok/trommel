@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Pearl Miner</vendor>
+  <vendor_url>https://pearlhash.xyz</vendor_url>
+
+  <action id="org.pearl.miner.oc">
+    <description>Изменение питания и частот GPU для майнинга Pearl</description>
+    <description xml:lang="ru">Изменение питания и частот GPU для майнинга Pearl</description>
+    <message>Нужно применить настройки питания и частот видеокарты</message>
+    <message xml:lang="ru">Нужно применить настройки питания и частот видеокарты</message>
+
+    <!-- Details of the helper that is allowed to run. -->
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/sbin/pearl-oc</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>

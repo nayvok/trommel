@@ -1,0 +1,9 @@
+{
+  "name": "Pearl Miner",
+  "description": "Живая карточка майнинга Pearl (PRL) в верхней панели: хешрейт, температура, мощность, шары и баланс пула. Кнопка старт/стоп и переход в настройки.",
+  "uuid": "pearl-miner@pearl",
+  "shell-version": ["50"],
+  "url": "https://pearlhash.xyz",
+  "version": 1,
+  "version-name": "0.1.0"
+}
