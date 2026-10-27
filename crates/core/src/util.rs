@@ -20,13 +20,7 @@ pub fn format_hashrate(hs: f64) -> String {
         }
     }
     let value = hs / UNITS[idx].1;
-    let decimals = if value >= 100.0 {
-        1
-    } else if value >= 10.0 {
-        2
-    } else {
-        2
-    };
+    let decimals = if value >= 100.0 { 1 } else { 2 };
     format!("{value:.decimals$} {}", UNITS[idx].0)
 }
 

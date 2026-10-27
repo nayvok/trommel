@@ -1,0 +1,142 @@
+# Built-in miner catalogue. Community contributions add entries here.
+#
+# Fee values are for the PearlHash algorithm unless noted. Only set
+# `fee_configurable = true` when the miner really accepts a fee flag; the UI
+# must never pretend that a fixed fee can be changed.
+
+[[miners]]
+id = "wildrig"
+name = "WildRig Multi"
+short_description_en = "Fast NVIDIA miner with 0% developer fee on PearlHash."
+short_description_ru = "Быстрый NVIDIA-майнер с 0% комиссии разработчика на PearlHash."
+homepage = "https://github.com/andru-kun/wildrig-multi"
+license = "Freeware"
+source_url = "https://github.com/andru-kun/wildrig-multi/releases"
+supported_coins = ["pearl"]
+supported_algos = ["pearlhash"]
+fee_pct = 0.0
+fee_configurable = false
+fee_flag = ""
+per_gpu_stats = false
+per_gpu_devices = false
+default_options = { fan_speed = "0" }
+
+[[miners.versions]]
+version = "0.51.8"
+channel = "stable"
+url = "https://github.com/andru-kun/wildrig-multi/releases"
+sha256 = ""
+archive = "binary"
+binary = "wildrig-multi"
+verified = true
+released_at = "2026-10-26"
+notes = "Recommended for RTX 30/40/50 on PearlHash; 0% fee on this pool."
+
+[[miners.versions]]
+version = "0.51.5"
+channel = "older"
+url = "https://github.com/andru-kun/wildrig-multi/releases"
+sha256 = ""
+archive = "binary"
+binary = "wildrig-multi"
+verified = true
+released_at = "2026-09-01"
+notes = "Fallback if the newer version is unstable on your card."
+
+[[miners.options]]
+key = "fan_speed"
+label_en = "Fan speed"
+label_ru = "Вентилятор"
+help_en = "Passed to the miner; N/A on cards without fan control."
+help_ru = "Передаётся майнеру; не работает на картах без управления вентилятором."
+kind = "int"
+default = "0"
+min = 0
+max = 100
+flag = "--gpu-fan-speed"
+scope = "gpu"
+advanced = false
+
+[[miners.options]]
+key = "intensity"
+label_en = "GPU intensity"
+label_ru = "Интенсивность GPU"
+help_en = "Miner-specific intensity; leave empty for the miner default."
+help_ru = "Интенсивность конкретного майнера; пусто — значение по умолчанию."
+kind = "int"
+default = ""
+min = 0
+max = 64
+flag = "--gpu-intensity"
+scope = "gpu"
+advanced = true
+
+[[miners]]
+id = "srbminer"
+name = "SRBMiner-MULTI"
+short_description_en = "Multi-algorithm miner; NVIDIA PearlHash kernels since 3.7.3."
+short_description_ru = "Мультиалгоритменный майнер; NVIDIA-ядра PearlHash с 3.7.3."
+homepage = "https://github.com/doktor83/SRBMiner-Multi"
+license = "Freeware"
+source_url = "https://github.com/doktor83/SRBMiner-Multi/releases"
+supported_coins = ["pearl"]
+supported_algos = ["pearlhash"]
+fee_pct = 0.85
+fee_configurable = false
+fee_flag = ""
+per_gpu_stats = true
+per_gpu_devices = true
+default_options = { fan_speed = "0" }
+
+[[miners.versions]]
+version = "3.8.0"
+channel = "stable"
+url = "https://github.com/doktor83/SRBMiner-Multi/releases"
+sha256 = ""
+archive = "tar.gz"
+binary = "SRBMiner-MULTI"
+verified = false
+released_at = "2026-10-01"
+notes = "Developer fee on PearlHash is 0.85%; verify the effective hashrate with A/B."
+
+[[miners.options]]
+key = "fan_speed"
+label_en = "Fan speed"
+label_ru = "Вентилятор"
+help_en = "Passed to the miner when supported."
+help_ru = "Передаётся майнеру, если поддерживается."
+kind = "int"
+default = "0"
+min = 0
+max = 100
+flag = "--gpu-fan-speed"
+scope = "gpu"
+advanced = false
+
+[[miners]]
+id = "onezero"
+name = "OneZeroMiner"
+short_description_en = "NVIDIA miner with a 1% developer fee on PearlHash."
+short_description_ru = "NVIDIA-майнер с 1% комиссии разработчика на PearlHash."
+homepage = "https://github.com/OneZeroMiner/onezero"
+license = "Freeware"
+source_url = "https://github.com/OneZeroMiner/onezero/releases"
+supported_coins = ["pearl"]
+supported_algos = ["pearlhash"]
+fee_pct = 1.0
+fee_configurable = false
+fee_flag = ""
+per_gpu_stats = true
+per_gpu_devices = true
+default_options = {}
+
+[[miners.versions]]
+version = "1.2.0"
+channel = "stable"
+url = "https://github.com/OneZeroMiner/onezero/releases"
+sha256 = ""
+archive = "tar.gz"
+binary = "onezero"
+verified = false
+released_at = "2026-09-15"
+notes = "1% fee on PearlHash; compare before switching."

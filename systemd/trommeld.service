@@ -1,0 +1,18 @@
+[Unit]
+Description=Trommel: background mining service (D-Bus io.github.nayvok.Trommel.Daemon)
+Documentation=https://github.com/nayvok/trommel
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=io.github.nayvok.Trommel.Daemon
+ExecStart=/usr/bin/trommeld
+Restart=on-failure
+RestartSec=3
+Slice=background.slice
+Nice=5
+IOWeight=50
+
+[Install]
+WantedBy=graphical-session.target

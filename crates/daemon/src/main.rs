@@ -1,14 +1,14 @@
-//! `pearl-minerd` — the background service.
+//! `trommeld` — the background service.
 //!
 //! Owns the miner process, applies the OC profile, polls GPU + miner + pool and
-//! pushes the status document over D-Bus (`org.pearl.Miner.Daemon`).
+//! pushes the status document over D-Bus (`io.github.nayvok.Trommel.Daemon`).
 
 use std::time::Duration;
 
-use pearl_miner_core::dbus::{self, Engine};
-use pearl_miner_core::status::Status;
-use pearl_miner_core::supervisor::log_line;
-use pearl_miner_core::{paths, OBJECT_PATH};
+use trommel_core::dbus::{self, Engine};
+use trommel_core::status::Status;
+use trommel_core::supervisor::log_line;
+use trommel_core::{paths, OBJECT_PATH};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
@@ -16,7 +16,7 @@ async fn main() -> anyhow::Result<()> {
 
     let engine = Engine::new();
     let connection = zbus::connection::Builder::session()
-        .name(pearl_miner_core::BUS_NAME)
+        .name(trommel_core::BUS_NAME)
         .serve_at(OBJECT_PATH, engine.clone())
         .build()
         .await?;
@@ -28,8 +28,8 @@ async fn main() -> anyhow::Result<()> {
 
     log_line("сервис запущен");
     println!(
-        "pearl-minerd {} запущен на {}",
-        pearl_miner_core::VERSION,
+        "trommeld {} запущен на {}",
+        trommel_core::VERSION,
         OBJECT_PATH
     );
 
@@ -49,8 +49,11 @@ async fn main() -> anyhow::Result<()> {
                     (inner.cfg.clone(), inner.sup.state.clone())
                 };
                 let interval = dbus::poll_interval(&cfg);
-                let temp_limit = cfg.gpu.temp_limit;
-                let notify_enabled = cfg.notifications;
+                let temp_limit = cfg
+                    .gpu_profile()
+                    .map(|p| p.default.temp_limit_c)
+                    .unwrap_or(90);
+                let notify_enabled = cfg.behavior.notifications;
 
                 let status = match tokio::task::spawn_blocking(move || {
                     Status::collect(&cfg, &state)
@@ -82,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
                     overheated = true;
                     let _ = Engine::emit_notification(
                         iface_ref.signal_emitter(),
-                        "Pearl Miner: перегрев",
+                        "Trommel: перегрев",
                         &format!(
                             "Температура достигла {} °C (порог {} °C). Майнер поставит паузу.",
                             status
@@ -128,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
                     log_line(&format!("{event:?}"));
                 }
                 let cfg = engine.cfg().await;
-                if cfg.notifications {
+                if cfg.behavior.notifications {
                     for (summary, body) in dbus::events_to_notifications(&events) {
                         let _ =
                             Engine::emit_notification(iface_ref.signal_emitter(), &summary, &body)

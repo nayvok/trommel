@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Trommel
+Name[ru]=Trommel
+Comment=Manage NVIDIA mining rigs, miners and presets
+Comment[ru]=Управление NVIDIA-ригом, майнерами и пресетами
+Exec=trommel
+Icon=io.github.nayvok.Trommel
+Terminal=false
+Categories=Utility;
+Keywords=mining;gpu;nvidia;rig;hashrate;miner;pool;preset;
+Keywords[ru]=майнинг;gpu;nvidia;риг;хешрейт;майнер;пул;пресет;
+StartupNotify=true
+StartupWMClass=io.github.nayvok.Trommel
+SingleMainWindow=true
+X-GNOME-UsesNotifications=true

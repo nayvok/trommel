@@ -1,0 +1,8 @@
+[[coins]]
+id = "pearl"
+symbol = "PRL"
+name = "Pearl"
+wallet_prefix = "prl1"
+algos = ["pearlhash"]
+description_en = "Pearl (PRL), mined with the pearlhash algorithm."
+description_ru = "Pearl (PRL), майнится алгоритмом pearlhash."

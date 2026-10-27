@@ -60,11 +60,17 @@ pub fn account_url(wallet: &str) -> String {
     format!("https://pearlhash.xyz/api/account/{wallet}")
 }
 
-/// Fetch pool statistics for the configured wallet (no caching).
+/// Fetch pool statistics for the active preset (no caching).
 pub fn query(cfg: &Config) -> anyhow::Result<PoolStats> {
-    let wallet = cfg.wallet.trim();
+    let Some(preset) = cfg.preset() else {
+        anyhow::bail!("no active preset");
+    };
+    let wallet = preset.wallet.trim();
     if wallet.is_empty() {
-        anyhow::bail!("кошелёк не задан");
+        anyhow::bail!("wallet is not set");
+    }
+    if preset.pool != "pearlhash" {
+        anyhow::bail!("pool API adapter is not available for {}", preset.pool);
     }
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(4))
@@ -83,7 +89,7 @@ pub fn query(cfg: &Config) -> anyhow::Result<PoolStats> {
                     let json: serde_json::Value = serde_json::from_str(&body)
                         .map_err(|e| anyhow::anyhow!("пул вернул не JSON: {e}"))?;
                     let mut stats = parse_json(&json);
-                    stats.fee_pct = cfg.pool_fee_pct;
+                    stats.fee_pct = preset.pool_fee_pct;
                     stats.min_payout_prl = MIN_PAYOUT_PRL;
                     return Ok(stats);
                 }
@@ -112,8 +118,9 @@ fn cache() -> &'static Mutex<Option<CacheEntry>> {
 
 /// Cached pool query: at most one request per wallet per minute.
 pub fn query_cached(cfg: &Config) -> Option<PoolStats> {
-    let wallet = cfg.wallet.trim().to_string();
-    if wallet.is_empty() {
+    let preset = cfg.preset()?;
+    let wallet = preset.wallet.trim().to_string();
+    if wallet.is_empty() || preset.pool != "pearlhash" {
         return None;
     }
     {

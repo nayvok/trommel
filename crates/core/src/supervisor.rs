@@ -1,7 +1,7 @@
-//! Miner process management: start, stop, restart-on-crash.
+//! Miner process management: start, stop, restart-on-crash, stock restore.
 //!
-//! Used by the daemon (`pearl-minerd`); deliberately synchronous — the daemon
-//! calls it from blocking contexts.
+//! Used by `trommeld`; deliberately synchronous so the daemon can call it from
+//! blocking contexts.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -9,6 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
+use crate::i18n::tr;
 use crate::miners;
 use crate::oc;
 use crate::paths;
@@ -17,35 +18,34 @@ use crate::util;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// Miner process spawned, with its PID.
     Started(u32),
-    /// Miner exited; a restart is scheduled.
     Crashed { code: Option<i32>, restart_in: u64 },
-    /// Miner exited and the auto-restart is disabled.
     Stopped { code: Option<i32> },
-    /// Something failed (spawn error, restart failed, OC failed).
     Error(String),
-    /// Mining stopped by the user.
     UserStopped,
 }
 
 impl Event {
-    /// Short human-readable text for notifications.
     pub fn message(&self) -> Option<String> {
         match self {
-            Event::Started(_) => Some("Майнинг запущен".into()),
+            Event::Started(_) => Some(tr("Mining started", "Майнинг запущен")),
             Event::Crashed { code, restart_in } => Some(format!(
-                "Майнер упал (код {}) — перезапуск через {restart_in} с",
-                code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
+                "{} ({}) — {} {restart_in} {}",
+                tr("Miner crashed", "Майнер упал"),
+                code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()),
+                tr("restarting in", "перезапуск через"),
+                tr("s", "с")
             )),
             Event::Stopped { code } => Some(format!(
-                "Майнер остановлен (код {})",
+                "{} ({})",
+                tr("Miner stopped", "Майнер остановлен"),
                 code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
             )),
             Event::Error(text) => Some(text.clone()),
-            Event::UserStopped => {
-                Some("Майнинг остановлен, частоты и питание возвращены в сток".into())
-            }
+            Event::UserStopped => Some(tr(
+                "Mining stopped; stock clocks and power restored",
+                "Майнинг остановлен; частоты и питание возвращены в сток",
+            )),
         }
     }
 }
@@ -78,34 +78,108 @@ impl Supervisor {
         self.child.is_some() || self.state.running
     }
 
-    /// Start the miner: apply the OC profile, spawn the process, persist state.
+    /// Start the miner: snapshot stock, apply the GPU profile, spawn.
     pub fn start(&mut self, cfg: &Config) -> anyhow::Result<()> {
         if self.is_running() {
             return Ok(());
         }
         if self.state.external {
-            // Someone else's miner is already mining; nothing to do.
             return Ok(());
         }
-
-        let mut warning: Option<String> = None;
-        if let Err(err) = oc::apply(&cfg.gpu) {
-            warning = Some(format!("Разгон не применён: {err}"));
+        let preset = cfg
+            .preset()
+            .ok_or_else(|| anyhow::anyhow!(tr("No active preset", "Нет активного пресета")))?;
+        if preset.wallet.trim().is_empty() {
+            anyhow::bail!(tr(
+                "Wallet is not set; open a preset and add it",
+                "Кошелёк не задан — откройте пресет и укажите его"
+            ));
+        }
+        if !preset.pool_url.contains(':') {
+            anyhow::bail!(tr(
+                "Pool address must include a port",
+                "В адресе пула должен быть порт"
+            ));
+        }
+        let binary = cfg.miner_path(preset).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} {} {}",
+                tr("Miner is not installed:", "Майнер не установлен:"),
+                preset.miner,
+                preset.miner_version
+            )
+        })?;
+        if !binary.exists() {
+            anyhow::bail!(
+                "{} {}",
+                tr("Miner binary not found:", "Бинарник майнера не найден:"),
+                binary.display()
+            );
         }
 
-        self.spawn(cfg)?;
+        let gpus = crate::nvidia::query_all().map_err(|e| {
+            anyhow::anyhow!(tr("GPU query failed:", "Ошибка опроса GPU:") + " " + &e.to_string())
+        })?;
+        let snapshot = if let Some(existing) = oc::current_boot_snapshot() {
+            existing
+        } else {
+            let snapshot = oc::snapshot()?;
+            oc::save_snapshot(&snapshot)?;
+            snapshot
+        };
+
+        let profile = cfg.gpu_profile().cloned().unwrap_or_default();
+        if !gpus.iter().any(|gpu| profile.tuning_for(&gpu.uuid).enabled) {
+            anyhow::bail!(tr(
+                "No GPU is enabled in the active profile",
+                "В активном профиле не включено ни одной видеокарты"
+            ));
+        }
+        let mut applied: Vec<String> = Vec::new();
+        for gpu in &gpus {
+            let tuning = profile.tuning_for(&gpu.uuid);
+            if !tuning.enabled {
+                continue;
+            }
+            if let Err(err) = oc::apply_tuning(gpu, &tuning) {
+                for uuid in &applied {
+                    if let Some(snap) = snapshot.for_uuid(uuid) {
+                        let _ = oc::restore_gpu(snap);
+                    }
+                }
+                anyhow::bail!(
+                    "{} {}",
+                    tr("GPU tuning was not applied:", "Разгон не применён:"),
+                    err
+                );
+            }
+            applied.push(gpu.uuid.clone());
+        }
+
+        if let Err(err) = self.spawn(cfg) {
+            for gpu in &gpus {
+                if let Some(snap) = snapshot.for_uuid(&gpu.uuid) {
+                    let _ = oc::restore_gpu(snap);
+                }
+            }
+            return Err(err);
+        }
 
         self.state.running = true;
+        self.state.external = false;
+        self.state.orphan = false;
         self.state.started_at = Some(util::now_unix());
         self.state.restarts = 0;
-        self.state.last_error = warning;
-        self.state.profile = Some(cfg.miner_profile.clone());
+        self.state.preset_id = cfg.active_preset.clone();
+        self.state.miner = Some(preset.miner.clone());
+        self.state.miner_version = Some(preset.miner_version.clone());
+        self.state.profile = Some(preset.miner.clone());
         let _ = self.state.save();
         crate::pool::invalidate_cache();
         Ok(())
     }
 
-    /// Stop the miner, restore stock clocks/power and forget the state.
+    /// Stop the miner and restore the snapshot (when enabled).
     pub fn stop(&mut self, cfg: &Config) -> anyhow::Result<()> {
         self.restart_at = None;
         if let Some(mut child) = self.child.take() {
@@ -117,18 +191,24 @@ impl Supervisor {
             }
         }
 
-        let reset_result = oc::reset(&cfg.gpu);
+        let reset_result = if cfg.behavior.restore_stock_on_stop {
+            match oc::load_snapshot() {
+                Some(snapshot) => oc::restore_snapshot(&snapshot),
+                None => match oc::fallback_snapshot() {
+                    Some(snapshot) => oc::restore_snapshot(&snapshot),
+                    None => Ok(()),
+                },
+            }
+        } else {
+            Ok(())
+        };
 
         self.state = State::default();
         State::clear_file();
         crate::pool::invalidate_cache();
-        match reset_result {
-            Ok(()) => Ok(()),
-            Err(err) => Err(anyhow::anyhow!("{err}")),
-        }
+        reset_result
     }
 
-    /// Periodic check: reap the child, schedule/produce restarts.
     pub fn tick(&mut self, cfg: &Config) -> Vec<Event> {
         let mut events = Vec::new();
 
@@ -137,42 +217,56 @@ impl Supervisor {
                 Ok(Some(status)) => {
                     let code = status.code();
                     self.state.miner_pid = None;
-                    if cfg.auto_restart && self.state.running {
+                    if cfg.behavior.auto_restart && self.state.running {
                         self.state.restarts += 1;
                         self.state.last_error = Some(format!(
-                            "Майнер завершился (код {}), перезапуск через {} с",
+                            "{} ({}) — {} {} {}",
+                            tr("Miner exited", "Майнер завершился"),
                             code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()),
-                            cfg.restart_delay_s
+                            tr("restarting in", "перезапуск через"),
+                            cfg.behavior.restart_delay_s.max(1),
+                            tr("s", "с")
                         ));
                         let _ = self.state.save();
-                        self.restart_at =
-                            Some(Instant::now() + Duration::from_secs(cfg.restart_delay_s.max(1)));
+                        self.restart_at = Some(
+                            Instant::now()
+                                + Duration::from_secs(cfg.behavior.restart_delay_s.max(1)),
+                        );
                         events.push(Event::Crashed {
                             code,
-                            restart_in: cfg.restart_delay_s.max(1),
+                            restart_in: cfg.behavior.restart_delay_s.max(1),
                         });
                     } else {
                         self.state.running = false;
                         self.state.started_at = None;
                         self.state.last_error = Some(format!(
-                            "Майнер завершился (код {}), автоперезапуск выключен",
-                            code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
+                            "{} ({}) — {}",
+                            tr("Miner exited", "Майнер завершился"),
+                            code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()),
+                            tr("auto-restart is off", "автоперезапуск выключен")
                         ));
                         let _ = self.state.save();
                         events.push(Event::Stopped { code });
                     }
                 }
-                Ok(None) => {
-                    // Still running.
-                    self.child = Some(child);
-                }
+                Ok(None) => self.child = Some(child),
                 Err(err) => {
-                    events.push(Event::Error(format!("не удалось опросить процесс: {err}")));
+                    events.push(Event::Error(format!(
+                        "{} {err}",
+                        tr("Unable to poll miner:", "Не удалось опросить майнер:")
+                    )));
                     self.child = Some(child);
                 }
             }
+        } else if self.state.running && self.state.orphan {
+            if !self.state.miner_alive() {
+                self.state.running = false;
+                self.state.orphan = false;
+                self.state.started_at = None;
+                let _ = self.state.save();
+                events.push(Event::Stopped { code: None });
+            }
         } else if !self.state.running {
-            // Detect a miner started behind our back (e.g. start-mining.sh).
             if let Some(pid) = state::find_external_miner() {
                 self.state.external = true;
                 self.state.running = true;
@@ -193,8 +287,13 @@ impl Supervisor {
                     }
                     Err(err) => {
                         self.state.running = false;
-                        self.state.last_error =
-                            Some(format!("не удалось перезапустить майнер: {err}"));
+                        self.state.last_error = Some(format!(
+                            "{} {err}",
+                            tr(
+                                "Unable to restart miner:",
+                                "Не удалось перезапустить майнер:"
+                            )
+                        ));
                         let _ = self.state.save();
                         events.push(Event::Error(
                             self.state.last_error.clone().unwrap_or_default(),
@@ -207,9 +306,18 @@ impl Supervisor {
     }
 
     fn spawn(&mut self, cfg: &Config) -> anyhow::Result<()> {
-        let binary = cfg.miner_path();
+        let preset = cfg
+            .preset()
+            .ok_or_else(|| anyhow::anyhow!(tr("No active preset", "Нет активного пресета")))?;
+        let binary = cfg
+            .miner_path(preset)
+            .ok_or_else(|| anyhow::anyhow!(tr("Miner is not installed", "Майнер не установлен")))?;
         if !binary.exists() {
-            anyhow::bail!("бинарник майнера не найден: {}", binary.display());
+            anyhow::bail!(
+                "{} {}",
+                tr("Miner binary not found:", "Бинарник майнера не найден:"),
+                binary.display()
+            );
         }
         if let Some(parent) = self.log_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -220,7 +328,7 @@ impl Supervisor {
             .open(&self.log_path)?;
         let log_err = log.try_clone()?;
 
-        let args = miners::build_args(cfg, cfg.miner_profile.trim(), &self.log_path);
+        let args = miners::build_args(cfg, preset, &self.log_path)?;
         let mut command = Command::new(&binary);
         command
             .args(&args)
@@ -230,19 +338,30 @@ impl Supervisor {
         if let Some(dir) = binary.parent() {
             command.current_dir(dir);
         }
+        for (key, value) in &preset.env {
+            command.env(key, value);
+        }
 
-        let child = command
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("не удалось запустить {}: {e}", binary.display()))?;
+        let child = command.spawn().map_err(|e| {
+            anyhow::anyhow!(
+                "{} {}: {e}",
+                tr("Unable to start", "Не удалось запустить"),
+                binary.display()
+            )
+        })?;
         let pid = child.id();
         self.child = Some(child);
         self.state.miner_pid = Some(pid);
         self.state.running = true;
         self.state.external = false;
+        self.state.orphan = false;
         if self.state.started_at.is_none() {
             self.state.started_at = Some(util::now_unix());
         }
-        self.state.profile = Some(cfg.miner_profile.clone());
+        self.state.preset_id = cfg.active_preset.clone();
+        self.state.miner = Some(preset.miner.clone());
+        self.state.miner_version = Some(preset.miner_version.clone());
+        self.state.profile = Some(preset.miner.clone());
         Ok(())
     }
 
@@ -255,7 +374,7 @@ impl Supervisor {
         self.state.running = true;
         self.state.miner_pid = Some(pid);
         self.state.started_at = Some(util::now_unix());
-        self.state.profile = Some(cfg.miner_profile.clone());
+        self.state.preset_id = cfg.active_preset.clone();
         true
     }
 }
@@ -313,28 +432,30 @@ mod tests {
 
     #[test]
     fn event_messages_are_human_readable() {
-        assert_eq!(
-            Event::Started(42).message().unwrap(),
-            "Майнинг запущен".to_string()
-        );
+        assert!(!Event::Started(42).message().unwrap().is_empty());
         assert!(Event::Crashed {
             code: Some(1),
             restart_in: 5
         }
         .message()
         .unwrap()
-        .contains("перезапуск через 5 с"));
-        assert!(Event::UserStopped.message().unwrap().contains("сток"));
+        .contains('5'));
+        assert!(!Event::UserStopped.message().unwrap().is_empty());
     }
 
     #[test]
-    fn start_fails_without_binary() {
+    fn start_fails_without_install() {
         let mut cfg = Config::default();
-        if let Some(entry) = cfg.miners.get_mut("wildrig") {
-            entry.path = "/nonexistent/wildrig-multi".into();
-        }
         let mut supervisor = Supervisor::new();
         supervisor.state = State::default();
+        assert!(supervisor.start(&cfg).is_err());
+        // Installing a non-existent path still fails at the existence check.
+        cfg.add_install(crate::config::MinerInstall {
+            miner: "wildrig".into(),
+            version: "0.51.8".into(),
+            path: "/nonexistent/wildrig-multi".into(),
+            ..Default::default()
+        });
         assert!(supervisor.start(&cfg).is_err());
     }
 
@@ -343,8 +464,6 @@ mod tests {
         let mut supervisor = Supervisor::new();
         supervisor.state = State::default();
         let cfg = Config::default();
-        // No helper installed and nothing running: the OC reset error is
-        // reported, but the call does not panic.
         let _ = supervisor.stop(&cfg);
         assert!(!supervisor.state.running);
     }

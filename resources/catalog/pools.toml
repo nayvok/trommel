@@ -1,0 +1,32 @@
+[[pools]]
+id = "pearlhash"
+name = "PearlHash"
+url = "pool.pearlhash.xyz:9000"
+fee_pct = 1.0
+api_kind = "pearlhash"
+min_payout = 1.0
+verified = true
+note_en = "Community pool used by the original setup; API supports balance and workers."
+note_ru = "Пул из исходной конфигурации; API отдаёт баланс и воркеров."
+
+[[pools]]
+id = "herominers"
+name = "HeroMiners"
+url = "pearl.herominers.com:1200"
+fee_pct = 0.0
+api_kind = "generic"
+min_payout = 1.0
+verified = false
+note_en = "0% PROP pool; check the current port and payout rules on the website."
+note_ru = "0% PROP-пул; актуальный порт и правила выплат проверяйте на сайте."
+
+[[pools]]
+id = "kryptex"
+name = "Kryptex"
+url = "prl-ru.kryptex.network:7048"
+fee_pct = 2.5
+api_kind = "generic"
+min_payout = 1.0
+verified = false
+note_en = "Convenient for RU users; WildRig handshake was unstable in the past."
+note_ru = "Удобен для РФ; с WildRig раньше были проблемы с рукопожатием."

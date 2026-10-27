@@ -1,0 +1,140 @@
+#!/bin/bash
+# trommel-oc — narrow root helper for NVIDIA power/clocks (Trommel).
+#
+# Installed at /usr/libexec/trommel/trommel-oc and invoked through pkexec:
+#   pkexec /usr/libexec/trommel/trommel-oc apply --gpu GPU-... --pl 300 --lgc 1620 --lmc 810
+#   pkexec /usr/libexec/trommel/trommel-oc reset --gpu GPU-... --pl 350
+#
+# Only a GPU UUID and numeric values in strict ranges are accepted. No paths,
+# shell metacharacters or arbitrary commands can pass through.
+set -euo pipefail
+
+NVIDIA_SMI=/usr/bin/nvidia-smi
+
+die() { echo "trommel-oc: $*" >&2; exit 1; }
+usage() {
+    cat >&2 <<'USAGE'
+usage:
+  trommel-oc apply --gpu GPU-UUID [--pl W] [--lgc MHz] [--lmc MHz]
+  trommel-oc reset --gpu GPU-UUID [--pl W]
+  trommel-oc status --gpu GPU-UUID
+USAGE
+    exit 2
+}
+
+[ "$(id -u)" -eq 0 ] || die "root is required (run through pkexec)"
+[ -x "$NVIDIA_SMI" ] || die "nvidia-smi not found"
+
+valid_uuid() {
+    [[ "$1" =~ ^GPU-[0-9a-fA-F-]{8,64}$ ]]
+}
+
+num() {
+    local value=$1 flag=$2 min=$3 max=$4
+    [[ $value =~ ^[0-9]{1,5}$ ]] || die "$flag: «$value» is not a number"
+    (( value >= min && value <= max )) || die "$flag: $value outside $min..$max"
+}
+
+wait_for_pl() {
+    local uuid=$1 want=$2
+    for _ in $(seq 1 20); do
+        local current
+        current=$("$NVIDIA_SMI" --query-gpu=power.limit --format=csv,noheader,nounits -i "$uuid" 2>/dev/null || echo 0)
+        case $current in
+            "$want"*|"$want".*) return 0 ;;
+        esac
+        sleep 0.15
+    done
+    return 0
+}
+
+apply() {
+    local uuid=""
+    local applied=0
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --gpu)
+                [ $# -ge 2 ] || die "--gpu: missing value"
+                valid_uuid "$2" || die "--gpu: invalid UUID"
+                uuid=$2
+                shift 2
+                ;;
+            --pl)
+                [ $# -ge 2 ] || die "--pl: missing value"
+                num "$2" --pl 50 1000
+                [ -n "$uuid" ] || die "--gpu must come before --pl"
+                "$NVIDIA_SMI" -i "$uuid" -pl "$2" >/dev/null || die "nvidia-smi -pl $2 failed"
+                wait_for_pl "$uuid" "$2"
+                applied=1
+                shift 2
+                ;;
+            --lgc)
+                [ $# -ge 2 ] || die "--lgc: missing value"
+                num "$2" --lgc 100 4000
+                [ -n "$uuid" ] || die "--gpu must come before --lgc"
+                "$NVIDIA_SMI" -i "$uuid" -lgc "$2,$2" >/dev/null || die "nvidia-smi -lgc $2 failed"
+                applied=1
+                shift 2
+                ;;
+            --lmc)
+                [ $# -ge 2 ] || die "--lmc: missing value"
+                num "$2" --lmc 100 12000
+                [ -n "$uuid" ] || die "--gpu must come before --lmc"
+                "$NVIDIA_SMI" -i "$uuid" -lmc "$2" >/dev/null || die "nvidia-smi -lmc $2 failed"
+                applied=1
+                shift 2
+                ;;
+            *)
+                die "unknown flag: $1"
+                ;;
+        esac
+    done
+    [ -n "$uuid" ] || die "--gpu <uuid> is required"
+    [ "$applied" -eq 1 ] || die "at least one tuning parameter is required"
+    echo "apply ok"
+}
+
+reset() {
+    local uuid=""
+    local pl=""
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --gpu)
+                [ $# -ge 2 ] || die "--gpu: missing value"
+                valid_uuid "$2" || die "--gpu: invalid UUID"
+                uuid=$2
+                shift 2
+                ;;
+            --pl)
+                [ $# -ge 2 ] || die "--pl: missing value"
+                num "$2" --pl 50 1000
+                pl=$2
+                shift 2
+                ;;
+            *)
+                die "unknown flag: $1"
+                ;;
+        esac
+    done
+    [ -n "$uuid" ] || die "--gpu <uuid> is required"
+    "$NVIDIA_SMI" -i "$uuid" -rgc >/dev/null 2>&1 || true
+    "$NVIDIA_SMI" -i "$uuid" -rmc >/dev/null 2>&1 || true
+    if [ -n "$pl" ]; then
+        "$NVIDIA_SMI" -i "$uuid" -pl "$pl" >/dev/null || die "nvidia-smi -pl $pl failed"
+        wait_for_pl "$uuid" "$pl"
+    fi
+    echo "reset ok"
+}
+
+command=${1:-}
+[ $# -gt 0 ] && shift
+case $command in
+    apply) apply "$@" ;;
+    reset) reset "$@" ;;
+    status)
+        [ $# -eq 2 ] && [ "$1" = "--gpu" ] || usage
+        valid_uuid "$2" || die "invalid UUID"
+        "$NVIDIA_SMI" -i "$2" -q -d CLOCK,POWER,TEMPERATURE | head -60
+        ;;
+    *) usage ;;
+esac

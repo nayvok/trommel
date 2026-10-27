@@ -1,0 +1,14 @@
+[Unit]
+Description=Trommel: start mining at login
+After=trommeld.service
+Requires=trommeld.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/trommel start
+ExecStop=/usr/bin/trommel stop
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

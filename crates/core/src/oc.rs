@@ -1,125 +1,310 @@
-//! Overclock/power control through the polkit helper `pearl-oc`.
+//! Overclock/power control and the pre-mining snapshot.
 //!
-//! Everything that needs root (`nvidia-smi -pl/-lgc/-lmc/-rgc/-rmc`) goes
-//! through a tiny root-owned script installed at `/usr/local/sbin/pearl-oc`,
-//! invoked via `pkexec`. A polkit rule allows the active local user to run it
-//! without a password prompt; without the rule pkexec shows the standard
-//! authentication dialog.
+//! All privileged operations go through the root-owned helper
+//! `/usr/libexec/trommel/trommel-oc` via `pkexec`. The helper accepts only a
+//! GPU UUID and numeric power/clock arguments; no paths or shell fragments.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::config::GpuCfg;
+use serde::{Deserialize, Serialize};
 
-/// Absolute path of the installed helper.
-pub const HELPER_PATH: &str = "/usr/local/sbin/pearl-oc";
+use crate::config::GpuTuning;
+use crate::nvidia::{self, GpuStats};
+
+pub const HELPER_PATH: &str = "/usr/libexec/trommel/trommel-oc";
 
 pub fn helper_path() -> PathBuf {
-    PathBuf::from(HELPER_PATH)
+    // Test/development hook: lets e2e run a fake helper without root.
+    std::env::var_os("TROMMEL_OC_HELPER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(HELPER_PATH))
 }
 
 pub fn helper_installed() -> bool {
     helper_path().exists()
 }
 
-/// Arguments for `apply`, mirroring `start-mining.sh`.
-fn apply_args(gpu: &GpuCfg) -> Vec<String> {
-    let mut args = vec!["apply".to_string()];
-    if let Some(pl) = gpu.power_limit {
-        args.push("--pl".into());
-        args.push(pl.to_string());
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GpuSnapshot {
+    pub index: u32,
+    pub uuid: String,
+    pub name: String,
+    pub power_limit_w: Option<f64>,
+    pub power_default_w: Option<f64>,
+    pub power_min_w: Option<f64>,
+    pub power_max_w: Option<f64>,
+    pub core_mhz: Option<u32>,
+    pub mem_mhz: Option<u32>,
+}
+
+impl GpuSnapshot {
+    pub fn restore_power_w(&self) -> Option<u32> {
+        self.power_limit_w
+            .or(self.power_default_w)
+            .map(|value| value.round() as u32)
     }
-    if let Some(core) = gpu.core_clock {
-        args.push("--lgc".into());
-        args.push(core.to_string());
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OcSnapshot {
+    pub boot_id: String,
+    pub created_at: u64,
+    pub gpus: Vec<GpuSnapshot>,
+}
+
+impl OcSnapshot {
+    pub fn for_uuid(&self, uuid: &str) -> Option<&GpuSnapshot> {
+        self.gpus.iter().find(|gpu| gpu.uuid == uuid)
     }
-    if let Some(mem) = gpu.memory_clock {
-        args.push("--lmc".into());
-        args.push(mem.to_string());
+}
+
+fn boot_id() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .map(|text| text.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Capture the current stock state of every GPU before applying a profile.
+pub fn snapshot() -> anyhow::Result<OcSnapshot> {
+    let gpus = nvidia::query_all()?;
+    Ok(OcSnapshot {
+        boot_id: boot_id(),
+        created_at: crate::util::now_unix(),
+        gpus: gpus
+            .into_iter()
+            .map(|gpu| GpuSnapshot {
+                index: gpu.index,
+                uuid: gpu.uuid,
+                name: gpu.name,
+                power_limit_w: gpu.power_limit_w,
+                power_default_w: gpu.power_default_w,
+                power_min_w: gpu.power_min_w,
+                power_max_w: gpu.power_max_w,
+                core_mhz: gpu.core_mhz,
+                mem_mhz: gpu.mem_mhz,
+            })
+            .collect(),
+    })
+}
+
+/// Best-effort snapshot when no file exists: restore the driver's default
+/// power limit instead of a hardcoded value.
+pub fn fallback_snapshot() -> Option<OcSnapshot> {
+    let gpus = nvidia::query_all().ok()?;
+    Some(OcSnapshot {
+        boot_id: boot_id(),
+        created_at: crate::util::now_unix(),
+        gpus: gpus
+            .into_iter()
+            .map(|gpu| GpuSnapshot {
+                index: gpu.index,
+                uuid: gpu.uuid,
+                name: gpu.name,
+                power_limit_w: gpu.power_default_w.or(gpu.power_limit_w),
+                power_default_w: gpu.power_default_w,
+                power_min_w: gpu.power_min_w,
+                power_max_w: gpu.power_max_w,
+                core_mhz: gpu.core_mhz,
+                mem_mhz: gpu.mem_mhz,
+            })
+            .collect(),
+    })
+}
+
+pub fn snapshot_path() -> PathBuf {
+    crate::paths::state_dir().join("oc-snapshot.json")
+}
+
+pub fn save_snapshot(snapshot: &OcSnapshot) -> anyhow::Result<()> {
+    let path = snapshot_path();
+    let text = serde_json::to_string_pretty(snapshot)?;
+    crate::config::write_atomic(&path, text.as_bytes())
+}
+
+pub fn load_snapshot() -> Option<OcSnapshot> {
+    let text = std::fs::read_to_string(snapshot_path()).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+pub fn clear_snapshot() {
+    let _ = std::fs::remove_file(snapshot_path());
+}
+
+/// Drop a snapshot captured before the last reboot.
+pub fn cleanup_stale_snapshot() -> bool {
+    let Some(snapshot) = load_snapshot() else {
+        return false;
+    };
+    if snapshot.boot_id != boot_id() {
+        clear_snapshot();
+        return true;
+    }
+    false
+}
+
+pub fn validate_uuid(value: &str) -> Result<(), String> {
+    let value = value.trim();
+    if !value.starts_with("GPU-") {
+        return Err("GPU UUID must start with GPU-".into());
+    }
+    if value.len() < 8 || value.len() > 64 {
+        return Err("GPU UUID has an unexpected length".into());
+    }
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() || c == '-' || c == 'G' || c == 'P' || c == 'U')
+    {
+        return Err("GPU UUID contains invalid characters".into());
+    }
+    Ok(())
+}
+
+fn apply_args(gpu: &GpuStats, tuning: &GpuTuning) -> Vec<String> {
+    let mut args = vec!["apply".to_string(), "--gpu".into(), gpu.uuid.clone()];
+    if let Some(pl) = tuning.power_limit_w {
+        args.extend(["--pl".into(), pl.to_string()]);
+    }
+    if let Some(core) = tuning.core_clock_mhz {
+        args.extend(["--lgc".into(), core.to_string()]);
+    }
+    if let Some(mem) = tuning.memory_clock_mhz {
+        args.extend(["--lmc".into(), mem.to_string()]);
     }
     args
 }
 
-/// Arguments for `reset`, mirroring `stop-mining.sh`.
-fn reset_args(gpu: &GpuCfg) -> Vec<String> {
-    vec![
-        "reset".to_string(),
-        "--pl".to_string(),
-        gpu.stock_power_limit.to_string(),
-    ]
+fn reset_args(gpu: &GpuSnapshot) -> Vec<String> {
+    let mut args = vec!["reset".to_string(), "--gpu".into(), gpu.uuid.clone()];
+    if let Some(pl) = gpu.restore_power_w() {
+        args.extend(["--pl".into(), pl.to_string()]);
+    }
+    args
 }
 
-/// Verification rules shared by the helper script and its tests.
 pub fn validate_apply_args(args: &[String]) -> Result<(), String> {
     if args.first().map(String::as_str) != Some("apply") {
-        return Err("первая подкоманда должна быть apply".into());
+        return Err("first subcommand must be apply".into());
     }
     let mut i = 1;
     let mut seen = 0;
+    let mut gpu_seen = false;
     while i < args.len() {
         let flag = args[i].as_str();
         let value = args
             .get(i + 1)
-            .ok_or_else(|| format!("{flag}: нет значения"))?;
-        let number: u32 = value
-            .parse()
-            .map_err(|_| format!("{flag}: «{value}» не число"))?;
-        match flag {
-            "--pl" if (50..=1000).contains(&number) => {}
-            "--lgc" | "--lmc" if (100..=4000).contains(&number) => {}
-            "--pl" | "--lgc" | "--lmc" => return Err(format!("{flag}: {number} вне диапазона")),
-            other => return Err(format!("неизвестный флаг {other}")),
+            .ok_or_else(|| format!("{flag}: missing value"))?;
+        if flag == "--gpu" {
+            validate_uuid(value)?;
+            gpu_seen = true;
+        } else {
+            let number: u32 = value
+                .parse()
+                .map_err(|_| format!("{flag}: «{value}» is not a number"))?;
+            match flag {
+                "--pl" if (50..=1000).contains(&number) => {}
+                "--lgc" | "--lmc" if (100..=4000).contains(&number) => {}
+                "--pl" | "--lgc" | "--lmc" => return Err(format!("{flag}: {number} out of range")),
+                other => return Err(format!("unknown flag {other}")),
+            }
         }
         seen += 1;
         i += 2;
     }
-    if seen == 0 {
-        return Err("нужен хотя бы один параметр".into());
+    if !gpu_seen {
+        return Err("--gpu <uuid> is required".into());
+    }
+    if seen < 2 {
+        return Err("at least one tuning parameter is required".into());
     }
     Ok(())
 }
 
 pub fn validate_reset_args(args: &[String]) -> Result<(), String> {
-    let expected = ["reset", "--pl"];
-    if args.len() != 3 || args[0] != expected[0] || args[1] != expected[1] {
-        return Err("использование: reset --pl <Ватт>".into());
+    if args.first().map(String::as_str) != Some("reset") {
+        return Err("first subcommand must be reset".into());
     }
-    let pl: u32 = args[2].parse().map_err(|_| "--pl: не число".to_string())?;
-    if !(50..=1000).contains(&pl) {
-        return Err("--pl вне диапазона".into());
+    let mut i = 1;
+    let mut gpu_seen = false;
+    let mut pl_seen = false;
+    while i < args.len() {
+        let flag = args[i].as_str();
+        let value = args
+            .get(i + 1)
+            .ok_or_else(|| format!("{flag}: missing value"))?;
+        match flag {
+            "--gpu" => {
+                validate_uuid(value)?;
+                gpu_seen = true;
+            }
+            "--pl" => {
+                let pl: u32 = value
+                    .parse()
+                    .map_err(|_| "--pl: not a number".to_string())?;
+                if !(50..=1000).contains(&pl) {
+                    return Err("--pl out of range".into());
+                }
+                pl_seen = true;
+            }
+            other => return Err(format!("unknown flag {other}")),
+        }
+        i += 2;
     }
+    if !gpu_seen {
+        return Err("--gpu <uuid> is required".into());
+    }
+    let _ = pl_seen;
     Ok(())
 }
 
-/// Apply the mining profile (300 W, locked clocks).
-pub fn apply(gpu: &GpuCfg) -> anyhow::Result<()> {
-    let args = apply_args(gpu);
-    validate_apply_args(&args).map_err(|e| anyhow::anyhow!(e))?;
-    if gpu.power_limit.is_none() && gpu.core_clock.is_none() && gpu.memory_clock.is_none() {
+/// Apply a tuning profile to one GPU.
+pub fn apply_tuning(gpu: &GpuStats, tuning: &GpuTuning) -> anyhow::Result<()> {
+    let args = apply_args(gpu, tuning);
+    if args.len() <= 3 {
         return Ok(());
     }
+    validate_apply_args(&args).map_err(|e| anyhow::anyhow!(e))?;
     run_helper(&args)
 }
 
-/// Restore stock behaviour (full power limit, unlocked clocks).
-pub fn reset(gpu: &GpuCfg) -> anyhow::Result<()> {
-    let args = reset_args(gpu);
+/// Restore one GPU to the snapshot (or driver default power limit).
+pub fn restore_gpu(snapshot: &GpuSnapshot) -> anyhow::Result<()> {
+    let args = reset_args(snapshot);
     validate_reset_args(&args).map_err(|e| anyhow::anyhow!(e))?;
     run_helper(&args)
+}
+
+pub fn restore_snapshot(snapshot: &OcSnapshot) -> anyhow::Result<()> {
+    let mut first_error = None;
+    for gpu in &snapshot.gpus {
+        if let Err(err) = restore_gpu(gpu) {
+            if first_error.is_none() {
+                first_error = Some(err);
+            }
+        }
+    }
+    match first_error {
+        Some(err) => Err(err),
+        None => {
+            clear_snapshot();
+            Ok(())
+        }
+    }
 }
 
 fn run_helper(args: &[String]) -> anyhow::Result<()> {
     if !helper_installed() {
         anyhow::bail!(
-            "polkit-хелпер не установлен ({HELPER_PATH}); запусти install.sh — разгон пропущен"
+            "polkit helper is not installed ({}); run the installer",
+            HELPER_PATH
         );
     }
-    let output = Command::new("pkexec")
-        .arg(HELPER_PATH)
-        .args(args)
-        .output()
-        .map_err(|e| anyhow::anyhow!("pkexec не запускается: {e}"))?;
-
+    let output = if let Some(helper) = std::env::var_os("TROMMEL_OC_HELPER") {
+        Command::new(helper).args(args).output()
+    } else {
+        Command::new("pkexec").arg(HELPER_PATH).args(args).output()
+    }
+    .map_err(|e| anyhow::anyhow!("cannot start OC helper: {e}"))?;
     if output.status.success() {
         return Ok(());
     }
@@ -128,17 +313,33 @@ fn run_helper(args: &[String]) -> anyhow::Result<()> {
     let message = if !stderr.is_empty() { stderr } else { stdout };
     let code = output.status.code().unwrap_or(-1);
     if code == 126 || code == 127 {
-        anyhow::bail!("применение настроек отменено (pkexec, код {code})");
+        anyhow::bail!("applying GPU settings was cancelled (pkexec, code {code})");
     }
-    anyhow::bail!("pearl-oc: {}", first_line(&message));
+    anyhow::bail!("trommel-oc: {}", first_line(&message))
 }
 
 fn first_line(text: &str) -> String {
     text.lines()
         .find(|line| !line.trim().is_empty())
-        .unwrap_or("ошибка")
+        .unwrap_or("error")
         .trim()
         .to_string()
+}
+
+/// Read a snapshot file if it belongs to the current boot.
+pub fn current_boot_snapshot() -> Option<OcSnapshot> {
+    let snapshot = load_snapshot()?;
+    if snapshot.boot_id == boot_id() {
+        Some(snapshot)
+    } else {
+        None
+    }
+}
+
+/// Test helper: write a snapshot to an explicit path.
+pub fn save_snapshot_to(path: &Path, snapshot: &OcSnapshot) -> anyhow::Result<()> {
+    let text = serde_json::to_string_pretty(snapshot)?;
+    crate::config::write_atomic(path, text.as_bytes())
 }
 
 #[cfg(test)]
@@ -149,42 +350,54 @@ mod tests {
         items.iter().map(|v| v.to_string()).collect()
     }
 
+    fn gpu() -> GpuStats {
+        GpuStats {
+            index: 0,
+            uuid: "GPU-12345678-1234-1234-1234-123456789abc".into(),
+            name: "RTX".into(),
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn builds_apply_args_from_config() {
-        let args = apply_args(&GpuCfg::default());
-        assert_eq!(
-            args,
-            s(&["apply", "--pl", "300", "--lgc", "1620", "--lmc", "810"])
-        );
+    fn builds_apply_args() {
+        let args = apply_args(&gpu(), &GpuTuning::default());
+        assert_eq!(args[0], "apply");
+        assert_eq!(args[1], "--gpu");
+        assert!(args.contains(&"--pl".to_string()));
         assert!(validate_apply_args(&args).is_ok());
     }
 
     #[test]
-    fn skips_missing_params() {
-        let gpu = GpuCfg {
-            power_limit: None,
-            core_clock: None,
-            memory_clock: None,
-            ..GpuCfg::default()
-        };
-        assert_eq!(apply_args(&gpu), s(&["apply"]));
-        assert!(validate_apply_args(&apply_args(&gpu)).is_err());
-    }
-
-    #[test]
     fn builds_reset_args() {
-        let args = reset_args(&GpuCfg::default());
-        assert_eq!(args, s(&["reset", "--pl", "350"]));
+        let snapshot = GpuSnapshot {
+            index: 0,
+            uuid: "GPU-12345678-1234-1234-1234-123456789abc".into(),
+            name: "RTX".into(),
+            power_limit_w: Some(350.0),
+            power_default_w: Some(350.0),
+            power_min_w: Some(100.0),
+            power_max_w: Some(400.0),
+            core_mhz: None,
+            mem_mhz: None,
+        };
+        let args = reset_args(&snapshot);
+        assert_eq!(args, s(&["reset", "--gpu", &snapshot.uuid, "--pl", "350"]));
         assert!(validate_reset_args(&args).is_ok());
     }
 
     #[test]
     fn rejects_bad_arguments() {
         assert!(validate_apply_args(&s(&["apply", "--pl", "5"])).is_err());
-        assert!(validate_apply_args(&s(&["apply", "--pl", "abc"])).is_err());
-        assert!(validate_apply_args(&s(&["apply", "--evil", "1"])).is_err());
-        assert!(validate_apply_args(&s(&["apply", "--pl"])).is_err());
-        assert!(validate_apply_args(&s(&["reset", "--pl", "350"])).is_err());
-        assert!(validate_reset_args(&s(&["reset", "--pl", "350", "x"])).is_err());
+        assert!(validate_apply_args(&s(&["apply", "--gpu", "nope", "--pl", "300"])).is_err());
+        assert!(validate_apply_args(&s(&["apply", "--gpu", "GPU-abc", "--pl", "5"])).is_err());
+        assert!(validate_reset_args(&s(&["reset", "--pl", "350"])).is_err());
+    }
+
+    #[test]
+    fn uuid_validation() {
+        assert!(validate_uuid("GPU-12345678-1234-1234-1234-123456789abc").is_ok());
+        assert!(validate_uuid("GPU-abc").is_err());
+        assert!(validate_uuid("1234").is_err());
     }
 }

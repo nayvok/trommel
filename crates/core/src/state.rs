@@ -1,6 +1,7 @@
-//! Runtime state (`~/.local/state/pearl-miner/state.json`).
+//! Runtime state (`~/.local/state/trommel/state.json`).
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use crate::paths;
 
@@ -8,17 +9,19 @@ use crate::paths;
 #[serde(default)]
 pub struct State {
     pub running: bool,
-    /// PID of the miner process we supervise.
     pub miner_pid: Option<u32>,
-    /// Unix timestamp of the first start of the current session.
     pub started_at: Option<u64>,
-    /// Automatic restarts since `started_at`.
     pub restarts: u32,
-    /// Last error shown in the UI (miner crash, missing permission, ...).
     pub last_error: Option<String>,
-    /// The miner runs but was not started by us (e.g. by `start-mining.sh`).
+    /// The miner was started outside of our control (legacy script/manual).
     pub external: bool,
-    /// Miner profile id of the running process.
+    /// A miner we started before a daemon restart; monitored by PID.
+    pub orphan: bool,
+    /// Active preset at start time.
+    pub preset_id: Option<String>,
+    pub miner: Option<String>,
+    pub miner_version: Option<String>,
+    /// Legacy field kept so old state files parse.
     pub profile: Option<String>,
 }
 
@@ -37,12 +40,10 @@ impl State {
         crate::config::write_atomic(&path, text.as_bytes())
     }
 
-    /// Remove the state file (after a clean stop).
     pub fn clear_file() {
         let _ = std::fs::remove_file(paths::state_path());
     }
 
-    /// Uptime in seconds, when running.
     pub fn uptime_s(&self) -> u64 {
         match (self.running, self.started_at) {
             (true, Some(started)) => crate::util::now_unix().saturating_sub(started),
@@ -50,7 +51,6 @@ impl State {
         }
     }
 
-    /// `true` when the recorded miner PID is alive *and* is a miner process.
     pub fn miner_alive(&self) -> bool {
         self.miner_pid.map(pid_matches_miner).unwrap_or(false)
     }
@@ -62,26 +62,71 @@ impl State {
             self.miner_pid = None;
             self.started_at = None;
             self.restarts = 0;
+            self.orphan = false;
         }
         self
     }
 }
 
-/// `true` when the process exists and its command line looks like a miner.
-pub fn pid_matches_miner(pid: u32) -> bool {
-    let cmdline = match std::fs::read(format!("/proc/{pid}/cmdline")) {
-        Ok(bytes) => bytes,
-        Err(_) => return false,
-    };
-    let line = String::from_utf8_lossy(&cmdline).replace('\0', " ");
-    let lowered = line.to_ascii_lowercase();
-    lowered.contains("wildrig")
-        || lowered.contains("srbminer")
-        || lowered.contains("onezero")
-        || lowered.contains("pearlhash")
+/// Basenames of the miner binaries we know about.
+fn known_binary(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    ["wildrig", "srbminer", "onezero"]
+        .iter()
+        .any(|needle| name.contains(needle))
 }
 
-/// Scan `/proc` for an already running Pearl miner (started outside our control).
+fn cmdline_tokens(pid: u32) -> Vec<String> {
+    match std::fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes)
+            .split('\0')
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// `true` when the process exists and its executable looks like a known miner.
+pub fn pid_matches_miner(pid: u32) -> bool {
+    let tokens = cmdline_tokens(pid);
+    if tokens.is_empty() {
+        return false;
+    }
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if known_binary(
+        Path::new(&exe)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(""),
+    ) {
+        return true;
+    }
+    // Script-based miners: check the executable/script argument only, never
+    // the whole shell command (config JSON contains miner names too).
+    let shell = ["bash", "sh", "dash", "zsh", "fish"]
+        .iter()
+        .any(|name| exe.ends_with(&format!("/{name}")) || exe == *name);
+    let candidate = if shell { tokens.get(1) } else { tokens.first() };
+    candidate
+        .map(|token| {
+            known_binary(
+                Path::new(token)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(token),
+            )
+        })
+        .unwrap_or(false)
+        && tokens
+            .iter()
+            .any(|token| token.contains("pearlhash") || token.contains("--algo"))
+}
+
+/// Scan `/proc` for an already running miner started outside our control.
 pub fn find_external_miner() -> Option<u32> {
     let entries = std::fs::read_dir("/proc").ok()?;
     let own = std::process::id();
@@ -95,17 +140,8 @@ pub fn find_external_miner() -> Option<u32> {
         if pid == own {
             continue;
         }
-        if let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) {
-            let line = String::from_utf8_lossy(&cmdline).replace('\0', " ");
-            let lowered = line.to_ascii_lowercase();
-            let is_miner = (lowered.contains("wildrig")
-                || lowered.contains("srbminer")
-                || lowered.contains("onezero"))
-                && lowered.contains("pearlhash");
-            if is_miner {
-                // Prefer the outermost (supervisor) process: lowest PID wins.
-                found = Some(found.map_or(pid, |current| current.min(pid)));
-            }
+        if pid_matches_miner(pid) {
+            found = Some(found.map_or(pid, |current| current.min(pid)));
         }
     }
     found
@@ -127,7 +163,7 @@ mod tests {
     fn stale_state_is_normalized() {
         let state = State {
             running: true,
-            miner_pid: Some(4_000_000), // never exists
+            miner_pid: Some(4_000_000),
             started_at: Some(1),
             restarts: 3,
             ..Default::default()
@@ -151,7 +187,11 @@ mod tests {
             restarts: 2,
             last_error: Some("boom".into()),
             external: false,
-            profile: Some("wildrig".into()),
+            orphan: false,
+            preset_id: Some("pearl-wildrig".into()),
+            miner: Some("wildrig".into()),
+            miner_version: Some("0.51.8".into()),
+            profile: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         let back: State = serde_json::from_str(&json).unwrap();

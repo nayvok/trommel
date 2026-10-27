@@ -1,22 +1,22 @@
-//! `pearl-miner` — command line client and GUI entry point.
+//! `trommel` — command line client and GUI entry point.
 
 use std::process::Command as ProcessCommand;
 
 use anyhow::anyhow;
 use clap::{Parser, Subcommand};
-use pearl_miner_core::config::Config;
-use pearl_miner_core::dbus::MinerProxy;
-use pearl_miner_core::paths;
-use pearl_miner_core::status::Status;
-use pearl_miner_core::util;
+use trommel_core::config::Config;
+use trommel_core::dbus::MinerProxy;
+use trommel_core::paths;
+use trommel_core::status::Status;
+use trommel_core::util;
 
 #[cfg(feature = "gui")]
 mod gui;
 
 #[derive(Parser)]
 #[command(
-    name = "pearl-miner",
-    version = pearl_miner_core::VERSION,
+    name = "trommel",
+    version = trommel_core::VERSION,
     about = "Pearl (PRL) miner: быстрый старт/стоп, статистика и настройки"
 )]
 struct Cli {
@@ -56,6 +56,58 @@ enum Cmd {
         #[command(subcommand)]
         command: ConfigCmd,
     },
+    /// Работа с пресетами
+    Preset {
+        #[command(subcommand)]
+        command: PresetCmd,
+    },
+    /// Работа с каталогом и установкой майнеров
+    Miner {
+        #[command(subcommand)]
+        command: MinerCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum PresetCmd {
+    /// Показать пресеты
+    List,
+    /// Сделать пресет активным
+    Use {
+        id: String,
+        /// Перезапустить майнер после смены
+        #[arg(long)]
+        restart: bool,
+        /// Остановить майнер после смены
+        #[arg(long)]
+        stop: bool,
+    },
+    /// Показать активный пресет
+    Show,
+}
+
+#[derive(Subcommand)]
+enum MinerCmd {
+    /// Показать каталог и установленные версии
+    List,
+    /// Зарегистрировать существующий бинарник
+    Import {
+        miner: String,
+        version: String,
+        path: String,
+    },
+    /// Скачать и установить бинарник по HTTPS
+    Install {
+        miner: String,
+        version: String,
+        url: String,
+        #[arg(long)]
+        sha256: String,
+        #[arg(long, default_value = "binary")]
+        archive: String,
+        #[arg(long)]
+        binary: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -76,6 +128,8 @@ async fn main() -> anyhow::Result<()> {
         None => open_gui(),
         Some(Cmd::Gui) => open_gui(),
         Some(Cmd::Daemon) => run_daemon(),
+        Some(Cmd::Preset { command }) => run_preset_command(command).await,
+        Some(Cmd::Miner { command }) => run_miner_command(command).await,
         Some(Cmd::Config { command }) => match command {
             ConfigCmd::Path => {
                 println!("{}", paths::config_path().display());
@@ -160,7 +214,7 @@ async fn connect() -> anyhow::Result<MinerProxy<'static>> {
         // Nothing is running: try to start the daemon (D-Bus activation or PATH).
         if let Err(err) = spawn_daemon() {
             return Err(anyhow!(
-                "фоновый сервис не запущен ({err}). Запусти: systemctl --user start pearl-minerd"
+                "фоновый сервис не запущен ({err}). Запусти: systemctl --user start trommeld"
             ));
         }
         for _ in 0..40 {
@@ -177,14 +231,14 @@ async fn connect() -> anyhow::Result<MinerProxy<'static>> {
 }
 
 async fn name_has_owner(bus: &zbus::fdo::DBusProxy<'_>) -> bool {
-    match zbus::names::BusName::try_from(pearl_miner_core::BUS_NAME) {
+    match zbus::names::BusName::try_from(trommel_core::BUS_NAME) {
         Ok(name) => bus.name_has_owner(name).await.unwrap_or(false),
         Err(_) => false,
     }
 }
 
 fn spawn_daemon() -> anyhow::Result<()> {
-    for candidate in ["pearl-minerd", "pearl-miner-daemon"] {
+    for candidate in ["trommeld", "trommel-daemon"] {
         let found = std::process::Command::new("sh")
             .arg("-c")
             .arg(format!("command -v {candidate}"))
@@ -200,13 +254,13 @@ fn spawn_daemon() -> anyhow::Result<()> {
             return Ok(());
         }
     }
-    anyhow::bail!("pearl-minerd не найден в PATH")
+    anyhow::bail!("trommeld не найден в PATH")
 }
 
 fn run_daemon() -> anyhow::Result<()> {
-    let status = ProcessCommand::new("pearl-minerd").status()?;
+    let status = ProcessCommand::new("trommeld").status()?;
     if !status.success() {
-        anyhow::bail!("pearl-minerd завершился с кодом {:?}", status.code());
+        anyhow::bail!("trommeld завершился с кодом {:?}", status.code());
     }
     Ok(())
 }
@@ -224,6 +278,133 @@ fn open_gui() -> anyhow::Result<()> {
     }
 }
 
+async fn run_preset_command(command: PresetCmd) -> anyhow::Result<()> {
+    let mut cfg = Config::load_or_default();
+    match command {
+        PresetCmd::List => {
+            for (id, preset) in &cfg.presets {
+                let active = if cfg.active_preset.as_deref() == Some(id.as_str()) {
+                    "*"
+                } else {
+                    " "
+                };
+                println!(
+                    "{active} {:<20} {:<24} {} {} · {:.2}%",
+                    id,
+                    preset.name,
+                    preset.miner,
+                    preset.miner_version,
+                    preset.total_fee_pct()
+                );
+            }
+            Ok(())
+        }
+        PresetCmd::Show => {
+            let preset = cfg
+                .preset()
+                .cloned()
+                .ok_or_else(|| anyhow!("no active preset"))?;
+            println!("{}", serde_json::to_string_pretty(&preset)?);
+            Ok(())
+        }
+        PresetCmd::Use { id, restart, stop } => {
+            if !cfg.presets.contains_key(&id) {
+                anyhow::bail!("unknown preset {id}");
+            }
+            cfg.active_preset = Some(id.clone());
+            cfg.save()?;
+            let mode = if stop {
+                "stop"
+            } else if restart {
+                "restart"
+            } else {
+                "live"
+            };
+            if let Ok(proxy) = connect().await {
+                let json = serde_json::to_string(&cfg)?;
+                match proxy.apply_config(&json, mode).await {
+                    Ok(_) => println!("active preset: {id} ({mode})"),
+                    Err(err) => eprintln!("preset saved, but apply failed: {err}"),
+                }
+            } else {
+                println!("active preset: {id}");
+            }
+            Ok(())
+        }
+    }
+}
+
+async fn run_miner_command(command: MinerCmd) -> anyhow::Result<()> {
+    let mut cfg = Config::load_or_default();
+    match command {
+        MinerCmd::List => {
+            for miner in trommel_core::catalog::miners() {
+                let installed = trommel_core::catalog::installed_versions(&cfg, &miner.id);
+                println!(
+                    "{:<12} {:<22} {:>6.2}%  {}",
+                    miner.id,
+                    miner.name,
+                    miner.fee_pct,
+                    if installed.is_empty() {
+                        "not installed".to_string()
+                    } else {
+                        format!("installed: {}", installed.join(", "))
+                    }
+                );
+            }
+            Ok(())
+        }
+        MinerCmd::Import {
+            miner,
+            version,
+            path,
+        } => {
+            let path =
+                std::fs::canonicalize(&path).map_err(|e| anyhow!("cannot resolve {path}: {e}"))?;
+            if !path.is_file() {
+                anyhow::bail!("not a file: {}", path.display());
+            }
+            cfg.add_install(trommel_core::config::MinerInstall {
+                miner: miner.clone(),
+                version: version.clone(),
+                path: path.to_string_lossy().into_owned(),
+                sha256: String::new(),
+                source_url: String::new(),
+                verified: false,
+                custom: true,
+                installed_at: trommel_core::util::now_unix(),
+            });
+            cfg.save()?;
+            println!("imported {miner} {version}");
+            Ok(())
+        }
+        MinerCmd::Install {
+            miner,
+            version,
+            url,
+            sha256,
+            archive,
+            binary,
+        } => {
+            let request = trommel_core::download::DownloadRequest {
+                miner: miner.clone(),
+                version: version.clone(),
+                url: url.clone(),
+                sha256,
+                archive,
+                binary,
+                source_url: url,
+            };
+            let root = trommel_core::download::miner_root();
+            let install = trommel_core::download::install(&request, &root)?;
+            cfg.add_install(install);
+            cfg.save()?;
+            println!("installed {miner} {version}");
+            Ok(())
+        }
+    }
+}
+
 fn print_human(status: &Status) {
     let state = if status.state.running {
         if status.state.external {
@@ -235,7 +416,7 @@ fn print_human(status: &Status) {
         "остановлен"
     };
     println!(
-        "Pearl Miner {} — {}{}",
+        "Trommel {} — {}{}",
         status.version,
         state,
         if status.state.running {
@@ -244,6 +425,18 @@ fn print_human(status: &Status) {
             String::new()
         }
     );
+
+    if !status.miner_info.name.is_empty() {
+        println!(
+            "Пресет:   {} · {} {} · комиссия {:.2}% (майнер {:.2}% + пул {:.2}%)",
+            status.state.preset_name,
+            status.miner_info.name,
+            status.miner_info.version,
+            status.miner_info.total_fee_pct,
+            status.miner_info.miner_fee_pct,
+            status.miner_info.pool_fee_pct
+        );
+    }
 
     if status.state.running {
         println!(
@@ -267,33 +460,38 @@ fn print_human(status: &Status) {
         );
     }
 
-    match &status.gpu {
-        Some(gpu) => println!(
-            "GPU:      {} · {} °C · {} W · вентилятор {}% · {} / {} MHz",
-            gpu.name,
-            gpu.temp_c
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "—".into()),
-            gpu.power_w
-                .map(|v| format!("{v:.0}"))
-                .unwrap_or_else(|| "—".into()),
-            gpu.fan_pct
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "—".into()),
-            gpu.core_mhz
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "—".into()),
-            gpu.mem_mhz
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "—".into()),
-        ),
-        None => println!(
+    if status.gpus.is_empty() {
+        println!(
             "GPU:      недоступен ({})",
             status
                 .gpu_error
                 .clone()
                 .unwrap_or_else(|| "нет данных".into())
-        ),
+        );
+    } else {
+        for gpu in &status.gpus {
+            println!(
+                "GPU #{}:   {} · {} °C · {} W · вентилятор {}% · {} / {} MHz · {}",
+                gpu.index,
+                gpu.name,
+                gpu.temp_c
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "—".into()),
+                gpu.power_w
+                    .map(|v| format!("{v:.0}"))
+                    .unwrap_or_else(|| "—".into()),
+                gpu.fan_pct
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "—".into()),
+                gpu.core_mhz
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "—".into()),
+                gpu.mem_mhz
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "—".into()),
+                gpu.uuid
+            );
+        }
     }
 
     if let (Some(accepted), Some(acceptance)) = (status.miner.accepted, status.acceptance_pct()) {
@@ -327,7 +525,7 @@ fn print_human(status: &Status) {
 }
 
 fn print_bench(json: &str) {
-    let report = match pearl_miner_core::bench::BenchReport::from_json(json) {
+    let report = match trommel_core::bench::BenchReport::from_json(json) {
         Ok(report) => report,
         Err(err) => {
             println!("Не удалось разобрать отчёт: {err}");
@@ -351,7 +549,7 @@ fn print_bench(json: &str) {
                 .raw_hps
                 .map(util::format_hashrate)
                 .unwrap_or_else(|| "—".into()),
-            entry.dev_fee_pct,
+            entry.total_fee_pct,
             entry
                 .effective_hps
                 .map(util::format_hashrate)

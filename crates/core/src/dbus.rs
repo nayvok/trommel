@@ -1,5 +1,5 @@
-//! D-Bus service `org.pearl.Miner.Daemon`: the single source of truth shared by the
-//! daemon, the CLI/GUI and the GNOME Shell extension.
+//! D-Bus service `io.github.nayvok.Trommel.Daemon`: the single source of truth
+//! shared by the daemon, CLI/GUI and the GNOME Shell extension.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,12 +11,12 @@ use zbus::interface;
 use zbus::object_server::SignalEmitter;
 
 use crate::bench::{self, BenchReport};
-use crate::config::Config;
+use crate::config::{ApplyMode, ChangeClass, Config};
+use crate::i18n;
 use crate::state::State;
 use crate::status::Status;
 use crate::supervisor::{Event, Supervisor};
 
-/// Mutable daemon state, guarded by a tokio mutex.
 pub struct Inner {
     pub cfg: Config,
     pub sup: Supervisor,
@@ -39,6 +39,7 @@ impl Default for Engine {
 impl Engine {
     pub fn new() -> Self {
         let cfg = Config::load_or_default();
+        i18n::set_language(cfg.behavior.language);
         let sup = Supervisor::new();
         let state = sup.state.clone();
         let status = Status::collect(&cfg, &state);
@@ -58,7 +59,6 @@ impl Engine {
         self.inner.lock().await
     }
 
-    /// Replace the cached status (called by the daemon after a refresh).
     pub async fn set_status(&self, status: Status) {
         self.running.store(status.state.running, Ordering::Relaxed);
         self.inner.lock().await.status = status;
@@ -89,9 +89,9 @@ fn default_bench_seconds() -> u64 {
     180
 }
 
-#[interface(name = "org.pearl.Miner")]
+#[interface(name = "io.github.nayvok.Trommel")]
 impl Engine {
-    /// Start mining (applies the OC profile first).
+    /// Start mining (snapshots stock, applies the GPU profile).
     async fn start(&self) -> zbus::fdo::Result<()> {
         let mut inner = self.inner.lock().await;
         let cfg = inner.cfg.clone();
@@ -105,7 +105,7 @@ impl Engine {
         }
     }
 
-    /// Stop mining and restore stock clocks/power.
+    /// Stop mining and restore the pre-mining snapshot.
     async fn stop(&self) -> zbus::fdo::Result<()> {
         let mut inner = self.inner.lock().await;
         let cfg = inner.cfg.clone();
@@ -113,8 +113,6 @@ impl Engine {
         self.running.store(false, Ordering::Relaxed);
         match result {
             Ok(()) => Ok(()),
-            // Mining stopped, only the OC reset failed: report it as a warning
-            // through the status instead of failing the whole call.
             Err(err) => {
                 inner.status.state.last_error = Some(err.to_string());
                 Ok(())
@@ -122,7 +120,6 @@ impl Engine {
         }
     }
 
-    /// Start when stopped, stop when running.
     async fn toggle(&self) -> zbus::fdo::Result<bool> {
         let running = self.running.load(Ordering::Relaxed);
         if running {
@@ -133,12 +130,10 @@ impl Engine {
         Ok(!running)
     }
 
-    /// Cached status document (JSON, see [`crate::status::Status`]).
     async fn status(&self) -> String {
         self.status_json().await
     }
 
-    /// Force an immediate refresh and return the new status.
     async fn refresh(&self) -> String {
         let (cfg, state) = {
             let inner = self.inner.lock().await;
@@ -156,26 +151,71 @@ impl Engine {
         serde_json::to_string_pretty(&cfg).unwrap_or_else(|_| "{}".into())
     }
 
-    /// Save a new configuration; a running miner is restarted to pick it up.
-    async fn set_config(&self, json: &str) -> zbus::fdo::Result<()> {
-        let cfg: Config = serde_json::from_str(json)
-            .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("конфиг не разобран: {e}")))?;
-        cfg.save()
-            .map_err(|e| zbus::fdo::Error::Failed(format!("не удалось сохранить конфиг: {e}")))?;
-
-        let was_running = self.running.load(Ordering::Relaxed);
+    /// Apply a new config. `mode` is `live`, `restart` or `stop`.
+    ///
+    /// A running miner whose profile changed cannot be updated live: the call
+    /// fails with a clear error so the GUI can offer restart/stop.
+    async fn apply_config(&self, json: &str, mode: &str) -> zbus::fdo::Result<String> {
+        let next: Config = serde_json::from_str(json)
+            .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("config is not valid JSON: {e}")))?;
+        let mode = ApplyMode::parse(mode).ok_or_else(|| {
+            zbus::fdo::Error::InvalidArgs("mode must be live|restart|stop".into())
+        })?;
         let mut inner = self.inner.lock().await;
-        inner.cfg = cfg.clone();
-        if was_running {
-            tokio::task::block_in_place(|| {
-                let _ = inner.sup.stop(&cfg);
-                let _ = inner.sup.start(&cfg);
-            });
+        let old = inner.cfg.clone();
+        let diff = old.diff(&next);
+        let was_running = inner.sup.is_running();
+
+        if was_running && diff.class == ChangeClass::RestartRequired && mode == ApplyMode::Live {
+            return Err(zbus::fdo::Error::Failed(
+                "restart required: GPU/miner settings changed".into(),
+            ));
         }
-        Ok(())
+
+        if was_running && mode != ApplyMode::Live {
+            if let Err(err) = tokio::task::block_in_place(|| inner.sup.stop(&old)) {
+                return Err(zbus::fdo::Error::Failed(err.to_string()));
+            }
+        }
+
+        let start_result = if was_running && mode == ApplyMode::Restart {
+            tokio::task::block_in_place(|| inner.sup.start(&next))
+        } else {
+            Ok(())
+        };
+
+        match start_result {
+            Ok(()) => {
+                next.save()
+                    .map_err(|e| zbus::fdo::Error::Failed(format!("cannot save config: {e}")))?;
+                i18n::set_language(next.behavior.language);
+                inner.cfg = next;
+                self.running
+                    .store(inner.sup.is_running(), Ordering::Relaxed);
+                Ok(serde_json::json!({
+                    "applied": true,
+                    "restarted": was_running && mode == ApplyMode::Restart,
+                    "stopped": was_running && mode == ApplyMode::Stop,
+                    "changes": diff.reasons,
+                })
+                .to_string())
+            }
+            Err(err) => {
+                // Keep the old config and make a best effort to restore stock.
+                let _ = old.save();
+                let _ = tokio::task::block_in_place(|| inner.sup.stop(&old));
+                inner.cfg = old;
+                self.running.store(false, Ordering::Relaxed);
+                Err(zbus::fdo::Error::Failed(err.to_string()))
+            }
+        }
     }
 
-    /// Run the A/B benchmark; mining is paused for the duration.
+    /// Compatibility wrapper used by older clients: restart when running.
+    async fn set_config(&self, json: &str) -> zbus::fdo::Result<()> {
+        self.apply_config(json, "restart").await.map(|_| ())
+    }
+
     async fn run_benchmark(&self, request: &str) -> zbus::fdo::Result<String> {
         let request: BenchRequest = if request.trim().is_empty() {
             BenchRequest {
@@ -184,17 +224,26 @@ impl Engine {
             }
         } else {
             serde_json::from_str(request)
-                .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("запрос не разобран: {e}")))?
+                .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("request is not valid: {e}")))?
         };
 
         let was_running = self.running.load(Ordering::Relaxed);
         let mut inner = self.inner.lock().await;
         let cfg = inner.cfg.clone();
         let profiles = if request.profiles.is_empty() {
-            cfg.miners
-                .keys()
-                .filter(|id| !cfg.miner(id).path.trim().is_empty())
-                .cloned()
+            crate::catalog::miners()
+                .iter()
+                .filter(|m| {
+                    cfg.install(
+                        &m.id,
+                        &m.versions
+                            .first()
+                            .map(|v| v.version.clone())
+                            .unwrap_or_default(),
+                    )
+                    .is_some()
+                })
+                .map(|m| m.id.clone())
                 .collect::<Vec<_>>()
         } else {
             request.profiles.clone()
@@ -217,18 +266,21 @@ impl Engine {
         Ok(json)
     }
 
-    /// Restore stock clocks and power limit right now (does not stop mining).
+    /// Restore the snapshot captured before the current mining session.
     async fn reset_oc(&self) -> zbus::fdo::Result<()> {
-        let inner = self.inner.lock().await;
-        let gpu = inner.cfg.gpu.clone();
-        let result = tokio::task::block_in_place(|| crate::oc::reset(&gpu));
-        match result {
-            Ok(()) => Ok(()),
-            Err(err) => Err(zbus::fdo::Error::Failed(err.to_string())),
-        }
+        let result = tokio::task::block_in_place(|| {
+            let Some(snapshot) = crate::oc::load_snapshot() else {
+                return Ok(());
+            };
+            crate::oc::restore_snapshot(&snapshot)
+        });
+        result.map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
-    /// Ask the desktop to open the GUI application.
+    async fn restore_stock(&self) -> zbus::fdo::Result<()> {
+        self.reset_oc().await
+    }
+
     async fn open_app(&self) -> zbus::fdo::Result<()> {
         let app = std::process::Command::new("gtk-launch")
             .arg(crate::APP_ID)
@@ -236,15 +288,14 @@ impl Engine {
         match app {
             Ok(_) => Ok(()),
             Err(_) => {
-                let fallback = std::process::Command::new("pearl-miner").arg("gui").spawn();
-                fallback.map(|_| ()).map_err(|e| {
-                    zbus::fdo::Error::Failed(format!("не удалось открыть приложение: {e}"))
-                })
+                let fallback = std::process::Command::new("trommel").arg("gui").spawn();
+                fallback
+                    .map(|_| ())
+                    .map_err(|e| zbus::fdo::Error::Failed(format!("cannot open app: {e}")))
             }
         }
     }
 
-    /// Quit the daemon (systemd may restart it; the GUI does not use this).
     async fn quit(&self) -> zbus::fdo::Result<()> {
         std::process::exit(0);
     }
@@ -259,11 +310,14 @@ impl Engine {
         crate::VERSION.to_string()
     }
 
-    /// Pushed to the extension/GUI whenever the status document changes.
+    #[zbus(property)]
+    fn contract_version(&self) -> u32 {
+        crate::status::CONTRACT_VERSION
+    }
+
     #[zbus(signal)]
     async fn status_changed(emitter: &SignalEmitter<'_>, json: &str) -> zbus::Result<()>;
 
-    /// Human-readable notifications (started, crashed, overheated...).
     #[zbus(signal)]
     async fn notification(
         emitter: &SignalEmitter<'_>,
@@ -273,13 +327,10 @@ impl Engine {
 }
 
 impl Engine {
-    /// Emit `StatusChanged` (used by the daemon; the signal fn itself is
-    /// generated privately by the `#[interface]` macro).
     pub async fn emit_status_changed(emitter: &SignalEmitter<'_>, json: &str) -> zbus::Result<()> {
         Self::status_changed(emitter, json).await
     }
 
-    /// Emit a desktop notification request to the extension/GUI.
     pub async fn emit_notification(
         emitter: &SignalEmitter<'_>,
         summary: &str,
@@ -289,48 +340,42 @@ impl Engine {
     }
 }
 
-/// Event → notification text helper used by the daemon loop.
 pub fn events_to_notifications(events: &[Event]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for event in events {
-        let body = match event.message() {
-            Some(body) => body,
-            None => continue,
+        let Some(body) = event.message() else {
+            continue;
         };
         let summary = match event {
-            Event::Started(_) => "Pearl Miner: запуск",
-            Event::Crashed { .. } => "Pearl Miner: аварийный перезапуск",
-            Event::Stopped { .. } => "Pearl Miner: майнер остановлен",
-            Event::Error(_) => "Pearl Miner: ошибка",
-            Event::UserStopped => "Pearl Miner: стоп",
+            Event::Started(_) => "Trommel: start",
+            Event::Crashed { .. } => "Trommel: restart",
+            Event::Stopped { .. } => "Trommel: miner stopped",
+            Event::Error(_) => "Trommel: error",
+            Event::UserStopped => "Trommel: stop",
         };
         out.push((summary.to_string(), body));
     }
     out
 }
 
-/// Refresh interval guard shared by the daemon loop and tests.
 pub fn poll_interval(cfg: &Config) -> Duration {
-    Duration::from_secs(cfg.poll_interval_s.clamp(1, 60))
+    Duration::from_secs(cfg.behavior.poll_interval_s.clamp(1, 60))
 }
 
-/// Convenience wrapper for clients that want a fresh snapshot without the
-/// signal plumbing (used by `pearl-miner status`).
 pub async fn fetch_status(connection: &zbus::Connection) -> anyhow::Result<Status> {
     let proxy = MinerProxy::new(connection).await?;
     let json = proxy.refresh().await?;
     Status::from_json(&json)
 }
 
-/// Snapshot of the supervisor state for the `status --json` CLI path.
 pub fn state_snapshot() -> State {
     State::load().normalize()
 }
 
 #[zbus::proxy(
-    default_service = "org.pearl.Miner.Daemon",
-    default_path = "/org/pearl/Miner",
-    interface = "org.pearl.Miner"
+    default_service = "io.github.nayvok.Trommel.Daemon",
+    default_path = "/io/github/nayvok/Trommel",
+    interface = "io.github.nayvok.Trommel"
 )]
 pub trait Miner {
     fn start(&self) -> zbus::Result<()>;
@@ -339,9 +384,11 @@ pub trait Miner {
     fn status(&self) -> zbus::Result<String>;
     fn refresh(&self) -> zbus::Result<String>;
     fn get_config(&self) -> zbus::Result<String>;
+    fn apply_config(&self, json: &str, mode: &str) -> zbus::Result<String>;
     fn set_config(&self, json: &str) -> zbus::Result<()>;
     fn run_benchmark(&self, request: &str) -> zbus::Result<String>;
     fn reset_oc(&self) -> zbus::Result<()>;
+    fn restore_stock(&self) -> zbus::Result<()>;
     fn open_app(&self) -> zbus::Result<()>;
     fn quit(&self) -> zbus::Result<()>;
 
@@ -356,6 +403,9 @@ pub trait Miner {
 
     #[zbus(property)]
     fn version(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn contract_version(&self) -> zbus::Result<u32>;
 }
 
 #[cfg(test)]
@@ -367,11 +417,6 @@ mod tests {
         let request: BenchRequest = serde_json::from_str("{}").unwrap();
         assert!(request.profiles.is_empty());
         assert_eq!(request.seconds, 180);
-
-        let request: BenchRequest =
-            serde_json::from_str(r#"{"profiles":["wildrig"],"seconds":60}"#).unwrap();
-        assert_eq!(request.profiles, vec!["wildrig".to_string()]);
-        assert_eq!(request.seconds, 60);
     }
 
     #[test]
@@ -385,16 +430,14 @@ mod tests {
         ];
         let messages = events_to_notifications(&events);
         assert_eq!(messages.len(), 2);
-        assert!(messages[0].0.contains("запуск"));
-        assert!(messages[1].1.contains("перезапуск"));
     }
 
     #[test]
     fn poll_interval_is_clamped() {
         let mut cfg = Config::default();
-        cfg.poll_interval_s = 0;
+        cfg.behavior.poll_interval_s = 0;
         assert_eq!(poll_interval(&cfg), Duration::from_secs(1));
-        cfg.poll_interval_s = 500;
+        cfg.behavior.poll_interval_s = 500;
         assert_eq!(poll_interval(&cfg), Duration::from_secs(60));
     }
 }

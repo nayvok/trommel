@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.nayvok.Trommel</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+
+  <name>Trommel</name>
+  <summary>Control your NVIDIA mining rig, miners and presets</summary>
+  <summary xml:lang="ru">Управление NVIDIA-ригом, майнерами и пресетами</summary>
+
+  <description>
+    <p>
+      Trommel is a GTK4/libadwaita control room for NVIDIA mining rigs. It shows
+      live hashrate, temperature and power for every card, keeps reusable presets
+      for different coins, pools and GPU profiles, and downloads supported miners
+      on demand.
+    </p>
+    <p xml:lang="ru">
+      Trommel — пульт управления NVIDIA-ригом на GTK4/libadwaita. Показывает
+      хешрейт, температуру и мощность каждой карты, хранит пресеты для разных
+      монет, пулов и профилей GPU и скачивает поддерживаемые майнеры по запросу.
+    </p>
+    <p>
+      The app is a manager, not a miner: binaries are downloaded separately and
+      only one miner runs at a time. Before mining it snapshots the stock power
+      limit and clocks of every GPU and restores them on stop.
+    </p>
+    <p xml:lang="ru">
+      Это менеджер, а не майнер: бинарники скачиваются отдельно, одновременно
+      работает только один майнер. Перед запуском сохраняется стоковый лимит
+      питания и частоты каждой карты, а при остановке они восстанавливаются.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.nayvok.Trommel.desktop</launchable>
+
+  <url type="homepage">https://github.com/nayvok</url>
+  <url type="bugtracker">https://github.com/nayvok</url>
+  <url type="vcs-browser">https://github.com/nayvok</url>
+
+  <developer id="io.github.nayvok">
+    <name>nayvok</name>
+  </developer>
+
+  <categories>
+    <category>Utility</category>
+    <category>System</category>
+  </categories>
+
+  <keywords>
+    <keyword>mining</keyword>
+    <keyword>gpu</keyword>
+    <keyword>nvidia</keyword>
+    <keyword>rig</keyword>
+    <keyword>hashrate</keyword>
+    <keyword>miner</keyword>
+    <keyword>pool</keyword>
+    <keyword>preset</keyword>
+    <keyword xml:lang="ru">майнинг</keyword>
+    <keyword xml:lang="ru">риг</keyword>
+    <keyword xml:lang="ru">хешрейт</keyword>
+    <keyword xml:lang="ru">майнер</keyword>
+    <keyword xml:lang="ru">пул</keyword>
+    <keyword xml:lang="ru">пресет</keyword>
+  </keywords>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#3584e4</color>
+    <color type="primary" scheme_preference="dark">#1c71d8</color>
+  </branding>
+
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </recommends>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.2.0" date="2026-10-28">
+      <description>
+        <p>First Trommel release: multi-GPU dashboard, presets, miner catalogue, stock snapshot and GNOME extension.</p>
+        <p xml:lang="ru">Первый выпуск Trommel: мульти-GPU дашборд, пресеты, каталог майнеров, снимок стока и расширение GNOME.</p>
+      </description>
+    </release>
+  </releases>
+</component>

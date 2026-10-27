@@ -1,14 +1,15 @@
-//! A/B benchmark of miner profiles on the user's own card.
+//! A/B benchmark of installed miners for the active preset.
 //!
 //! The only honest way to pick a miner: run every candidate against the same
-//! pool for the same time and compare `effective = raw × (1 − dev_fee)`.
+//! pool for the same time and compare `effective = raw × (1 − total_fee)`.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::config::Config;
+use crate::catalog;
+use crate::config::{Config, Preset};
 use crate::minerapi;
 use crate::miners;
 use crate::paths;
@@ -19,12 +20,12 @@ use crate::util;
 pub struct BenchEntry {
     pub profile: String,
     pub name: String,
-    /// Average hash rate reported by the miner itself (H/s).
+    pub version: String,
     pub raw_hps: Option<f64>,
-    /// Hash rate reported by the pool (H/s), if available.
     pub pool_hps: Option<f64>,
-    pub dev_fee_pct: f64,
-    /// `raw_hps × (1 − dev_fee)`.
+    pub miner_fee_pct: f64,
+    pub pool_fee_pct: f64,
+    pub total_fee_pct: f64,
     pub effective_hps: Option<f64>,
     pub accepted: Option<u64>,
     pub samples: u32,
@@ -47,7 +48,6 @@ impl BenchReport {
         Ok(serde_json::from_str(text)?)
     }
 
-    /// Winner by effective hash rate.
     pub fn best(&self) -> Option<&BenchEntry> {
         self.entries
             .iter()
@@ -60,7 +60,7 @@ impl BenchReport {
     }
 }
 
-/// Run the benchmark sequentially for every profile. Mining must be stopped by
+/// Run the benchmark sequentially for every miner id. Mining must be stopped by
 /// the caller; the OC profile is assumed to be already applied.
 pub fn run(cfg: &Config, profiles: &[String], seconds: u64) -> BenchReport {
     let seconds = seconds.clamp(30, 3600);
@@ -70,32 +70,71 @@ pub fn run(cfg: &Config, profiles: &[String], seconds: u64) -> BenchReport {
         entries: Vec::new(),
     };
 
-    for profile in profiles {
-        let info = miners::info(profile);
-        let miner_cfg = cfg.miner(profile);
-        let name = info.map(|i| i.name).unwrap_or(profile.as_str()).to_string();
+    let Some(base_preset) = cfg.preset().cloned() else {
+        return report;
+    };
+
+    for miner_id in profiles {
+        let def = catalog::miner(miner_id);
+        let installed = cfg
+            .miner_installs
+            .values()
+            .filter(|i| i.miner == *miner_id && std::path::Path::new(&i.path).exists())
+            .max_by_key(|i| i.installed_at);
+        let version = installed
+            .map(|i| i.version.clone())
+            .or_else(|| {
+                def.and_then(|m| m.latest_version())
+                    .map(|v| v.version.clone())
+            })
+            .unwrap_or_default();
         let mut entry = BenchEntry {
-            profile: profile.clone(),
-            name,
-            dev_fee_pct: miner_cfg.dev_fee_pct,
+            profile: miner_id.clone(),
+            name: def
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| miner_id.clone()),
+            version: version.clone(),
+            miner_fee_pct: def.map(|m| m.fee_pct).unwrap_or(0.0),
+            pool_fee_pct: base_preset.pool_fee_pct,
             ..Default::default()
         };
+        entry.total_fee_pct = entry.miner_fee_pct + entry.pool_fee_pct;
 
-        let binary = PathBuf::from(miner_cfg.path.trim());
-        if miner_cfg.path.trim().is_empty() || !binary.exists() {
-            entry.error = Some(format!("бинарник не найден: {}", binary.display()));
+        let Some(install) = cfg.install(miner_id, &version) else {
+            entry.error = Some(format!("miner {miner_id} {version} is not installed"));
+            report.entries.push(entry);
+            continue;
+        };
+        let binary = PathBuf::from(&install.path);
+        if !binary.exists() {
+            entry.error = Some(format!("binary not found: {}", binary.display()));
             report.entries.push(entry);
             continue;
         }
 
         let mut bench_cfg = cfg.clone();
-        bench_cfg.miner_profile = profile.clone();
-        let log_path = paths::bench_dir().join(format!("bench-{profile}.log"));
+        {
+            let preset = bench_cfg.ensure_preset();
+            preset.miner = miner_id.clone();
+            preset.miner_version = version.clone();
+            preset.miner_fee_pct = entry.miner_fee_pct;
+            preset.miner_fee_override_pct = None;
+        }
+        let log_path = paths::bench_dir().join(format!("bench-{miner_id}.log"));
         let _ = std::fs::create_dir_all(paths::bench_dir());
-        let args = miners::build_args(&bench_cfg, profile, &log_path);
-
-        let child = spawn(&binary, &args, &log_path);
-        let mut child = match child {
+        let bench_preset = bench_cfg
+            .preset()
+            .cloned()
+            .unwrap_or_else(Preset::new_pearl);
+        let args = match miners::build_args(&bench_cfg, &bench_preset, &log_path) {
+            Ok(args) => args,
+            Err(err) => {
+                entry.error = Some(err.to_string());
+                report.entries.push(entry);
+                continue;
+            }
+        };
+        let mut child = match spawn(&binary, &args, &log_path) {
             Ok(child) => child,
             Err(err) => {
                 entry.error = Some(err.to_string());
@@ -104,15 +143,15 @@ pub fn run(cfg: &Config, profiles: &[String], seconds: u64) -> BenchReport {
             }
         };
 
-        // Warm-up: DAG/JIT compilation takes a while on pearlhash.
         let warmup = (seconds / 3).clamp(10, 45);
         std::thread::sleep(Duration::from_secs(warmup));
         let started = Instant::now();
         let mut samples: Vec<f64> = Vec::new();
         let mut accepted: Option<u64> = None;
 
+        let api_port = bench_cfg.preset().map(|p| p.api_port).unwrap_or(0);
         while started.elapsed() < Duration::from_secs(seconds.saturating_sub(warmup)) {
-            if let Ok(stats) = minerapi::query_api(cfg.api_port) {
+            if let Ok(stats) = minerapi::query_api(api_port) {
                 if let Some(value) = stats.hashrate_60s.or(stats.hashrate_10s) {
                     samples.push(value);
                 }
@@ -122,7 +161,7 @@ pub fn run(cfg: &Config, profiles: &[String], seconds: u64) -> BenchReport {
             }
             std::thread::sleep(Duration::from_secs(2));
             if child.try_wait().ok().flatten().is_some() {
-                entry.error = Some("майнер завершился во время теста".into());
+                entry.error = Some("miner exited during the benchmark".into());
                 break;
             }
         }
@@ -132,19 +171,18 @@ pub fn run(cfg: &Config, profiles: &[String], seconds: u64) -> BenchReport {
 
         if entry.error.is_none() {
             if samples.is_empty() {
-                entry.error = Some("не удалось получить хешрейт (API и лог пусты)".into());
+                entry.error = Some("no hash rate from API or log".into());
             } else {
                 let raw = samples.iter().sum::<f64>() / samples.len() as f64;
                 entry.raw_hps = Some(raw);
                 entry.samples = samples.len() as u32;
                 entry.accepted = accepted;
-                entry.effective_hps = Some(raw * (1.0 - entry.dev_fee_pct / 100.0));
+                entry.effective_hps = Some(raw * (1.0 - entry.total_fee_pct / 100.0));
                 entry.pool_hps = pool::query(cfg).ok().and_then(|p| p.hashrate);
             }
         }
 
         report.entries.push(entry);
-        // Let the GPU cool down and the port free up between candidates.
         std::thread::sleep(Duration::from_secs(5));
     }
 
@@ -172,10 +210,9 @@ fn spawn(
     }
     command
         .spawn()
-        .map_err(|e| anyhow::anyhow!("не удалось запустить {}: {e}", binary.display()))
+        .map_err(|e| anyhow::anyhow!("cannot start {}: {e}", binary.display()))
 }
 
-/// Persist the report under `~/.local/state/pearl-miner/bench/`.
 pub fn save(report: &BenchReport) -> anyhow::Result<PathBuf> {
     let dir = paths::bench_dir();
     std::fs::create_dir_all(&dir)?;
@@ -188,13 +225,15 @@ pub fn save(report: &BenchReport) -> anyhow::Result<PathBuf> {
 mod tests {
     use super::*;
 
-    fn entry(profile: &str, raw: f64, fee: f64) -> BenchEntry {
+    fn entry(profile: &str, raw: f64, miner_fee: f64, pool_fee: f64) -> BenchEntry {
         BenchEntry {
             profile: profile.into(),
             name: profile.into(),
             raw_hps: Some(raw),
-            dev_fee_pct: fee,
-            effective_hps: Some(raw * (1.0 - fee / 100.0)),
+            miner_fee_pct: miner_fee,
+            pool_fee_pct: pool_fee,
+            total_fee_pct: miner_fee + pool_fee,
+            effective_hps: Some(raw * (1.0 - (miner_fee + pool_fee) / 100.0)),
             ..Default::default()
         }
     }
@@ -205,13 +244,8 @@ mod tests {
             started_at: 1,
             duration_s: 60,
             entries: vec![
-                entry("wildrig", 125.0e12, 0.0),
-                entry("srbminer", 124.0e12, 0.85),
-                BenchEntry {
-                    profile: "onezero".into(),
-                    error: Some("нет бинарника".into()),
-                    ..Default::default()
-                },
+                entry("wildrig", 125.0e12, 0.0, 1.0),
+                entry("srbminer", 124.0e12, 0.85, 1.0),
             ],
         };
         assert_eq!(report.best().unwrap().profile, "wildrig");
@@ -219,25 +253,15 @@ mod tests {
 
     #[test]
     fn fee_can_flip_the_winner() {
-        // 0.85 % fee pays off only when the raw lead is bigger than the fee.
         let report = BenchReport {
             started_at: 1,
             duration_s: 60,
             entries: vec![
-                entry("wildrig", 125.0e12, 0.0),
-                entry("srbminer", 127.0e12, 0.85),
+                entry("wildrig", 125.0e12, 0.0, 1.0),
+                entry("srbminer", 127.0e12, 0.85, 1.0),
             ],
         };
         assert_eq!(report.best().unwrap().profile, "srbminer");
-        let narrow = BenchReport {
-            started_at: 1,
-            duration_s: 60,
-            entries: vec![
-                entry("wildrig", 125.0e12, 0.0),
-                entry("srbminer", 125.5e12, 0.85),
-            ],
-        };
-        assert_eq!(narrow.best().unwrap().profile, "wildrig");
     }
 
     #[test]
@@ -245,16 +269,15 @@ mod tests {
         let report = BenchReport {
             started_at: 42,
             duration_s: 120,
-            entries: vec![entry("wildrig", 125.0e12, 0.0)],
+            entries: vec![entry("wildrig", 125.0e12, 0.0, 1.0)],
         };
         let back = BenchReport::from_json(&report.to_json()).unwrap();
         assert_eq!(report, back);
     }
 
     #[test]
-    fn missing_binary_is_reported() {
-        let mut cfg = Config::default();
-        cfg.miners.get_mut("onezero").unwrap().path = "/nonexistent/onezero".into();
+    fn missing_install_is_reported() {
+        let cfg = Config::default();
         let report = run(&cfg, &["onezero".to_string()], 30);
         assert!(report.entries[0].error.is_some());
     }

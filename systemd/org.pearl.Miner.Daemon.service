@@ -1,3 +1,0 @@
-[D-BUS Service]
-Name=org.pearl.Miner.Daemon
-Exec=/usr/bin/systemctl --user start pearl-minerd.service
