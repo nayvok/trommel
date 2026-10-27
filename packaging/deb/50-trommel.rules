@@ -1,0 +1,18 @@
+// Trommel: allow an active local user to run the narrow GPU helper without a
+// password prompt. The helper itself validates the GPU UUID and numeric ranges.
+polkit.addRule(function (action, subject) {
+    if (action.id !== "org.freedesktop.policykit.exec") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (!subject.local || !subject.active) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.lookup("program") !== "/usr/libexec/trommel/trommel-oc") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var command = action.lookup("argv1");
+    if (command !== "apply" && command !== "reset" && command !== "status") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    return polkit.Result.YES;
+});

@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+# Do not stop a running miner on upgrade/removal: the daemon may still own it.
+exit 0
