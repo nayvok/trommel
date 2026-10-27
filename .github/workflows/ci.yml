@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
+            desktop-file-utils appstream gettext librsvg2-bin \
+            python3 git ca-certificates
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check secrets
+        run: ./scripts/check-no-secrets.sh
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Build
+        run: |
+          cargo build --release -p trommeld
+          cargo build --release -p trommel --features gui
+      - name: Validate assets
+        run: |
+          desktop-file-validate data/io.github.nayvok.Trommel.desktop
+          appstreamcli validate --explain data/io.github.nayvok.Trommel.metainfo.xml
+          mkdir -p /tmp/trommel-schemas
+          cp data/schemas/*.gschema.xml /tmp/trommel-schemas/
+          glib-compile-schemas --strict --targetdir=/tmp/trommel-schemas /tmp/trommel-schemas

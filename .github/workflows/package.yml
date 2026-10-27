@@ -1,0 +1,28 @@
+name: Package
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
+            desktop-file-utils appstream gettext librsvg2-bin \
+            python3 git ca-certificates dpkg-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build deb
+        run: ./scripts/package-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trommel-deb
+          path: dist/*.deb
