@@ -1,0 +1,44 @@
+# Template only — not built or released in v1. Verify on Fedora first.
+Name:           trommel
+Version:        0.2.0
+Release:        1%{?dist}
+Summary:        NVIDIA mining rig manager with presets and miner catalogue
+License:        LicenseRef-proprietary
+URL:            https://github.com/nayvok/trommel
+Source0:        %{name}-%{version}.tar.gz
+
+BuildRequires:  rust cargo gtk4-devel libadwaita-devel pkgconfig
+Requires:       gtk4 libadwaita polkit systemd dbus-daemon
+Recommends:     nvidia-driver gnome-shell
+
+%description
+Trommel is a GTK4/libadwaita control room for NVIDIA mining rigs.
+
+%prep
+%setup -q
+
+%build
+cargo build --release -p trommeld
+cargo build --release -p trommel --features gui
+
+%install
+install -Dm755 target/release/trommel %{buildroot}%{_bindir}/trommel
+install -Dm755 target/release/trommeld %{buildroot}%{_bindir}/trommeld
+install -Dm755 polkit/trommel-oc %{buildroot}%{_libexecdir}/trommel/trommel-oc
+install -Dm644 polkit/io.github.nayvok.trommel.policy %{buildroot}%{_datadir}/polkit-1/actions/io.github.nayvok.trommel.policy
+install -Dm644 data/io.github.nayvok.Trommel.desktop %{buildroot}%{_datadir}/applications/io.github.nayvok.Trommel.desktop
+install -Dm644 data/io.github.nayvok.Trommel.metainfo.xml %{buildroot}%{_datadir}/metainfo/io.github.nayvok.Trommel.metainfo.xml
+install -Dm644 data/schemas/org.gnome.shell.extensions.trommel.gschema.xml %{buildroot}%{_datadir}/glib-2.0/schemas/org.gnome.shell.extensions.trommel.gschema.xml
+
+%files
+%{_bindir}/trommel
+%{_bindir}/trommeld
+%{_libexecdir}/trommel/trommel-oc
+%{_datadir}/polkit-1/actions/io.github.nayvok.trommel.policy
+%{_datadir}/applications/io.github.nayvok.Trommel.desktop
+%{_datadir}/metainfo/io.github.nayvok.Trommel.metainfo.xml
+%{_datadir}/glib-2.0/schemas/org.gnome.shell.extensions.trommel.gschema.xml
+
+%changelog
+* Wed Oct 28 2026 nayvok <yanyushkov@gmail.com> - 0.2.0-1
+- Initial template.

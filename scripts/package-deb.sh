@@ -44,7 +44,7 @@ install -m755 packaging/deb/prerm "$STAGE/DEBIAN/prerm"
 
 TMP_EXT="$(mktemp -d)"
 ( cd "extension/$EXT_UUID" && gnome-extensions pack --force \
-    --extra-source=icons \
+    --extra-source=icons --extra-source=LICENSE \
     --schema="$ROOT/data/schemas/org.gnome.shell.extensions.trommel.gschema.xml" \
     --out-dir "$TMP_EXT" . >/dev/null )
 python3 -m zipfile -e "$TMP_EXT/$EXT_UUID.shell-extension.zip" \

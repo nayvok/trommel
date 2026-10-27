@@ -22,6 +22,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build deb
         run: ./scripts/package-deb.sh
+      - name: Validate package layout
+        run: ./scripts/test-deb.sh
       - uses: actions/upload-artifact@v4
         with:
           name: trommel-deb
