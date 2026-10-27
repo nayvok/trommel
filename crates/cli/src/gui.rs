@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 
 use trommel_core::catalog::{self, MinerOption, OptionKind};
 use trommel_core::config::{ChangeClass, Config, GpuTuning, MinerInstall, Preset};
@@ -176,6 +176,7 @@ struct PresetEditor {
     info_install: adw::ActionRow,
     install_button: gtk::Button,
     download_button: gtk::Button,
+    options_group: adw::PreferencesGroup,
     options_box: gtk::Box,
     options: RefCell<Vec<OptionRow>>,
     current_id: RefCell<String>,
@@ -189,6 +190,7 @@ struct SettingsWidgets {
     restore_stock: adw::SwitchRow,
     notifications: adw::SwitchRow,
     start_login: adw::SwitchRow,
+    simple_mode: adw::SwitchRow,
     poll: adw::SpinRow,
     language: adw::ComboRow,
     power: adw::SpinRow,
@@ -202,6 +204,7 @@ struct SettingsWidgets {
     extension_state: adw::ActionRow,
     extension_enable: gtk::Button,
     extension_manager: gtk::Button,
+    diagnostics: gtk::Button,
 }
 
 struct App {
@@ -216,6 +219,7 @@ struct App {
     dirty: Cell<bool>,
     action_button: gtk::Button,
     action_label: gtk::Label,
+    quick_button: gtk::Button,
     hero_hashrate: gtk::Label,
     hero_line: gtk::Label,
     hero_meta: gtk::Label,
@@ -270,8 +274,14 @@ fn set_page_icon(stack: &adw::ViewStack, child: &impl IsA<gtk::Widget>, icon: &s
 // ------------------------------------------------------------------- run
 
 pub fn run() -> anyhow::Result<()> {
-    let mut builder = adw::Application::builder().application_id(trommel_core::APP_ID);
-    if std::env::var_os("TROMMEL_SCREENSHOT").is_some() {
+    let screenshot = std::env::var_os("TROMMEL_SCREENSHOT").is_some();
+    let app_id = if screenshot {
+        format!("io.github.nayvok.Trommel.Screenshot{}", std::process::id())
+    } else {
+        trommel_core::APP_ID.to_string()
+    };
+    let mut builder = adw::Application::builder().application_id(&app_id);
+    if screenshot {
         builder = builder.flags(gio::ApplicationFlags::NON_UNIQUE);
     }
     let app = builder.build();
@@ -386,9 +396,16 @@ fn build_ui(app: &adw::Application) {
     hero_top.append(&pill);
     let hero_line = label(&tr("No preset", "Нет пресета"), &["caption"]);
     let hero_meta = label("", &["caption", "dim-label", "numeric"]);
+    let quick_button = gtk::Button::builder()
+        .label(tr("Quick setup", "Быстрая настройка"))
+        .css_classes(["suggested-action", "pill"])
+        .halign(gtk::Align::Start)
+        .build();
+    quick_button.set_visible(false);
     hero.append(&hero_top);
     hero.append(&hero_line);
     hero.append(&hero_meta);
+    hero.append(&quick_button);
     hero_group.add(&hero);
     dashboard.add(&hero_group);
 
@@ -474,6 +491,7 @@ fn build_ui(app: &adw::Application) {
         dirty: Cell::new(false),
         action_button: action_button.clone(),
         action_label: action_label.clone(),
+        quick_button: quick_button.clone(),
         hero_hashrate,
         hero_line,
         hero_meta,
@@ -498,6 +516,7 @@ fn build_ui(app: &adw::Application) {
     refresh_preset_list(&app_state);
     refresh_miners(&app_state);
     load_settings(&app_state);
+    apply_simple_mode(&app_state);
     update_dirty(&app_state);
 
     {
@@ -527,8 +546,7 @@ fn build_ui(app: &adw::Application) {
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(4);
         glib::timeout_add_seconds_local(delay, move || {
-            let _ = save_window_png(&window, &path);
-            application.quit();
+            schedule_screenshot(window.clone(), path.clone(), application.clone(), 0);
             glib::ControlFlow::Break
         });
     }
@@ -720,6 +738,7 @@ fn build_presets_page() -> (adw::PreferencesPage, PresetEditor) {
         info_install,
         install_button,
         download_button,
+        options_group,
         options_box,
         options: RefCell::new(Vec::new()),
         current_id: RefCell::new(String::new()),
@@ -815,6 +834,13 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             "Автозапуск майнера вместе с сессией",
         ),
     );
+    let simple_mode = switch_row(
+        &tr("Simple mode", "Простой режим"),
+        &tr(
+            "Hide advanced miner options and extra arguments",
+            "Скрыть продвинутые настройки майнера и extra args",
+        ),
+    );
     let poll = spin_row(
         &tr("Poll interval", "Интервал опроса"),
         &tr("Seconds", "Секунды"),
@@ -830,7 +856,13 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
         ))
         .model(&gtk::StringList::new(&["System", "English", "Русский"]))
         .build();
-    for row in [&auto_restart, &restore_stock, &notifications, &start_login] {
+    for row in [
+        &auto_restart,
+        &restore_stock,
+        &notifications,
+        &start_login,
+        &simple_mode,
+    ] {
         behavior.add(row);
     }
     behavior.add(&poll);
@@ -947,6 +979,18 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
         .title(tr("Save settings", "Сохранить настройки"))
         .build();
     save_row.add_suffix(&save);
+    let diagnostics = gtk::Button::builder()
+        .label(tr("Copy diagnostics", "Скопировать диагностику"))
+        .css_classes(["pill"])
+        .build();
+    let diagnostics_row = adw::ActionRow::builder()
+        .title(tr("Share with an agent", "Передать агенту"))
+        .subtitle(tr(
+            "Copy a redacted JSON bundle for Codex/ChatGPT",
+            "Скопировать обезличенный JSON для Codex/ChatGPT",
+        ))
+        .build();
+    diagnostics_row.add_suffix(&diagnostics);
     let stock = gtk::Button::builder()
         .label(tr("Restore stock", "Вернуть сток"))
         .css_classes(["destructive-action", "pill"])
@@ -960,6 +1004,7 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
         .build();
     stock_row.add_suffix(&stock);
     actions.add(&save_row);
+    actions.add(&diagnostics_row);
     actions.add(&stock_row);
     page.add(&actions);
     SAVE_SETTINGS_BUTTON.with(|slot| *slot.borrow_mut() = Some(save));
@@ -972,6 +1017,7 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             restore_stock,
             notifications,
             start_login,
+            simple_mode,
             poll,
             language,
             power,
@@ -985,6 +1031,7 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             extension_state,
             extension_enable,
             extension_manager,
+            diagnostics,
         },
     )
 }
@@ -1008,6 +1055,15 @@ fn connect_signals(app: &Rc<App>) {
         let banner = app.banner.clone();
         banner.connect_button_clicked(move |_| {
             save_and_apply(&app);
+        });
+    }
+    {
+        let app = app.clone();
+        let button = app.quick_button.clone();
+        button.connect_clicked(move |_| {
+            app.stack.set_visible_child_name("presets");
+            app.editor.stack.set_visible_child_name("editor");
+            refresh_preset_editor(&app);
         });
     }
     if let Some(button) = NEW_PRESET_BUTTON.with(|slot| slot.borrow().clone()) {
@@ -1081,6 +1137,11 @@ fn connect_signals(app: &Rc<App>) {
         let app = app.clone();
         let button = app.settings.extension_manager.clone();
         button.connect_clicked(move |_| open_extension_manager(&app));
+    }
+    {
+        let app = app.clone();
+        let button = app.settings.diagnostics.clone();
+        button.connect_clicked(move |_| copy_diagnostics(&app));
     }
     if let Some(button) = BENCH_BUTTON.with(|slot| slot.borrow().clone()) {
         let tx = app.tx.clone();
@@ -1671,7 +1732,39 @@ fn open_extension_manager(app: &Rc<App>) {
     }
 }
 
-fn gpu_tune_dialog(app: &Rc<App>, uuid: &str, name: &str) {
+fn copy_diagnostics(app: &Rc<App>) {
+    let mut cfg = app.config.borrow().clone();
+    if let Some(preset) = cfg.preset_mut() {
+        if !preset.wallet.is_empty() {
+            preset.wallet = "<redacted>".into();
+        }
+    }
+    let report = serde_json::json!({
+        "app": "Trommel",
+        "version": trommel_core::VERSION,
+        "contract_version": trommel_core::status::CONTRACT_VERSION,
+        "config_path": trommel_core::paths::config_path(),
+        "state_path": trommel_core::paths::state_path(),
+        "config": cfg,
+        "status": app.status.borrow().clone(),
+        "warnings": cfg.warnings(),
+    });
+    let text = serde_json::to_string_pretty(&report).unwrap_or_default();
+    if let Some(display) = gdk::Display::default() {
+        display.clipboard().set_text(&text);
+        app.toast.add_toast(adw::Toast::new(&tr(
+            "Diagnostics copied (wallet redacted).",
+            "Диагностика скопирована (кошелёк скрыт).",
+        )));
+    } else {
+        app.toast.add_toast(adw::Toast::new(&tr(
+            "No clipboard available.",
+            "Буфер обмена недоступен.",
+        )));
+    }
+}
+
+fn gpu_tune_dialog(app: &Rc<App>, uuid: &str, name: &str, default_power: Option<f64>) {
     let Some(profile) = app.config.borrow().gpu_profile().cloned() else {
         return;
     };
@@ -1685,11 +1778,16 @@ fn gpu_tune_dialog(app: &Rc<App>, uuid: &str, name: &str) {
         .build();
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    let recommended = gtk::Button::builder()
+        .label(tr("Recommended", "Рекомендуемый"))
+        .css_classes(["flat"])
+        .build();
     let save = gtk::Button::builder()
         .label(tr("Save", "Сохранить"))
         .css_classes(["suggested-action"])
         .build();
     header.pack_end(&save);
+    header.pack_start(&recommended);
     toolbar.add_top_bar(&header);
     let page = adw::PreferencesPage::new();
     let group = adw::PreferencesGroup::builder().title(name).build();
@@ -1734,6 +1832,21 @@ fn gpu_tune_dialog(app: &Rc<App>, uuid: &str, name: &str) {
     page.add(&group);
     toolbar.set_content(Some(&page));
     window.set_child(Some(&toolbar));
+    {
+        let power_row = power.clone();
+        let core_row = core.clone();
+        let memory_row = memory.clone();
+        let fan_row = fan.clone();
+        let temp_row = temp.clone();
+        recommended.connect_clicked(move |_| {
+            let base = default_power.unwrap_or(300.0);
+            power_row.set_value((base * 0.8).max(50.0).round());
+            core_row.set_value(0.0);
+            memory_row.set_value(0.0);
+            fan_row.set_value(0.0);
+            temp_row.set_value(85.0);
+        });
+    }
     {
         let app = app.clone();
         let window = window.clone();
@@ -1993,12 +2106,20 @@ fn load_settings(app: &Rc<App>) {
     refresh_extension_state(app);
 }
 
+fn apply_simple_mode(app: &Rc<App>) {
+    let simple = app.config.borrow().behavior.simple_mode;
+    app.editor.options_group.set_visible(!simple);
+    app.editor.extra.set_visible(!simple);
+    app.editor.miner_fee.set_visible(!simple);
+}
+
 fn save_settings(app: &Rc<App>) {
     let mut cfg = app.config.borrow_mut();
     cfg.behavior.auto_restart = app.settings.auto_restart.is_active();
     cfg.behavior.restore_stock_on_stop = app.settings.restore_stock.is_active();
     cfg.behavior.notifications = app.settings.notifications.is_active();
     cfg.behavior.start_mining_on_login = app.settings.start_login.is_active();
+    cfg.behavior.simple_mode = app.settings.simple_mode.is_active();
     cfg.behavior.poll_interval_s = app.settings.poll.value() as u64;
     cfg.behavior.language = match app.settings.language.selected() {
         1 => i18n::Language::En,
@@ -2222,6 +2343,7 @@ fn handle_event(app: &Rc<App>, event: Ev) {
                 *app.applied.borrow_mut() = cfg.clone();
                 *app.config.borrow_mut() = cfg;
                 load_settings(app);
+                apply_simple_mode(app);
                 refresh_preset_list(app);
                 refresh_miners(app);
             }
@@ -2309,6 +2431,14 @@ fn apply_status(app: &Rc<App>, status: Status) {
         status.state.restarts,
         status.miner.source
     ));
+    app.quick_button.set_visible(
+        !running
+            && (status.miner_info.id.is_empty()
+                || !status.miner_info.installed
+                || status.warnings.iter().any(|warning| {
+                    warning.to_lowercase().contains("wallet") || warning.contains("Кошелёк")
+                })),
+    );
     app.total_power.set_subtitle(&format!(
         "{} W",
         status
@@ -2406,7 +2536,8 @@ fn apply_status(app: &Rc<App>, status: Status) {
             let app_tune = app.clone();
             let uuid = gpu.uuid.clone();
             let name = gpu.name.clone();
-            tune.connect_clicked(move |_| gpu_tune_dialog(&app_tune, &uuid, &name));
+            let default_power = gpu.power_default_w.or(gpu.power_limit_w);
+            tune.connect_clicked(move |_| gpu_tune_dialog(&app_tune, &uuid, &name, default_power));
             let toggle = gtk::Switch::new();
             toggle.set_active(
                 app.config
@@ -2439,6 +2570,33 @@ fn apply_status(app: &Rc<App>, status: Status) {
 }
 
 // --------------------------------------------------------------- screenshot
+
+fn schedule_screenshot(
+    window: adw::ApplicationWindow,
+    path: String,
+    application: adw::Application,
+    attempt: u32,
+) {
+    match save_window_png(&window, &path) {
+        Ok(()) => application.quit(),
+        Err(err) if attempt < 30 => {
+            eprintln!("screenshot attempt {} failed: {err}", attempt + 1);
+            glib::timeout_add_local(Duration::from_millis(500), move || {
+                schedule_screenshot(
+                    window.clone(),
+                    path.clone(),
+                    application.clone(),
+                    attempt + 1,
+                );
+                glib::ControlFlow::Break
+            });
+        }
+        Err(err) => {
+            eprintln!("screenshot failed: {err}");
+            application.quit();
+        }
+    }
+}
 
 fn save_window_png(window: &adw::ApplicationWindow, path: &str) -> anyhow::Result<()> {
     let width = window.width();

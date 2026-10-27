@@ -16,6 +16,9 @@ Changelog; versions use SemVer.
 - GNOME Shell 50 extension with shared GSettings, live popup and Quick Settings
   toggle.
 - Debian packaging, developer installer, bilingual docs.
+- Simple mode, quick setup entry point and a safe "recommended" GPU profile.
+- Agent surface: `diagnose`, config diff/validate/apply, preset export/import
+  and a read-only-by-default MCP server (`trommel mcp`).
 
 ### Changed
 

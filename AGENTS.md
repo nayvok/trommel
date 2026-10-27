@@ -51,6 +51,13 @@ Set `CARGO_HOME=$PWD/.cargo-home` when the global cargo cache is read-only.
 - Keep English as the source string; Russian is a translation. Use
   `trommel_core::i18n::tr(en, ru)` in Rust and the `tr()` helper in GJS.
 
+## External agents
+
+`trommel diagnose --json`, `config diff/apply`, preset export/import and
+`trommel mcp` are the intended integration surface. The MCP server is read-only
+unless started with `--allow-write`; never auto-apply a proposed profile. See
+`docs/agents.md`.
+
 ## Adding a miner
 
 1. Add a `[[miners]]` entry to `resources/catalog/miners.toml`: description,

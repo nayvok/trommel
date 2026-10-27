@@ -8,7 +8,12 @@ D-Bus; the daemon runs as your user, the narrow GPU helper runs through polkit.
 
 ## First run
 
-1. Open Trommel.
+Simple mode is on by default: the preset editor hides raw miner arguments and
+per-miner options. Turn it off in **Settings → Behavior → Simple mode** if you
+need them.
+
+1. Open Trommel. If the wallet or miner is missing, use **Quick setup** on the
+   dashboard (it opens the active preset editor).
 2. Create a preset. Choose a pool, a miner version, wallet/worker and a GPU
    profile. If the miner is not installed, import an existing binary or use
    `trommel miner install` with a direct HTTPS URL.
@@ -51,6 +56,15 @@ asks:
 
 If a live-only change is made (for example notifications), it is applied without
 a restart.
+
+## Asking an external agent
+
+Use **Settings → Actions → Copy diagnostics** or `trommel diagnose --json`
+to create a redacted diagnostics file, then give it to Codex/ChatGPT together with the config schema.
+`trommel config diff proposed.json` shows whether a change needs a restart;
+`trommel config apply proposed.json --restart` applies it only after you review
+the diff. For MCP-aware agents, run `trommel mcp` (read-only) or
+`trommel mcp --allow-write`. See [agents.md](agents.md).
 
 ## GNOME integration
 

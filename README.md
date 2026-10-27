@@ -12,6 +12,11 @@ desktop into a pile of shell scripts.
 > only one miner runs at a time, and the app restores the stock power limit and
 > clocks when mining stops.
 
+**Who it is for:** a home PC with one to three NVIDIA cards. It is a local,
+simpler alternative to a full mining OS — not a remote farm dashboard, not an
+OS replacement, and not a wallet. Start with **Simple mode**; advanced miner
+arguments are hidden until you turn them on.
+
 ## Features
 
 - **Multi-GPU dashboard** — per-card temperature, power, fan, clocks and
@@ -34,6 +39,11 @@ desktop into a pile of shell scripts.
 - **GNOME Shell integration** — a panel indicator, live popup, Quick Settings
   toggle and optional labels. The app can enable it and reflects the state from
   Extension Manager.
+- **Simple mode by default** — ordinary users see power, temperature and Start;
+  advanced miner options and raw arguments are one switch away.
+- **Agent-friendly** — JSON config, CLI diagnostics, diff/apply commands and an
+  optional MCP server for Codex/other agents. The agent proposes; you see the
+  diff and approve.
 - **English and Russian UI**, light and dark themes, GNOME HIG-style widgets.
 
 ## Requirements (v1)
@@ -78,6 +88,8 @@ needs without a broad sandbox; a GUI-only Flatpak would be a different product.
 
 ## First run
 
+A **Quick setup** button appears on the dashboard until a wallet and an installed miner are ready.
+
 1. Open **Trommel** from the application menu.
 2. Create a preset: coin → pool → miner/version (import or install a binary) →
    wallet/worker → GPU profile → miner options.
@@ -103,6 +115,10 @@ trommel miner import wildrig 0.51.8 /path/to/wildrig-multi
 trommel miner install wildrig 0.51.8 https://example.org/miner.tar.gz \
   --sha256 <hex> --archive tar.gz --binary wildrig-multi
 trommel bench --minutes 3
+trommel diagnose --json > diagnostics.json
+trommel config diff proposed.json
+trommel config apply proposed.json --restart
+trommel mcp                  # read-only MCP server over stdio
 ```
 
 The daemon is the single source of truth. The GUI can be closed; the panel
@@ -145,6 +161,7 @@ it, the app shows it as disabled. The daemon works without the extension.
 - [User guide](docs/user-guide.md) · [Русский](docs/user-guide.ru.md)
 - [Architecture](docs/architecture.md)
 - [Miner catalogue and options](docs/miners.md)
+- [Using Trommel from an external agent](docs/agents.md)
 - [Packaging status](docs/packaging.md)
 - [GNOME extension](docs/extension.md)
 - [Security model](docs/security.md)

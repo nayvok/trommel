@@ -21,6 +21,16 @@
       монет, пулов и профилей GPU и скачивает поддерживаемые майнеры по запросу.
     </p>
     <p>
+      It is aimed at a home PC with one to three NVIDIA cards, not at a remote
+      farm: simple mode, quick setup, safe stock restore and an optional MCP
+      interface for external agents.
+    </p>
+    <p xml:lang="ru">
+      Приложение рассчитано на домашний ПК с одной–тремя картами NVIDIA, а не
+      на удалённую ферму: простой режим, быстрый старт, возврат стока и
+      опциональный MCP-интерфейс для внешних агентов.
+    </p>
+    <p>
       The app is a manager, not a miner: binaries are downloaded separately and
       only one miner runs at a time. Before mining it snapshots the stock power
       limit and clocks of every GPU and restores them on stop.

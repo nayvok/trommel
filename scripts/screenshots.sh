@@ -6,6 +6,9 @@ WORK="$ROOT/.shots"
 BIN="$ROOT/target/debug"
 DOCS="$ROOT/docs/images"
 mkdir -p "$DOCS"
+if [ "${TROMMEL_SKIP_BUILD:-0}" != 1 ]; then
+    ( cd "$ROOT" && cargo build -q -p trommel --features gui -p trommeld )
+fi
 [ -x "$BIN/trommel" ] || { echo "build first: cargo build -p trommel --features gui -p trommeld" >&2; exit 1; }
 [ -x "$BIN/trommeld" ] || { echo "build first" >&2; exit 1; }
 
@@ -91,12 +94,11 @@ p.write_text(json.dumps(cfg, indent=2))
 PY
   rm -f "$target"
   TROMMEL_COLOR_SCHEME="$theme" TROMMEL_SCREENSHOT="$target" TROMMEL_SCREENSHOT_PAGE="$page" \
-    TROMMEL_SCREENSHOT_DELAY=4 timeout 25 "$BIN/trommel" > "$WORK/gui-$theme-$language-$page.log" 2>&1 || true
+    TROMMEL_SCREENSHOT_DELAY=6 timeout 35 "$BIN/trommel" > "$WORK/gui-$theme-$language-$page.log" 2>&1 || true
   [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
 }
 
 shot dark en dashboard "$DOCS/dashboard-en-dark.png"
-shot dark en presets "$DOCS/presets-en-dark.png"
 shot dark en miners "$DOCS/miners-en-dark.png"
 shot dark en settings "$DOCS/settings-en-dark.png"
 shot dark ru dashboard "$DOCS/dashboard-ru-dark.png"
