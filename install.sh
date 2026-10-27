@@ -124,7 +124,7 @@ if [ "$DO_EXTENSION" = 1 ]; then
         EXT_SRC="$ROOT/extension/$EXT_UUID"
         TMP_DIR="$(mktemp -d)"
         ( cd "$EXT_SRC" && gnome-extensions pack --force \
-            --extra-source=icons \
+            --extra-source=icons --extra-source=LICENSE \
             --schema="$ROOT/data/schemas/org.gnome.shell.extensions.trommel.gschema.xml" \
             --out-dir "$TMP_DIR" . >/dev/null )
         gnome-extensions install --force "$TMP_DIR/$EXT_UUID.shell-extension.zip" >/dev/null
@@ -134,7 +134,7 @@ if [ "$DO_EXTENSION" = 1 ]; then
         else
             warn "gnome-extensions enable returned an error; see 'gnome-extensions info $EXT_UUID'"
         fi
-        if gnome-extensions info "$EXT_UUID" | grep -q "Включено: Да\|Enabled: Yes"; then
+        if gnome-extensions list --enabled | grep -qx "$EXT_UUID"; then
             ok "extension is enabled"
         else
             warn "extension is installed but not enabled; log out and back in, then check"

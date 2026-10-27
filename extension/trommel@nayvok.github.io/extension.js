@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Trommel — GNOME Shell 50 panel indicator.
 //
 // The extension is a thin client: it never runs nvidia-smi and never applies
@@ -111,6 +112,8 @@ export default class TrommelExtension extends Extension {
         this._proxy = null;
         this._status = null;
         this._serviceMissing = false;
+        this._signalIds = [];
+        this._ownerId = 0;
 
         this._path = this.path;
         const iconFile = GLib.build_filenamev([this._path, 'icons', 'trommel-symbolic.svg']);
@@ -138,8 +141,16 @@ export default class TrommelExtension extends Extension {
 
     disable() {
         for (const id of this._settingsIds ?? [])
-            this._settings.disconnect(id);
+            this._settings?.disconnect(id);
         this._settingsIds = [];
+        if (this._proxy) {
+            for (const id of this._signalIds ?? [])
+                this._proxy.disconnectSignal(id);
+            if (this._ownerId)
+                this._proxy.disconnect(this._ownerId);
+        }
+        this._signalIds = [];
+        this._ownerId = 0;
         this._destroyQuickToggle();
         this._indicator?.destroy();
         this._indicator = null;
@@ -204,8 +215,6 @@ export default class TrommelExtension extends Extension {
         this._liveCard.add_child(this._gpuLine);
         card.add_child(this._liveCard);
         this.menu.addMenuItem(item(card));
-        this._liveItem = this.menu.box.get_last_child();
-
         this._minerLine = label('', 'trommel-caption');
         this.menu.addMenuItem(item(this._minerLine));
 
@@ -407,7 +416,9 @@ export default class TrommelExtension extends Extension {
         this._minerLine.text = [
             info.name,
             info.version,
-            info.total_fee_pct != null ? `${info.total_fee_pct.toFixed(2)}% ${tr('fee', 'комиссия')}` : null,
+            info.total_fee_pct != null
+                ? `${info.miner_fee_pct.toFixed(2)}% + ${info.pool_fee_pct.toFixed(2)}% = ${info.total_fee_pct.toFixed(2)}%`
+                : null,
         ].filter(Boolean).join(' · ');
         this._sharesLine.text = `${miner.accepted ?? 0} ${tr('accepted', 'принято')} · ${miner.rejected ?? 0} ${tr('rejected', 'отклонено')}`;
 

@@ -2,7 +2,11 @@
   "uuid": "trommel@nayvok.github.io",
   "name": "Trommel",
   "description": "Control your NVIDIA mining rig from the top bar: hashrate, temperature, power, shares, fee and start/stop. Settings live in the Trommel app.",
-  "shell-version": ["50"],
+  "shell-version": [
+    "50"
+  ],
   "url": "https://github.com/nayvok/trommel",
-  "settings-schema": "org.gnome.shell.extensions.trommel"
+  "settings-schema": "org.gnome.shell.extensions.trommel",
+  "version": 1,
+  "version-name": "0.2.0"
 }

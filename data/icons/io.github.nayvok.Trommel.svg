@@ -1,29 +1,30 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <!-- Trommel app icon: a small trommel drum with gold falling into a tray.
-       GNOME HIG: 128x128 canvas, 2px grid, simple geometry, no text. -->
+  <!-- Trommel: a tilted screening drum on a simple frame, with gold falling
+       into a tray. GNOME HIG: 128x128 canvas, 2px grid, flat geometry. -->
   <rect x="4" y="4" width="120" height="120" rx="27" fill="#3584e4"/>
 
-  <!-- support frame -->
-  <path d="M28 88 L38 101 H52 L45 88 Z" fill="#865e3c"/>
-  <path d="M100 88 L90 101 H76 L83 88 Z" fill="#865e3c"/>
-  <rect x="30" y="84" width="68" height="6" rx="3" fill="#63452c"/>
+  <!-- frame -->
+  <path d="M35 82 L27 103 H39 L47 82 Z" fill="#865e3c"/>
+  <path d="M87 82 L95 103 H83 L75 82 Z" fill="#865e3c"/>
+  <rect x="30" y="99" width="68" height="5" rx="2.5" fill="#63452c"/>
 
-  <!-- drum body -->
-  <path d="M30 56 h68 v18 a34 12 0 0 1 -68 0 z" fill="#b5835a"/>
-  <ellipse cx="64" cy="56" rx="34" ry="12" fill="#cdab8f"/>
-  <ellipse cx="64" cy="56" rx="26" ry="8" fill="#63452c"/>
-  <ellipse cx="64" cy="56" rx="26" ry="8" fill="#865e3c" opacity="0.55"/>
+  <!-- tilted drum -->
+  <g transform="rotate(-14 64 64)">
+    <rect x="24" y="53" width="64" height="34" rx="17" fill="#b5835a"/>
+    <rect x="30" y="55" width="52" height="8" rx="4" fill="#cdab8f"/>
+    <ellipse cx="88" cy="70" rx="10" ry="17" fill="#cdab8f"/>
+    <ellipse cx="88" cy="70" rx="6" ry="11" fill="#3d3846"/>
+    <ellipse cx="88" cy="70" rx="3" ry="7" fill="#241f31"/>
+    <circle cx="38" cy="68" r="2.2" fill="#3d3846"/>
+    <circle cx="48" cy="74" r="2.2" fill="#3d3846"/>
+    <circle cx="58" cy="77" r="2.2" fill="#3d3846"/>
+    <circle cx="68" cy="76" r="2.2" fill="#3d3846"/>
+    <circle cx="77" cy="72" r="2.2" fill="#3d3846"/>
+  </g>
 
-  <!-- screen holes -->
-  <circle cx="45" cy="70" r="2.2" fill="#3d3846"/>
-  <circle cx="55" cy="74" r="2.2" fill="#3d3846"/>
-  <circle cx="65" cy="75" r="2.2" fill="#3d3846"/>
-  <circle cx="75" cy="74" r="2.2" fill="#3d3846"/>
-  <circle cx="85" cy="70" r="2.2" fill="#3d3846"/>
-
-  <!-- gold particles -->
-  <circle cx="48" cy="94" r="4" fill="#f6d32d"/>
-  <circle cx="62" cy="98" r="3" fill="#f5c211"/>
-  <circle cx="76" cy="95" r="2.5" fill="#f6d32d"/>
-  <path d="M40 104 h48" stroke="#f6d32d" stroke-width="3" stroke-linecap="round" opacity="0.8"/>
+  <!-- gold particles falling into the tray -->
+  <circle cx="83" cy="92" r="4" fill="#f6d32d"/>
+  <circle cx="93" cy="97" r="3" fill="#f5c211"/>
+  <circle cx="73" cy="98" r="2.5" fill="#f6d32d"/>
+  <path d="M64 107 h38" stroke="#f6d32d" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
 </svg>
