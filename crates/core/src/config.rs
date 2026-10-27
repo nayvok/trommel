@@ -308,6 +308,14 @@ impl Config {
                 install.verified = false;
             }
         }
+        for preset in self.presets.values_mut() {
+            if let Some(def) = crate::catalog::miner(&preset.miner) {
+                preset.miner_fee_pct = def.fee_pct;
+                if !def.fee_configurable {
+                    preset.miner_fee_override_pct = None;
+                }
+            }
+        }
         self
     }
 

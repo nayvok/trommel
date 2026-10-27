@@ -269,7 +269,8 @@ impl Engine {
     /// Restore the snapshot captured before the current mining session.
     async fn reset_oc(&self) -> zbus::fdo::Result<()> {
         let result = tokio::task::block_in_place(|| {
-            let Some(snapshot) = crate::oc::load_snapshot() else {
+            let Some(snapshot) = crate::oc::load_snapshot().or_else(crate::oc::fallback_snapshot)
+            else {
                 return Ok(());
             };
             crate::oc::restore_snapshot(&snapshot)
