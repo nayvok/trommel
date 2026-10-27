@@ -184,6 +184,8 @@ pub struct Behavior {
     pub start_mining_on_login: bool,
     pub notifications: bool,
     pub language: Language,
+    /// Hide advanced miner options and extra arguments in the UI.
+    pub simple_mode: bool,
 }
 
 impl Default for Behavior {
@@ -196,6 +198,7 @@ impl Default for Behavior {
             start_mining_on_login: false,
             notifications: true,
             language: Language::System,
+            simple_mode: true,
         }
     }
 }
