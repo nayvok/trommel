@@ -133,6 +133,7 @@ step "Start and snapshot"
 sleep 2
 if [ -f "$WORK/state/trommel/oc-snapshot.json" ]; then pass "snapshot written"; else fail "snapshot missing"; fi
 if grep -q "apply --gpu GPU-11111111" "$WORK/oc.log" 2>/dev/null; then pass "per-GPU apply called"; else fail "per-GPU apply missing"; fi
+if grep -q "apply --gpu GPU-11111111.*--lmc 810" "$WORK/oc.log" 2>/dev/null; then pass "optional memory lock passed to helper"; else fail "memory lock missing"; fi
 JSON=$("$BIN/trommel" status --json 2>/dev/null)
 echo "$JSON" | python3 -c '
 import json,sys

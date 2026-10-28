@@ -199,7 +199,7 @@ mod tests {
         assert!(contains_pair(&args, "--user", ""));
         assert!(contains_pair(&args, "--api-port", "4028"));
         assert!(contains_pair(&args, "--log-file", "/tmp/miner.log"));
-        assert!(contains_pair(&args, "--gpu-temp-limit", "90"));
+        assert!(contains_pair(&args, "--gpu-temp-limit", "85"));
         assert!(args.contains(&"--no-color".to_string()));
     }
 

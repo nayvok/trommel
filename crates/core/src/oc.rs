@@ -361,11 +361,41 @@ mod tests {
 
     #[test]
     fn builds_apply_args() {
-        let args = apply_args(&gpu(), &GpuTuning::default());
+        let tuning = GpuTuning {
+            power_limit_w: Some(300),
+            core_clock_mhz: Some(1620),
+            memory_clock_mhz: Some(810),
+            ..Default::default()
+        };
+        let args = apply_args(&gpu(), &tuning);
         assert_eq!(args[0], "apply");
         assert_eq!(args[1], "--gpu");
         assert!(args.contains(&"--pl".to_string()));
         assert!(validate_apply_args(&args).is_ok());
+    }
+
+    #[test]
+    fn no_locks_means_no_lgc_lmc() {
+        let tuning = GpuTuning {
+            power_limit_w: None,
+            core_clock_mhz: None,
+            memory_clock_mhz: None,
+            ..Default::default()
+        };
+        let args = apply_args(&gpu(), &tuning);
+        assert!(!args.contains(&"--pl".to_string()));
+        assert!(!args.contains(&"--lgc".to_string()));
+        assert!(!args.contains(&"--lmc".to_string()));
+    }
+
+    #[test]
+    fn memory_lock_is_optional() {
+        let tuning = GpuTuning {
+            memory_clock_mhz: Some(810),
+            ..Default::default()
+        };
+        let args = apply_args(&gpu(), &tuning);
+        assert!(args.windows(2).any(|w| w[0] == "--lmc" && w[1] == "810"));
     }
 
     #[test]

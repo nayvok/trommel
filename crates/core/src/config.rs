@@ -35,11 +35,13 @@ impl Default for GpuTuning {
     fn default() -> Self {
         Self {
             enabled: true,
-            power_limit_w: Some(300),
-            core_clock_mhz: Some(1620),
-            memory_clock_mhz: Some(810),
+            // Safe defaults: do not change clocks or power until the user
+            // explicitly enables a lock or a recommended profile.
+            power_limit_w: None,
+            core_clock_mhz: None,
+            memory_clock_mhz: None,
             fan_pct: None,
-            temp_limit_c: 90,
+            temp_limit_c: 85,
             temp_resume_c: 65,
         }
     }
@@ -724,7 +726,24 @@ mod tests {
         assert_eq!(preset.wallet, "prl1testwallet");
         assert_eq!(preset.worker, "rig42");
         assert_eq!(cfg.gpu_profile().unwrap().default.power_limit_w, Some(300));
+        assert_eq!(
+            cfg.gpu_profile().unwrap().default.core_clock_mhz,
+            Some(1620)
+        );
+        assert_eq!(
+            cfg.gpu_profile().unwrap().default.memory_clock_mhz,
+            Some(810)
+        );
         assert_eq!(preset.total_fee_pct(), 1.0);
+    }
+
+    #[test]
+    fn default_profile_does_not_lock_clocks() {
+        let tuning = GpuTuning::default();
+        assert_eq!(tuning.power_limit_w, None);
+        assert_eq!(tuning.core_clock_mhz, None);
+        assert_eq!(tuning.memory_clock_mhz, None);
+        assert_eq!(tuning.temp_limit_c, 85);
     }
 
     #[test]
