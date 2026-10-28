@@ -17,6 +17,7 @@ use trommel_core::catalog::{self, MinerOption, OptionKind};
 use trommel_core::config::{ChangeClass, Config, GpuTuning, MinerInstall, Preset};
 use trommel_core::dbus::MinerProxy;
 use trommel_core::i18n::{self, tr};
+use trommel_core::nvidia::GpuStats;
 use trommel_core::status::Status;
 use trommel_core::util;
 
@@ -194,10 +195,13 @@ struct SettingsWidgets {
     poll: adw::SpinRow,
     language: adw::ComboRow,
     power: adw::SpinRow,
+    core_lock: adw::SwitchRow,
     core: adw::SpinRow,
+    memory_lock: adw::SwitchRow,
     memory: adw::SpinRow,
     temp_limit: adw::SpinRow,
     temp_resume: adw::SpinRow,
+    gpu_settings_box: gtk::Box,
     panel_mode: adw::ComboRow,
     quick_toggle: adw::SwitchRow,
     live_activity: adw::SwitchRow,
@@ -226,7 +230,8 @@ struct App {
     pill: gtk::Label,
     total_power: adw::ActionRow,
     total_temp: adw::ActionRow,
-    gpu_box: gtk::Box,
+    gpu_flow: gtk::FlowBox,
+    gpu_settings_sig: RefCell<String>,
     gpu_sig: RefCell<String>,
     shares: adw::ActionRow,
     pool_balance: adw::ActionRow,
@@ -235,6 +240,36 @@ struct App {
     editor: PresetEditor,
     settings: SettingsWidgets,
     miners_box: gtk::Box,
+}
+
+fn install_css() {
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(
+        r#"
+        .trommel-gpu-card {
+            background-color: @card_bg_color;
+            border: 1px solid alpha(@borders, 0.55);
+            border-radius: 12px;
+            padding: 12px;
+        }
+        .trommel-gpu-card:hover {
+            background-color: alpha(@card_fg_color, 0.04);
+        }
+        .trommel-gpu-title { font-weight: 700; }
+        .trommel-metric-label { font-size: 0.78em; opacity: 0.65; }
+        .trommel-metric-value { font-weight: 700; font-feature-settings: "tnum"; }
+        .trommel-hot { color: @error_color; }
+        .trommel-warm { color: @warning_color; }
+        .trommel-muted { opacity: 0.6; }
+        "#,
+    );
+    if let Some(display) = gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
 }
 
 fn label(text: &str, classes: &[&str]) -> gtk::Label {
@@ -263,6 +298,12 @@ fn switch_row(title: &str, subtitle: &str) -> adw::SwitchRow {
 fn clear_box(container: &gtk::Box) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
+    }
+}
+
+fn clear_flow(flow: &gtk::FlowBox) {
+    while let Some(child) = flow.first_child() {
+        flow.remove(&child);
     }
 }
 
@@ -299,6 +340,7 @@ fn build_ui(app: &adw::Application) {
         });
     }
 
+    install_css();
     let cfg = Config::load_or_default();
     i18n::set_language(cfg.behavior.language);
 
@@ -413,8 +455,16 @@ fn build_ui(app: &adw::Application) {
         .title(tr("Rig", "Риг"))
         .description(tr("Per-GPU live state", "Живое состояние каждой карты"))
         .build();
-    let gpu_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    rig_group.add(&gpu_box);
+    let gpu_flow = gtk::FlowBox::new();
+    gpu_flow.set_selection_mode(gtk::SelectionMode::None);
+    gpu_flow.set_max_children_per_line(3);
+    gpu_flow.set_min_children_per_line(1);
+    gpu_flow.set_homogeneous(true);
+    gpu_flow.set_column_spacing(12);
+    gpu_flow.set_row_spacing(12);
+    gpu_flow.set_margin_top(6);
+    gpu_flow.set_margin_bottom(6);
+    rig_group.add(&gpu_flow);
     dashboard.add(&rig_group);
 
     let totals_group = adw::PreferencesGroup::builder()
@@ -498,7 +548,8 @@ fn build_ui(app: &adw::Application) {
         pill,
         total_power,
         total_temp,
-        gpu_box,
+        gpu_flow,
+        gpu_settings_sig: RefCell::new(String::new()),
         gpu_sig: RefCell::new(String::new()),
         shares,
         pool_balance,
@@ -883,20 +934,36 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
         50.0,
         1000.0,
     );
+    let core_lock = switch_row(
+        &tr("Lock core clock", "Лочить частоту ядра"),
+        &tr(
+            "Optional; off = driver auto",
+            "Опционально; выкл. = авто драйвера",
+        ),
+    );
     let core = spin_row(
-        &tr("Core clock lock", "Лок ядра"),
+        &tr("Core clock", "Частота ядра"),
         "MHz",
         1620.0,
-        0.0,
+        100.0,
         4000.0,
     );
+    core.set_sensitive(core_lock.is_active());
+    let memory_lock = switch_row(
+        &tr("Lock memory clock", "Лочить частоту памяти"),
+        &tr(
+            "Optional; a lower lock can save power on some coins",
+            "Опционально; низкий лок может экономить питание на некоторых монетах",
+        ),
+    );
     let memory = spin_row(
-        &tr("Memory clock lock", "Лок памяти"),
+        &tr("Memory clock", "Частота памяти"),
         "MHz",
         810.0,
-        0.0,
+        100.0,
         12000.0,
     );
+    memory.set_sensitive(memory_lock.is_active());
     let temp_limit = spin_row(
         &tr("Temperature limit", "Порог температуры"),
         "°C",
@@ -911,10 +978,35 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
         40.0,
         95.0,
     );
-    for row in [&power, &core, &memory, &temp_limit, &temp_resume] {
-        gpu.add(row);
+    gpu.add(&power);
+    gpu.add(&core_lock);
+    gpu.add(&core);
+    gpu.add(&memory_lock);
+    gpu.add(&memory);
+    gpu.add(&temp_limit);
+    gpu.add(&temp_resume);
+    {
+        let core_row = core.clone();
+        core_lock.connect_notify_local(Some("active"), move |row, _| {
+            core_row.set_sensitive(row.is_active());
+        });
+        let memory_row = memory.clone();
+        memory_lock.connect_notify_local(Some("active"), move |row, _| {
+            memory_row.set_sensitive(row.is_active());
+        });
     }
     page.add(&gpu);
+
+    let detected = adw::PreferencesGroup::builder()
+        .title(tr("Detected GPUs", "Обнаруженные карты"))
+        .description(tr(
+            "Tune each card separately; similar cards can be updated together.",
+            "Настраивайте каждую карту отдельно; одинаковые можно менять вместе.",
+        ))
+        .build();
+    let gpu_settings_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    detected.add(&gpu_settings_box);
+    page.add(&detected);
 
     let extension = adw::PreferencesGroup::builder()
         .title(tr("GNOME integration", "Интеграция с GNOME"))
@@ -1021,10 +1113,13 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             poll,
             language,
             power,
+            core_lock,
             core,
+            memory_lock,
             memory,
             temp_limit,
             temp_resume,
+            gpu_settings_box,
             panel_mode,
             quick_toggle,
             live_activity,
@@ -1764,17 +1859,40 @@ fn copy_diagnostics(app: &Rc<App>) {
     }
 }
 
-fn gpu_tune_dialog(app: &Rc<App>, uuid: &str, name: &str, default_power: Option<f64>) {
-    let Some(profile) = app.config.borrow().gpu_profile().cloned() else {
-        return;
-    };
-    let tuning = profile.tuning_for(uuid);
+fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
+    let uuid = gpu.uuid.clone();
+    let name = gpu.name.clone();
+    let default_power = gpu.power_default_w.or(gpu.power_limit_w);
+    let profile = app
+        .config
+        .borrow()
+        .gpu_profile()
+        .cloned()
+        .unwrap_or_default();
+    let tuning = profile.tuning_for(&uuid);
     let enabled = tuning.enabled;
+    let (same_uuids, all_uuids) = {
+        let status = app.status.borrow();
+        match status.as_ref() {
+            Some(status) => {
+                let all: Vec<String> = status.gpus.iter().map(|gpu| gpu.uuid.clone()).collect();
+                let same: Vec<String> = status
+                    .gpus
+                    .iter()
+                    .filter(|item| item.name == name)
+                    .map(|item| item.uuid.clone())
+                    .collect();
+                (same, all)
+            }
+            None => (vec![uuid.clone()], vec![uuid.clone()]),
+        }
+    };
+
     let window = gtk::Window::builder()
         .title(format!("{name} · {}", tr("GPU tuning", "Настройка GPU")))
         .modal(true)
         .transient_for(&app.window)
-        .default_width(520)
+        .default_width(540)
         .build();
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -1790,31 +1908,58 @@ fn gpu_tune_dialog(app: &Rc<App>, uuid: &str, name: &str, default_power: Option<
     header.pack_start(&recommended);
     toolbar.add_top_bar(&header);
     let page = adw::PreferencesPage::new();
-    let group = adw::PreferencesGroup::builder().title(name).build();
+
+    let group = adw::PreferencesGroup::builder()
+        .title(format!("GPU #{} · {name}", gpu.index))
+        .description(uuid.clone())
+        .build();
     let power = spin_row(
         &tr("Power limit", "Лимит питания"),
-        "W",
+        "W — 0 = auto",
         tuning.power_limit_w.unwrap_or(0) as f64,
         0.0,
         1000.0,
     );
+    let core_lock = switch_row(
+        &tr("Lock core clock", "Лочить частоту ядра"),
+        &tr(
+            "Optional. Off = driver auto; may help a specific coin.",
+            "Опционально. Выкл. = авто драйвера; может помочь конкретной монете.",
+        ),
+    );
+    core_lock.set_active(tuning.core_clock_mhz.is_some());
     let core = spin_row(
         &tr("Core clock", "Частота ядра"),
         "MHz",
-        tuning.core_clock_mhz.unwrap_or(0) as f64,
-        0.0,
+        tuning.core_clock_mhz.unwrap_or(1620) as f64,
+        100.0,
         4000.0,
     );
+    core.set_sensitive(core_lock.is_active());
+    let memory_lock = switch_row(
+        &tr("Lock memory clock", "Лочить частоту памяти"),
+        &tr(
+            "Optional. A lower memory lock can cut power and help some coins; it can hurt others.",
+            "Опционально. Низкий лок памяти может снизить потребление и помочь одним монетам, но навредить другим.",
+        ),
+    );
+    memory_lock.set_active(tuning.memory_clock_mhz.is_some());
     let memory = spin_row(
         &tr("Memory clock", "Частота памяти"),
         "MHz",
-        tuning.memory_clock_mhz.unwrap_or(0) as f64,
-        0.0,
+        tuning.memory_clock_mhz.unwrap_or(810) as f64,
+        100.0,
         12000.0,
     );
+    memory.set_sensitive(memory_lock.is_active());
+    let simple = app.config.borrow().behavior.simple_mode;
+    core_lock.set_visible(!simple);
+    core.set_visible(!simple);
+    memory_lock.set_visible(!simple);
+    memory.set_visible(!simple);
     let fan = spin_row(
         &tr("Fan", "Вентилятор"),
-        "%",
+        "% — 0 = auto",
         tuning.fan_pct.unwrap_or(0) as f64,
         0.0,
         100.0,
@@ -1826,51 +1971,138 @@ fn gpu_tune_dialog(app: &Rc<App>, uuid: &str, name: &str, default_power: Option<
         60.0,
         100.0,
     );
-    for row in [&power, &core, &memory, &fan, &temp] {
-        group.add(row);
-    }
+    group.add(&power);
+    group.add(&core_lock);
+    group.add(&core);
+    group.add(&memory_lock);
+    group.add(&memory);
+    group.add(&fan);
+    group.add(&temp);
+
+    let target_group = adw::PreferencesGroup::builder()
+        .title(tr("Apply to", "Применить к"))
+        .build();
+    let apply_similar = switch_row(
+        &tr("Similar GPUs", "Одинаковые карты"),
+        &tr(
+            "Also apply to GPUs with the same model",
+            "Также применить к картам той же модели",
+        ),
+    );
+    apply_similar.set_visible(same_uuids.len() > 1);
+    let apply_all = switch_row(
+        &tr("All GPUs", "Все карты"),
+        &tr(
+            "Apply to every detected GPU",
+            "Применить ко всем обнаруженным картам",
+        ),
+    );
+    apply_all.set_visible(all_uuids.len() > 1);
+    target_group.add(&apply_similar);
+    target_group.add(&apply_all);
+
+    let target_hint = label(
+        &if all_uuids.len() > 1 {
+            tr(
+                "Each card has its own settings. Use the switches above to copy this profile.",
+                "У каждой карты свои настройки. Переключатели выше копируют этот профиль.",
+            )
+        } else {
+            tr(
+                "Single GPU: these settings apply to this card.",
+                "Одна карта: эти настройки относятся к ней.",
+            )
+        },
+        &["caption", "dim-label"],
+    );
+    target_hint.set_margin_start(6);
+    target_hint.set_margin_top(4);
+    target_group.add(&target_hint);
     page.add(&group);
+    page.add(&target_group);
     toolbar.set_content(Some(&page));
     window.set_child(Some(&toolbar));
+
     {
         let power_row = power.clone();
         let core_row = core.clone();
         let memory_row = memory.clone();
         let fan_row = fan.clone();
         let temp_row = temp.clone();
+        let core_lock_row = core_lock.clone();
+        let memory_lock_row = memory_lock.clone();
+        let base = default_power.unwrap_or(300.0);
         recommended.connect_clicked(move |_| {
-            let base = default_power.unwrap_or(300.0);
             power_row.set_value((base * 0.8).max(50.0).round());
-            core_row.set_value(0.0);
-            memory_row.set_value(0.0);
+            core_lock_row.set_active(false);
+            memory_lock_row.set_active(false);
+            core_row.set_value(1620.0);
+            memory_row.set_value(810.0);
             fan_row.set_value(0.0);
             temp_row.set_value(85.0);
         });
     }
     {
+        let core_row = core.clone();
+        let memory_row = memory.clone();
+        core_lock.connect_notify_local(Some("active"), move |row, _| {
+            core_row.set_sensitive(row.is_active());
+        });
+        let memory_row = memory_row.clone();
+        memory_lock.connect_notify_local(Some("active"), move |row, _| {
+            memory_row.set_sensitive(row.is_active());
+        });
+    }
+    {
         let app = app.clone();
         let window = window.clone();
-        let uuid = uuid.to_string();
+        let uuid = uuid.clone();
+        let same_uuids = same_uuids.clone();
+        let all_uuids = all_uuids.clone();
         save.connect_clicked(move |_| {
+            let core_value = core.value() as u32;
+            let memory_value = memory.value() as u32;
             let tuning = GpuTuning {
                 enabled,
                 power_limit_w: nonzero(power.value() as u32),
-                core_clock_mhz: nonzero(core.value() as u32),
-                memory_clock_mhz: nonzero(memory.value() as u32),
+                core_clock_mhz: if core_lock.is_active() && core_value >= 100 {
+                    Some(core_value)
+                } else {
+                    None
+                },
+                memory_clock_mhz: if memory_lock.is_active() && memory_value >= 100 {
+                    Some(memory_value)
+                } else {
+                    None
+                },
                 fan_pct: nonzero(fan.value() as u32),
                 temp_limit_c: temp.value() as u32,
                 temp_resume_c: 65,
             };
-            app.config
-                .borrow_mut()
-                .gpu_profile_mut()
-                .per_gpu
-                .insert(uuid.clone(), tuning);
+            let mut targets = vec![uuid.clone()];
+            if apply_all.is_active() {
+                targets = all_uuids.clone();
+            } else if apply_similar.is_active() {
+                targets.extend(same_uuids.iter().cloned());
+            }
+            targets.sort();
+            targets.dedup();
+            {
+                let mut cfg = app.config.borrow_mut();
+                let profile = cfg.gpu_profile_mut();
+                for target in &targets {
+                    profile.per_gpu.insert(target.clone(), tuning.clone());
+                }
+            }
             mark_dirty(&app);
             window.close();
-            app.toast.add_toast(adw::Toast::new(&tr(
-                "GPU tuning saved to the draft. Apply to use it.",
-                "Настройка GPU сохранена в draft. Примените, чтобы использовать.",
+            app.toast.add_toast(adw::Toast::new(&format!(
+                "{}: {}",
+                tr(
+                    "GPU tuning saved to draft",
+                    "Настройка GPU сохранена в draft"
+                ),
+                targets.len()
             )));
         });
     }
@@ -2061,6 +2293,7 @@ fn load_settings(app: &Rc<App>) {
     app.settings
         .start_login
         .set_active(behavior.start_mining_on_login);
+    app.settings.simple_mode.set_active(behavior.simple_mode);
     app.settings.poll.set_value(behavior.poll_interval_s as f64);
     app.settings.language.set_selected(match behavior.language {
         i18n::Language::System => 0,
@@ -2072,11 +2305,23 @@ fn load_settings(app: &Rc<App>) {
             .power
             .set_value(profile.default.power_limit_w.unwrap_or(0) as f64);
         app.settings
+            .core_lock
+            .set_active(profile.default.core_clock_mhz.is_some());
+        app.settings
             .core
-            .set_value(profile.default.core_clock_mhz.unwrap_or(0) as f64);
+            .set_value(profile.default.core_clock_mhz.unwrap_or(1620) as f64);
+        app.settings
+            .core
+            .set_sensitive(profile.default.core_clock_mhz.is_some());
+        app.settings
+            .memory_lock
+            .set_active(profile.default.memory_clock_mhz.is_some());
         app.settings
             .memory
-            .set_value(profile.default.memory_clock_mhz.unwrap_or(0) as f64);
+            .set_value(profile.default.memory_clock_mhz.unwrap_or(810) as f64);
+        app.settings
+            .memory
+            .set_sensitive(profile.default.memory_clock_mhz.is_some());
         app.settings
             .temp_limit
             .set_value(profile.default.temp_limit_c as f64);
@@ -2111,6 +2356,10 @@ fn apply_simple_mode(app: &Rc<App>) {
     app.editor.options_group.set_visible(!simple);
     app.editor.extra.set_visible(!simple);
     app.editor.miner_fee.set_visible(!simple);
+    app.settings.core_lock.set_visible(!simple);
+    app.settings.core.set_visible(!simple);
+    app.settings.memory_lock.set_visible(!simple);
+    app.settings.memory.set_visible(!simple);
 }
 
 fn save_settings(app: &Rc<App>) {
@@ -2128,8 +2377,16 @@ fn save_settings(app: &Rc<App>) {
     };
     let profile = cfg.gpu_profile_mut();
     profile.default.power_limit_w = nonzero(app.settings.power.value() as u32);
-    profile.default.core_clock_mhz = nonzero(app.settings.core.value() as u32);
-    profile.default.memory_clock_mhz = nonzero(app.settings.memory.value() as u32);
+    profile.default.core_clock_mhz = if app.settings.core_lock.is_active() {
+        nonzero(app.settings.core.value() as u32)
+    } else {
+        None
+    };
+    profile.default.memory_clock_mhz = if app.settings.memory_lock.is_active() {
+        nonzero(app.settings.memory.value() as u32)
+    } else {
+        None
+    };
     profile.default.temp_limit_c = app.settings.temp_limit.value() as u32;
     profile.default.temp_resume_c = app.settings.temp_resume.value() as u32;
     set_autostart_unit(app.settings.start_login.is_active());
@@ -2385,6 +2642,285 @@ fn handle_event(app: &Rc<App>, event: Ev) {
     }
 }
 
+fn metric(label_text: &str, value_text: &str, value_class: &str) -> gtk::Box {
+    let box_ = gtk::Box::new(gtk::Orientation::Vertical, 1);
+    let key = label(label_text, &["trommel-metric-label"]);
+    let mut classes = vec!["trommel-metric-value"];
+    if !value_class.is_empty() {
+        classes.push(value_class);
+    }
+    let value = label(value_text, &classes);
+    box_.append(&key);
+    box_.append(&value);
+    box_
+}
+
+fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    card.add_css_class("trommel-gpu-card");
+    card.set_size_request(230, -1);
+    card.set_hexpand(true);
+    card.set_tooltip_text(Some(&gpu.uuid));
+
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let titles = gtk::Box::new(gtk::Orientation::Vertical, 1);
+    titles.set_hexpand(true);
+    let title = label(&format!("GPU #{}", gpu.index), &["trommel-gpu-title"]);
+    let name = label(&gpu.name, &["caption", "dim-label"]);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    name.set_max_width_chars(24);
+    titles.append(&title);
+    titles.append(&name);
+    header.append(&titles);
+
+    let toggle = gtk::Switch::new();
+    let enabled = app
+        .config
+        .borrow()
+        .gpu_profile()
+        .map(|profile| profile.tuning_for(&gpu.uuid).enabled)
+        .unwrap_or(true);
+    toggle.set_active(enabled);
+    toggle.set_valign(gtk::Align::Center);
+    toggle.set_tooltip_text(Some(&tr(
+        "Enable this GPU in the active profile",
+        "Включить эту карту в активном профиле",
+    )));
+    {
+        let app = app.clone();
+        let uuid = gpu.uuid.clone();
+        toggle.connect_notify_local(Some("active"), move |toggle, _| {
+            let mut cfg = app.config.borrow_mut();
+            let profile = cfg.gpu_profile_mut();
+            let mut tuning = profile.tuning_for(&uuid);
+            tuning.enabled = toggle.is_active();
+            profile.per_gpu.insert(uuid.clone(), tuning);
+            drop(cfg);
+            app.dirty.set(true);
+            update_dirty(&app);
+        });
+    }
+    header.append(&toggle);
+    card.append(&header);
+
+    let grid = gtk::Grid::new();
+    grid.set_column_spacing(16);
+    grid.set_row_spacing(6);
+    grid.set_column_homogeneous(true);
+    let temp = gpu
+        .temp_c
+        .map(|value| format!("{value} °C"))
+        .unwrap_or_else(|| "—".into());
+    let temp_class = match gpu.temp_c {
+        Some(value) if value >= 80 => "trommel-hot",
+        Some(value) if value >= 70 => "trommel-warm",
+        _ => "",
+    };
+    let power = format!(
+        "{} / {} W",
+        gpu.power_w
+            .map(|value| format!("{value:.0}"))
+            .unwrap_or_else(|| "—".into()),
+        gpu.power_limit_w
+            .map(|value| format!("{value:.0}"))
+            .unwrap_or_else(|| "—".into())
+    );
+    let fan = gpu
+        .fan_pct
+        .map(|value| format!("{value}%"))
+        .unwrap_or_else(|| "—".into());
+    let clocks = format!(
+        "{} / {} MHz",
+        gpu.core_mhz
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "—".into()),
+        gpu.mem_mhz
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "—".into())
+    );
+    let utilization = gpu
+        .util_pct
+        .map(|value| format!("{value}%"))
+        .unwrap_or_else(|| "—".into());
+    let tuning_label = if app
+        .config
+        .borrow()
+        .gpu_profile()
+        .map(|profile| profile.per_gpu.contains_key(&gpu.uuid))
+        .unwrap_or(false)
+    {
+        tr("custom", "своя")
+    } else {
+        tr("profile default", "профиль")
+    };
+    for (col, row, item) in [
+        (0, 0, metric(&tr("Temp", "Темп."), &temp, temp_class)),
+        (1, 0, metric(&tr("Power", "Мощность"), &power, "")),
+        (0, 1, metric(&tr("Fan", "Вентилятор"), &fan, "")),
+        (1, 1, metric(&tr("Clocks", "Частоты"), &clocks, "")),
+        (
+            0,
+            2,
+            metric(&tr("Utilization", "Загрузка"), &utilization, ""),
+        ),
+        (
+            1,
+            2,
+            metric(&tr("Tuning", "Настройка"), &tuning_label, "trommel-muted"),
+        ),
+    ] {
+        grid.attach(&item, col, row, 1, 1);
+    }
+    card.append(&grid);
+
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let uuid = label(&gpu.uuid, &["caption", "trommel-muted"]);
+    uuid.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    uuid.set_max_width_chars(26);
+    uuid.set_hexpand(true);
+    let tune = gtk::Button::builder()
+        .label(tr("Tune", "Настроить"))
+        .css_classes(["pill", "flat"])
+        .build();
+    {
+        let app = app.clone();
+        let gpu = gpu.clone();
+        tune.connect_clicked(move |_| gpu_tune_dialog(&app, &gpu));
+    }
+    footer.append(&uuid);
+    footer.append(&tune);
+    card.append(&footer);
+    card.upcast()
+}
+
+fn refresh_gpu_cards(app: &Rc<App>, gpus: &[GpuStats]) {
+    clear_flow(&app.gpu_flow);
+    if gpus.is_empty() {
+        let empty = label(
+            &tr("No NVIDIA GPU detected", "NVIDIA GPU не обнаружен"),
+            &["dim-label"],
+        );
+        empty.set_margin_top(8);
+        empty.set_margin_bottom(8);
+        let child = gtk::FlowBoxChild::new();
+        child.set_child(Some(&empty));
+        app.gpu_flow.insert(&child, -1);
+        return;
+    }
+    for gpu in gpus {
+        let child = gtk::FlowBoxChild::new();
+        child.set_child(Some(&make_gpu_card(app, gpu)));
+        app.gpu_flow.insert(&child, -1);
+    }
+}
+
+fn tuning_summary(app: &Rc<App>, uuid: &str) -> (String, bool) {
+    let profile = app
+        .config
+        .borrow()
+        .gpu_profile()
+        .cloned()
+        .unwrap_or_default();
+    let tuning = profile.tuning_for(uuid);
+    let custom = profile.per_gpu.contains_key(uuid);
+    let power = tuning
+        .power_limit_w
+        .map(|value| format!("{value} W"))
+        .unwrap_or_else(|| tr("auto", "авто"));
+    let core = tuning
+        .core_clock_mhz
+        .map(|value| format!("{value} MHz"))
+        .unwrap_or_else(|| tr("auto", "авто"));
+    let memory = tuning
+        .memory_clock_mhz
+        .map(|value| format!("{value} MHz"))
+        .unwrap_or_else(|| tr("auto", "авто"));
+    let fan = tuning
+        .fan_pct
+        .map(|value| format!("{value}%"))
+        .unwrap_or_else(|| tr("auto", "авто"));
+    let text = format!(
+        "{} · {}: {} · {}: {} · {}: {} · {}: {} · {} °C",
+        if custom {
+            tr("custom", "своя")
+        } else {
+            tr("profile default", "профиль")
+        },
+        tr("power", "питание"),
+        power,
+        tr("core", "ядро"),
+        core,
+        tr("memory", "память"),
+        memory,
+        tr("fan", "вентилятор"),
+        fan,
+        tuning.temp_limit_c
+    );
+    (text, custom)
+}
+
+fn refresh_gpu_settings(app: &Rc<App>, gpus: &[GpuStats]) {
+    let signature = gpus
+        .iter()
+        .map(|gpu| {
+            let tuning = app
+                .config
+                .borrow()
+                .gpu_profile()
+                .map(|profile| profile.tuning_for(&gpu.uuid));
+            format!("{}:{}:{:?}", gpu.uuid, gpu.name, tuning)
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    if *app.gpu_settings_sig.borrow() == signature {
+        return;
+    }
+    *app.gpu_settings_sig.borrow_mut() = signature;
+    clear_box(&app.settings.gpu_settings_box);
+    if gpus.is_empty() {
+        let row = adw::ActionRow::builder()
+            .title(tr("No GPU detected", "Карты не обнаружены"))
+            .subtitle(tr(
+                "Check the NVIDIA driver and nvidia-smi",
+                "Проверьте драйвер NVIDIA и nvidia-smi",
+            ))
+            .build();
+        app.settings.gpu_settings_box.append(&row);
+        return;
+    }
+    for gpu in gpus {
+        let (summary, _) = tuning_summary(app, &gpu.uuid);
+        let row = adw::ActionRow::builder()
+            .title(format!("GPU #{} · {}", gpu.index, gpu.name))
+            .subtitle(summary)
+            .build();
+        let tune = gtk::Button::builder()
+            .label(tr("Tune", "Настроить"))
+            .css_classes(["pill"])
+            .valign(gtk::Align::Center)
+            .build();
+        {
+            let app = app.clone();
+            let gpu = gpu.clone();
+            tune.connect_clicked(move |_| gpu_tune_dialog(&app, &gpu));
+        }
+        row.add_suffix(&tune);
+        app.settings.gpu_settings_box.append(&row);
+    }
+    if gpus.len() == 1 {
+        let hint = label(
+            &tr(
+                "Single GPU: these settings apply to this card only.",
+                "Одна карта: эти настройки относятся только к ней.",
+            ),
+            &["caption", "dim-label"],
+        );
+        hint.set_margin_start(6);
+        hint.set_margin_top(4);
+        app.settings.gpu_settings_box.append(&hint);
+    }
+}
+
 fn apply_status(app: &Rc<App>, status: Status) {
     let running = status.state.running;
     app.action_button.set_sensitive(true);
@@ -2494,78 +3030,9 @@ fn apply_status(app: &Rc<App>, status: Status) {
         .join("|");
     if *app.gpu_sig.borrow() != signature {
         *app.gpu_sig.borrow_mut() = signature;
-        clear_box(&app.gpu_box);
-        if status.gpus.is_empty() {
-            let label = gtk::Label::new(Some(&tr(
-                "No NVIDIA GPU detected",
-                "NVIDIA GPU не обнаружен",
-            )));
-            label.add_css_class("dim-label");
-            app.gpu_box.append(&label);
-        }
-        for gpu in &status.gpus {
-            let row = adw::ActionRow::builder()
-                .title(format!("GPU #{} · {}", gpu.index, gpu.name))
-                .subtitle(format!(
-                    "{} °C · {} W / {} W · {}% · {} / {} MHz · {}",
-                    gpu.temp_c
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "—".into()),
-                    gpu.power_w
-                        .map(|v| format!("{v:.0}"))
-                        .unwrap_or_else(|| "—".into()),
-                    gpu.power_limit_w
-                        .map(|v| format!("{v:.0}"))
-                        .unwrap_or_else(|| "—".into()),
-                    gpu.fan_pct
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "—".into()),
-                    gpu.core_mhz
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "—".into()),
-                    gpu.mem_mhz
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "—".into()),
-                    gpu.uuid
-                ))
-                .build();
-            let tune = gtk::Button::builder()
-                .label(tr("Tune", "Настроить"))
-                .css_classes(["flat"])
-                .build();
-            let app_tune = app.clone();
-            let uuid = gpu.uuid.clone();
-            let name = gpu.name.clone();
-            let default_power = gpu.power_default_w.or(gpu.power_limit_w);
-            tune.connect_clicked(move |_| gpu_tune_dialog(&app_tune, &uuid, &name, default_power));
-            let toggle = gtk::Switch::new();
-            toggle.set_active(
-                app.config
-                    .borrow()
-                    .gpu_profile()
-                    .map(|p| p.tuning_for(&gpu.uuid).enabled)
-                    .unwrap_or(true),
-            );
-            toggle.set_valign(gtk::Align::Center);
-            {
-                let app = app.clone();
-                let uuid = gpu.uuid.clone();
-                toggle.connect_notify_local(Some("active"), move |toggle, _| {
-                    let mut cfg = app.config.borrow_mut();
-                    let profile = cfg.gpu_profile_mut();
-                    let mut tuning = profile.tuning_for(&uuid);
-                    tuning.enabled = toggle.is_active();
-                    profile.per_gpu.insert(uuid.clone(), tuning);
-                    drop(cfg);
-                    app.dirty.set(true);
-                    update_dirty(&app);
-                });
-            }
-            row.add_suffix(&tune);
-            row.add_suffix(&toggle);
-            app.gpu_box.append(&row);
-        }
+        refresh_gpu_cards(app, &status.gpus);
     }
+    refresh_gpu_settings(app, &status.gpus);
     *app.status.borrow_mut() = Some(status);
 }
 
