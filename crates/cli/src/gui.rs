@@ -182,33 +182,6 @@ impl OptionRow {
     }
 }
 
-struct PresetEditor {
-    stack: gtk::Stack,
-    preset_box: gtk::Box,
-    name: adw::EntryRow,
-    pool: adw::ComboRow,
-    pool_url: adw::EntryRow,
-    miner: adw::ComboRow,
-    version: adw::ComboRow,
-    wallet: adw::EntryRow,
-    worker: adw::EntryRow,
-    pool_fee: adw::SpinRow,
-    miner_fee: adw::SpinRow,
-    extra: adw::EntryRow,
-    info_desc: adw::ActionRow,
-    info_fee: adw::ActionRow,
-    info_install: adw::ActionRow,
-    install_button: gtk::Button,
-    download_button: gtk::Button,
-    options_group: adw::PreferencesGroup,
-    options_box: gtk::Box,
-    options: RefCell<Vec<OptionRow>>,
-    current_id: RefCell<String>,
-    syncing: Cell<bool>,
-    delete_button: gtk::Button,
-    duplicate_button: gtk::Button,
-}
-
 struct SettingsWidgets {
     auto_restart: adw::SwitchRow,
     restore_stock: adw::SwitchRow,
@@ -256,11 +229,13 @@ struct App {
     gpu_flow: gtk::FlowBox,
     gpu_settings_sig: RefCell<String>,
     gpu_sig: RefCell<String>,
-    shares: adw::ActionRow,
-    pool_balance: adw::ActionRow,
+    shares_ok: gtk::Label,
+    shares_bad: gtk::Label,
+    pool_balance_value: gtk::Label,
     pool_meta: adw::ActionRow,
     warnings: adw::ActionRow,
-    editor: PresetEditor,
+    warning_badge: gtk::Label,
+    preset_box: gtk::Box,
     settings: SettingsWidgets,
     miners_box: gtk::Box,
 }
@@ -284,6 +259,27 @@ fn install_css() {
         .trommel-hot { color: @error_color; }
         .trommel-warm { color: @warning_color; }
         .trommel-muted { opacity: 0.6; }
+        .trommel-pill {
+            border-radius: 999px;
+            padding: 2px 10px;
+            font-weight: 600;
+        }
+        .trommel-pill-running {
+            background-color: alpha(@success_color, 0.16);
+            color: @success_color;
+        }
+        .trommel-pill-external {
+            background-color: alpha(@warning_color, 0.16);
+            color: @warning_color;
+        }
+        .trommel-pill-stopped {
+            background-color: alpha(@card_fg_color, 0.06);
+            color: alpha(@card_fg_color, 0.7);
+        }
+        .trommel-pill-offline {
+            background-color: alpha(@error_color, 0.16);
+            color: @error_color;
+        }
         "#,
     );
     if let Some(display) = gdk::Display::default() {
@@ -342,7 +338,9 @@ pub fn run() -> anyhow::Result<()> {
     // even when a normal Trommel instance is open.
     let screenshot = std::env::var_os("TROMMEL_SCREENSHOT").is_some()
         || std::env::var_os("TROMMEL_WIZARD_SCREENSHOT").is_some()
-        || std::env::var_os("TROMMEL_TUNE_SCREENSHOT").is_some();
+        || std::env::var_os("TROMMEL_TUNE_SCREENSHOT").is_some()
+        || std::env::var_os("TROMMEL_INSTALL_SCREENSHOT").is_some()
+        || std::env::var_os("TROMMEL_PRESET_SCREENSHOT").is_some();
     let app_id = if screenshot {
         format!("io.github.nayvok.Trommel.Screenshot{}", std::process::id())
     } else {
@@ -458,7 +456,7 @@ fn build_ui(app: &adw::Application) {
     hero_hashrate.set_hexpand(true);
     let pill = label(
         &tr("stopped", "остановлен"),
-        &["caption", "pearl-pill-label"],
+        &["caption", "trommel-pill", "trommel-pill-stopped"],
     );
     pill.set_valign(gtk::Align::Center);
     hero_top.append(&hero_hashrate);
@@ -514,12 +512,21 @@ fn build_ui(app: &adw::Application) {
         .build();
     let shares = adw::ActionRow::builder()
         .title(tr("Shares", "Шары"))
-        .subtitle("—")
         .build();
+    let shares_ok = label("0", &["caption", "success"]);
+    let shares_bad = label("0", &["caption", "error"]);
+    let shares_value = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    shares_value.set_valign(gtk::Align::Center);
+    shares_value.append(&shares_ok);
+    shares_value.append(&label("/", &["caption", "dim-label"]));
+    shares_value.append(&shares_bad);
+    shares.add_suffix(&shares_value);
     let pool_balance = adw::ActionRow::builder()
         .title(tr("Pool balance", "Баланс пула"))
-        .subtitle("—")
         .build();
+    let pool_balance_value = label("—", &["caption", "accent"]);
+    pool_balance_value.set_valign(gtk::Align::Center);
+    pool_balance.add_suffix(&pool_balance_value);
     let pool_meta = adw::ActionRow::builder()
         .title(tr("Pool", "Пул"))
         .subtitle("—")
@@ -533,6 +540,9 @@ fn build_ui(app: &adw::Application) {
         .title(tr("Notes", "Замечания"))
         .build();
     let warnings = adw::ActionRow::builder().title("—").build();
+    let warning_badge = label("✓", &["caption", "success"]);
+    warning_badge.set_valign(gtk::Align::Center);
+    warnings.add_suffix(&warning_badge);
     warnings_group.add(&warnings);
     dashboard.add(&warnings_group);
 
@@ -540,7 +550,7 @@ fn build_ui(app: &adw::Application) {
     set_page_icon(&stack, &dashboard, "utilities-system-monitor-symbolic");
 
     // --------------------------------------------------------------- presets
-    let (presets_page, editor) = build_presets_page();
+    let (presets_page, preset_box) = build_presets_page();
     stack.add_titled(&presets_page, Some("presets"), &tr("Presets", "Пресеты"));
     set_page_icon(&stack, &presets_page, "document-open-recent-symbolic");
 
@@ -578,11 +588,13 @@ fn build_ui(app: &adw::Application) {
         gpu_flow,
         gpu_settings_sig: RefCell::new(String::new()),
         gpu_sig: RefCell::new(String::new()),
-        shares,
-        pool_balance,
+        shares_ok,
+        shares_bad,
+        pool_balance_value,
         pool_meta,
         warnings,
-        editor,
+        warning_badge,
+        preset_box,
         settings,
         miners_box,
     });
@@ -590,7 +602,6 @@ fn build_ui(app: &adw::Application) {
 
     install_actions(app, &app_state);
     connect_signals(&app_state);
-    refresh_preset_editor(&app_state);
     refresh_preset_list(&app_state);
     refresh_miners(&app_state);
     load_settings(&app_state);
@@ -651,6 +662,34 @@ fn build_ui(app: &adw::Application) {
             glib::ControlFlow::Break
         });
     }
+    if std::env::var_os("TROMMEL_OPEN_PRESET").is_some() {
+        let app_state = app_state.clone();
+        glib::timeout_add_seconds_local(3, move || {
+            let id = app_state
+                .config
+                .borrow()
+                .active_preset
+                .clone()
+                .unwrap_or_default();
+            preset_editor_dialog(&app_state, &id);
+            glib::ControlFlow::Break
+        });
+    }
+    if std::env::var_os("TROMMEL_OPEN_INSTALL").is_some() {
+        let app_state = app_state.clone();
+        glib::timeout_add_seconds_local(4, move || {
+            let id = catalog::miners()
+                .first()
+                .map(|miner| miner.id.clone())
+                .unwrap_or_default();
+            let version = catalog::miner(&id)
+                .and_then(|miner| miner.latest_version())
+                .map(|item| item.version.clone())
+                .unwrap_or_default();
+            miner_install_dialog(&app_state, &id, version, None);
+            glib::ControlFlow::Break
+        });
+    }
     if std::env::var_os("TROMMEL_OPEN_TUNE").is_some() {
         let app_state = app_state.clone();
         glib::timeout_add_seconds_local(4, move || {
@@ -671,207 +710,36 @@ thread_local! {
     static APP_SLOT: RefCell<Option<Rc<App>>> = const { RefCell::new(None) };
 }
 
-fn build_presets_page() -> (adw::PreferencesPage, PresetEditor) {
+fn build_presets_page() -> (adw::PreferencesPage, gtk::Box) {
     let page = adw::PreferencesPage::new();
-    let stack = gtk::Stack::new();
-
-    let list_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    list_page.set_margin_top(12);
-    list_page.set_margin_bottom(12);
     let list_group = adw::PreferencesGroup::builder()
         .title(tr("Mining presets", "Пресеты майнинга"))
         .description(tr(
-            "A preset bundles coin, pool, wallet, miner and GPU profile.",
-            "Пресет объединяет монету, пул, кошелёк, майнер и профиль GPU.",
+            "A preset bundles coin, pool, wallet, miner and GPU profile. Open a row to edit it.",
+            "Пресет объединяет монету, пул, кошелёк, майнер и профиль GPU. Откройте строку для правки.",
         ))
         .build();
     let preset_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
     list_group.add(&preset_box);
-    list_page.append(&list_group);
+    page.add(&list_group);
+
+    let actions = adw::PreferencesGroup::new();
     let new_button = gtk::Button::builder()
         .label(tr("New preset", "Новый пресет"))
-        .css_classes(["suggested-action", "pill"])
+        .icon_name("list-add-symbolic")
+        .css_classes(["flat"])
         .halign(gtk::Align::Center)
         .build();
-    list_page.append(&new_button);
-    stack.add_named(&list_page, Some("list"));
-
-    let editor_page = adw::PreferencesPage::new();
-    let back = gtk::Button::builder()
-        .label(tr("Back", "Назад"))
-        .css_classes(["flat"])
-        .build();
-    let editor_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    editor_header.set_margin_top(12);
-    editor_header.set_margin_start(12);
-    editor_header.set_margin_end(12);
-    editor_header.append(&back);
-    let header_group = adw::PreferencesGroup::new();
-    header_group.add(&editor_header);
-    editor_page.add(&header_group);
-
-    let info_group = adw::PreferencesGroup::builder()
-        .title(tr("Miner", "Майнер"))
-        .build();
-    let info_desc = adw::ActionRow::builder()
-        .title(tr("Description", "Описание"))
-        .build();
-    let info_fee = adw::ActionRow::builder()
-        .title(tr("Fee", "Комиссия"))
-        .build();
-    let info_install = adw::ActionRow::builder()
-        .title(tr("Installation", "Установка"))
-        .build();
-    let install_button = gtk::Button::builder()
-        .label(tr("Import", "Импорт"))
-        .css_classes(["pill"])
-        .valign(gtk::Align::Center)
-        .build();
-    let download_button = gtk::Button::builder()
-        .label(tr("Download", "Скачать"))
-        .css_classes(["pill"])
-        .valign(gtk::Align::Center)
-        .build();
-    info_install.add_suffix(&download_button);
-    info_install.add_suffix(&install_button);
-    info_group.add(&info_desc);
-    info_group.add(&info_fee);
-    info_group.add(&info_install);
-    editor_page.add(&info_group);
-
-    let form_group = adw::PreferencesGroup::builder()
-        .title(tr("Preset", "Пресет"))
-        .build();
-    let name = adw::EntryRow::builder()
-        .title(tr("Name", "Название"))
-        .build();
-    let pool = adw::ComboRow::builder().title(tr("Pool", "Пул")).build();
-    let pool_url = adw::EntryRow::builder()
-        .title(tr("Pool address", "Адрес пула"))
-        .build();
-    let miner = adw::ComboRow::builder()
-        .title(tr("Miner", "Майнер"))
-        .build();
-    let version = adw::ComboRow::builder()
-        .title(tr("Version", "Версия"))
-        .build();
-    let wallet = adw::EntryRow::builder()
-        .title(tr("Wallet", "Кошелёк"))
-        .build();
-    let worker = adw::EntryRow::builder()
-        .title(tr("Worker", "Воркер"))
-        .build();
-    let pool_fee = spin_row(
-        &tr("Pool fee", "Комиссия пула"),
-        &tr(
-            "Used for effective hashrate; the pool sets the real fee",
-            "Для расчёта effective; реальную ставку задаёт пул",
-        ),
-        1.0,
-        0.0,
-        20.0,
-    );
-    let miner_fee = spin_row(
-        &tr("Miner fee override", "Переопределение комиссии майнера"),
-        &tr(
-            "Editable only when the miner supports it",
-            "Редактируется только если майнер это поддерживает",
-        ),
-        0.0,
-        0.0,
-        100.0,
-    );
-    let extra = adw::EntryRow::builder()
-        .title(tr("Extra arguments", "Доп. аргументы"))
-        .build();
-    form_group.add(&name);
-    form_group.add(&pool);
-    form_group.add(&pool_url);
-    form_group.add(&miner);
-    form_group.add(&version);
-    form_group.add(&wallet);
-    form_group.add(&worker);
-    form_group.add(&extra);
-    form_group.add(&pool_fee);
-    form_group.add(&miner_fee);
-    editor_page.add(&form_group);
-
-    let options_group = adw::PreferencesGroup::builder()
-        .title(tr("Miner options", "Настройки майнера"))
-        .description(tr(
-            "Defaults come from the selected miner version.",
-            "Значения по умолчанию берутся из выбранной версии майнера.",
-        ))
-        .build();
-    let options_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    options_group.add(&options_box);
-    editor_page.add(&options_group);
-
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    actions.set_margin_top(12);
-    actions.set_margin_bottom(18);
-    actions.set_halign(gtk::Align::Center);
-    let save = gtk::Button::builder()
-        .label(tr("Save and apply", "Сохранить и применить"))
-        .css_classes(["suggested-action", "pill"])
-        .build();
-    let duplicate_button = gtk::Button::builder()
-        .label(tr("Duplicate", "Дублировать"))
-        .css_classes(["pill"])
-        .build();
-    let delete_button = gtk::Button::builder()
-        .label(tr("Delete", "Удалить"))
-        .css_classes(["destructive-action", "pill"])
-        .build();
-    actions.append(&save);
-    actions.append(&duplicate_button);
-    actions.append(&delete_button);
-    let actions_group = adw::PreferencesGroup::new();
-    actions_group.add(&actions);
-    editor_page.add(&actions_group);
-
-    stack.add_named(&editor_page, Some("editor"));
-    let stack_group = adw::PreferencesGroup::new();
-    stack_group.add(&stack);
-    page.add(&stack_group);
-
-    let editor = PresetEditor {
-        stack: stack.clone(),
-        preset_box,
-        name,
-        pool,
-        pool_url,
-        miner,
-        version,
-        wallet,
-        worker,
-        pool_fee,
-        miner_fee,
-        extra,
-        info_desc,
-        info_fee,
-        info_install,
-        install_button,
-        download_button,
-        options_group,
-        options_box,
-        options: RefCell::new(Vec::new()),
-        current_id: RefCell::new(String::new()),
-        syncing: Cell::new(false),
-        delete_button,
-        duplicate_button,
-    };
-    // The new/back/save/delete buttons are connected after the Rc<App> exists.
+    new_button.set_margin_top(8);
+    new_button.set_margin_bottom(12);
+    actions.add(&new_button);
+    page.add(&actions);
     NEW_PRESET_BUTTON.with(|slot| *slot.borrow_mut() = Some(new_button));
-    BACK_BUTTON.with(|slot| *slot.borrow_mut() = Some(back));
-    SAVE_BUTTON.with(|slot| *slot.borrow_mut() = Some(save));
-    (page, editor)
+    (page, preset_box)
 }
 
 thread_local! {
     static NEW_PRESET_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
-    static BACK_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
-    static SAVE_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
 }
 
 fn build_miners_page() -> (adw::PreferencesPage, gtk::Box) {
@@ -899,12 +767,11 @@ fn build_miners_page() -> (adw::PreferencesPage, gtk::Box) {
     );
     let run = gtk::Button::builder()
         .label(tr("Run benchmark", "Сравнить"))
-        .css_classes(["pill"])
+        .css_classes(["flat"])
+        .valign(gtk::Align::Center)
         .build();
-    let row = adw::ActionRow::new();
-    row.add_suffix(&run);
+    minutes.add_suffix(&run);
     bench_group.add(&minutes);
-    bench_group.add(&row);
     page.add(&bench_group);
     BENCH_MINUTES.with(|slot| *slot.borrow_mut() = Some(minutes));
     BENCH_BUTTON.with(|slot| *slot.borrow_mut() = Some(run));
@@ -1227,20 +1094,6 @@ fn connect_signals(app: &Rc<App>) {
         let app = app.clone();
         button.connect_clicked(move |_| new_preset(&app));
     }
-    if let Some(button) = BACK_BUTTON.with(|slot| slot.borrow().clone()) {
-        let app = app.clone();
-        button.connect_clicked(move |_| {
-            app.editor.stack.set_visible_child_name("list");
-            refresh_preset_list(&app);
-        });
-    }
-    if let Some(button) = SAVE_BUTTON.with(|slot| slot.borrow().clone()) {
-        let app = app.clone();
-        button.connect_clicked(move |_| {
-            save_editor(&app);
-            save_and_apply(&app);
-        });
-    }
     if let Some(button) = SAVE_SETTINGS_BUTTON.with(|slot| slot.borrow().clone()) {
         let app = app.clone();
         button.connect_clicked(move |_| {
@@ -1252,37 +1105,6 @@ fn connect_signals(app: &Rc<App>) {
         let tx = app.tx.clone();
         button.connect_clicked(move |_| {
             let _ = tx.send(Cmd::ResetOc);
-        });
-    }
-    {
-        let app = app.clone();
-        let button = app.editor.install_button.clone();
-        button.connect_clicked(move |_| {
-            let miner = catalog::miners()
-                .get(app.editor.miner.selected() as usize)
-                .map(|m| m.id.clone())
-                .unwrap_or_else(|| "wildrig".into());
-            let version = catalog::miners()
-                .get(app.editor.miner.selected() as usize)
-                .and_then(|m| m.versions.get(app.editor.version.selected() as usize))
-                .map(|v| v.version.clone())
-                .unwrap_or_default();
-            import_miner(&app, &miner, &version);
-        });
-    }
-    {
-        let app = app.clone();
-        let button = app.editor.download_button.clone();
-        button.connect_clicked(move |_| {
-            let miner = catalog::miners()
-                .get(app.editor.miner.selected() as usize)
-                .map(|m| m.id.clone())
-                .unwrap_or_else(|| "wildrig".into());
-            let version = catalog::miners()
-                .get(app.editor.miner.selected() as usize)
-                .and_then(|m| m.versions.get(app.editor.version.selected() as usize))
-                .cloned();
-            download_dialog(&app, &miner, version);
         });
     }
     {
@@ -1328,52 +1150,6 @@ fn connect_signals(app: &Rc<App>) {
                 .with(|slot| slot.borrow().as_ref().map(|r| r.value() as u64))
                 .unwrap_or(3);
             let _ = tx.send(Cmd::Bench { minutes });
-        });
-    }
-    {
-        let app = app.clone();
-        let button = app.editor.delete_button.clone();
-        button.connect_clicked(move |_| delete_preset(&app));
-    }
-    {
-        let app = app.clone();
-        let button = app.editor.duplicate_button.clone();
-        button.connect_clicked(move |_| duplicate_preset(&app));
-    }
-    {
-        let app = app.clone();
-        let miner = app.editor.miner.clone();
-        miner.connect_notify_local(Some("selected"), move |_, _| {
-            if app.editor.syncing.get() {
-                return;
-            }
-            update_versions(&app);
-            rebuild_options(&app);
-            update_miner_info(&app);
-        });
-    }
-    {
-        let app = app.clone();
-        let pool = app.editor.pool.clone();
-        pool.connect_notify_local(Some("selected"), move |_, _| {
-            if app.editor.syncing.get() {
-                return;
-            }
-            if let Some(pool) = catalog::pools().get(app.editor.pool.selected() as usize) {
-                app.editor.pool_url.set_text(&pool.url);
-                app.editor.pool_fee.set_value(pool.fee_pct);
-            }
-        });
-    }
-    {
-        let app = app.clone();
-        let version = app.editor.version.clone();
-        version.connect_notify_local(Some("selected"), move |_, _| {
-            if app.editor.syncing.get() {
-                return;
-            }
-            update_miner_info(&app);
-            rebuild_options(&app);
         });
     }
 }
@@ -1449,8 +1225,40 @@ fn pool_index(id: &str) -> u32 {
         .unwrap_or(0) as u32
 }
 
+/// Selectable versions for a miner: catalogue versions first, then installed
+/// builds that are not in the catalogue (imported binaries can carry any name).
+fn miner_version_list(cfg: &Config, def: &catalog::MinerDef) -> Vec<String> {
+    let mut versions: Vec<String> = def
+        .versions
+        .iter()
+        .map(|version| version.version.clone())
+        .collect();
+    for installed in catalog::installed_versions(cfg, &def.id) {
+        if !versions.contains(&installed) {
+            versions.push(installed);
+        }
+    }
+    versions
+}
+
+/// Version currently selected in a miner/version combo pair.
+fn selected_version(
+    app: &Rc<App>,
+    miner_row: &adw::ComboRow,
+    version_row: &adw::ComboRow,
+) -> String {
+    let Some(def) = catalog::miners().get(miner_row.selected() as usize) else {
+        return String::new();
+    };
+    let versions = miner_version_list(&app.config.borrow(), def);
+    versions
+        .get(version_row.selected() as usize)
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn refresh_preset_list(app: &Rc<App>) {
-    clear_box(&app.editor.preset_box);
+    clear_box(&app.preset_box);
     let cfg = app.config.borrow();
     for (id, preset) in &cfg.presets {
         let row = adw::ActionRow::builder()
@@ -1460,79 +1268,128 @@ fn refresh_preset_list(app: &Rc<App>) {
                 preset.coin, preset.pool, preset.miner, preset.miner_version
             ))
             .build();
+        row.set_activatable(true);
+        row.set_tooltip_text(Some(&tr(
+            "Open the preset editor",
+            "Открыть редактор пресета",
+        )));
         if Some(id) == cfg.active_preset.as_ref() {
-            let badge = gtk::Label::new(Some(&tr("Active", "Активен")));
-            badge.add_css_class("accent");
+            let badge = label(&tr("Active", "Активен"), &["caption", "accent"]);
+            badge.set_valign(gtk::Align::Center);
             row.add_suffix(&badge);
+        } else {
+            let use_button = gtk::Button::builder()
+                .label(tr("Use", "Использовать"))
+                .css_classes(["flat"])
+                .valign(gtk::Align::Center)
+                .build();
+            let app_use = app.clone();
+            let id_use = id.clone();
+            use_button.connect_clicked(move |_| {
+                {
+                    let mut cfg = app_use.config.borrow_mut();
+                    cfg.active_preset = Some(id_use.clone());
+                }
+                mark_dirty(&app_use);
+                refresh_preset_list(&app_use);
+                app_use.toast.add_toast(adw::Toast::new(&tr(
+                    "Preset selected. Apply it when you are ready.",
+                    "Пресет выбран. Примените его, когда будете готовы.",
+                )));
+            });
+            row.add_suffix(&use_button);
         }
-        let edit = gtk::Button::builder()
-            .label(tr("Edit", "Изменить"))
-            .css_classes(["flat"])
-            .build();
-        let use_button = gtk::Button::builder()
-            .label(tr("Use", "Использовать"))
-            .css_classes(["pill"])
-            .build();
-        row.add_suffix(&edit);
-        row.add_suffix(&use_button);
-        let app_edit = app.clone();
-        let id_edit = id.clone();
-        edit.connect_clicked(move |_| {
-            load_preset_into_editor(&app_edit, &id_edit);
-            app_edit.editor.stack.set_visible_child_name("editor");
-        });
-        let app_use = app.clone();
-        let id_use = id.clone();
-        use_button.connect_clicked(move |_| {
-            app_use.config.borrow_mut().active_preset = Some(id_use.clone());
-            load_preset_into_editor(&app_use, &id_use);
-            mark_dirty(&app_use);
-            refresh_preset_list(&app_use);
-            refresh_preset_editor(&app_use);
-        });
-        app.editor.preset_box.append(&row);
+        let chevron = gtk::Image::from_icon_name("go-next-symbolic");
+        chevron.add_css_class("dim-label");
+        chevron.set_valign(gtk::Align::Center);
+        row.add_suffix(&chevron);
+        let app_row = app.clone();
+        let id_row = id.clone();
+        row.connect_activated(move |_| preset_editor_dialog(&app_row, &id_row));
+        app.preset_box.append(&row);
     }
 }
 
-fn refresh_preset_editor(app: &Rc<App>) {
-    let id = app
-        .config
-        .borrow()
-        .active_preset
-        .clone()
-        .unwrap_or_default();
-    load_preset_into_editor(app, &id);
-}
-
-fn load_preset_into_editor(app: &Rc<App>, id: &str) {
-    let Some(preset) = app.config.borrow().presets.get(id).cloned() else {
+/// Rebuild the version combo for the selected miner. Installed builds are
+/// marked with a check, including versions that are not in the catalogue.
+fn preset_editor_versions(
+    app: &Rc<App>,
+    miner_row: &adw::ComboRow,
+    version_row: &adw::ComboRow,
+    preferred: &str,
+) {
+    let Some(def) = catalog::miners().get(miner_row.selected() as usize) else {
         return;
     };
-    app.editor.syncing.set(true);
-    *app.editor.current_id.borrow_mut() = id.to_string();
-    app.editor.name.set_text(&preset.name);
-    app.editor.pool.set_model(Some(&gtk::StringList::new(
-        &pool_names().iter().map(String::as_str).collect::<Vec<_>>(),
-    )));
-    app.editor.miner.set_model(Some(&gtk::StringList::new(
-        &miner_names().iter().map(String::as_str).collect::<Vec<_>>(),
-    )));
-    app.editor.pool.set_selected(pool_index(&preset.pool));
-    app.editor.miner.set_selected(miner_index(&preset.miner));
-    app.editor.pool_url.set_text(&preset.pool_url);
-    app.editor.wallet.set_text(&preset.wallet);
-    app.editor.worker.set_text(&preset.worker);
-    app.editor.pool_fee.set_value(preset.pool_fee_pct);
-    app.editor.miner_fee.set_value(
-        preset
-            .miner_fee_override_pct
-            .unwrap_or(preset.miner_fee_pct),
-    );
-    let fee_configurable = catalog::miner(&preset.miner)
-        .map(|m| m.fee_configurable)
-        .unwrap_or(false);
-    app.editor.miner_fee.set_sensitive(fee_configurable);
-    let fee_hint = if fee_configurable {
+    let cfg = app.config.borrow();
+    let installed = catalog::installed_versions(&cfg, &def.id);
+    let versions = miner_version_list(&cfg, def);
+    drop(cfg);
+    let labels: Vec<String> = versions
+        .iter()
+        .map(|version| {
+            if installed.contains(version) {
+                format!("{version} ✓")
+            } else {
+                version.clone()
+            }
+        })
+        .collect();
+    version_row.set_model(Some(&string_list(&labels)));
+    let index = versions
+        .iter()
+        .position(|version| version == preferred)
+        .unwrap_or(0);
+    version_row.set_selected(index as u32);
+}
+
+/// Rebuild the miner-specific option rows for the selected miner.
+fn rebuild_editor_options(
+    app: &Rc<App>,
+    id: &str,
+    miner_row: &adw::ComboRow,
+    miner_fee: &adw::SpinRow,
+    box_: &gtk::Box,
+    options: &RefCell<Vec<OptionRow>>,
+) {
+    clear_box(box_);
+    options.borrow_mut().clear();
+    let Some(def) = catalog::miners().get(miner_row.selected() as usize) else {
+        return;
+    };
+    let values = app
+        .config
+        .borrow()
+        .presets
+        .get(id)
+        .map(|preset| preset.miner_options.clone())
+        .unwrap_or_default();
+    for option in &def.options {
+        let value = values
+            .get(&option.key)
+            .cloned()
+            .or_else(|| option.default_value());
+        let (widget, row) = build_option(option, value.as_ref());
+        box_.append(&widget);
+        options.borrow_mut().push(OptionRow {
+            key: option.key.clone(),
+            widget: row,
+        });
+    }
+    if def.options.is_empty() {
+        let hint = label(
+            &tr(
+                "No miner-specific options.",
+                "Специфических настроек у майнера нет.",
+            ),
+            &["dim-label"],
+        );
+        hint.set_margin_top(8);
+        hint.set_margin_bottom(8);
+        box_.append(&hint);
+    }
+    miner_fee.set_sensitive(def.fee_configurable);
+    let fee_hint = if def.fee_configurable {
         tr("Passed to the miner", "Передаётся майнеру")
     } else {
         tr(
@@ -1540,86 +1397,499 @@ fn load_preset_into_editor(app: &Rc<App>, id: &str) {
             "Фиксирована майнером; показана справочно",
         )
     };
-    app.editor.miner_fee.set_subtitle(&fee_hint);
-    app.editor.extra.set_text(&preset.extra_args);
-    update_versions(app);
-    if let Some(index) = catalog::miner(&preset.miner).and_then(|m| {
-        m.versions
-            .iter()
-            .position(|v| v.version == preset.miner_version)
-    }) {
-        app.editor.version.set_selected(index as u32);
-    }
-    app.editor.syncing.set(false);
-    rebuild_options(app);
-    update_miner_info(app);
+    miner_fee.set_subtitle(&fee_hint);
 }
 
-fn update_versions(app: &Rc<App>) {
-    let index = app.editor.miner.selected() as usize;
-    let versions = catalog::miners()
-        .get(index)
-        .map(|m| {
-            m.versions
-                .iter()
-                .map(|v| {
-                    let installed = app.config.borrow().install(&m.id, &v.version).is_some();
-                    if installed {
-                        format!("{} ✓", v.version)
-                    } else {
-                        v.version.clone()
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let refs: Vec<&str> = versions.iter().map(String::as_str).collect();
-    app.editor
-        .version
-        .set_model(Some(&gtk::StringList::new(&refs)));
-    if !refs.is_empty() {
-        app.editor.version.set_selected(0);
-    }
-}
-
-fn rebuild_options(app: &Rc<App>) {
-    clear_box(&app.editor.options_box);
-    app.editor.options.borrow_mut().clear();
-    let Some(miner) = catalog::miners().get(app.editor.miner.selected() as usize) else {
+/// Refresh description, fee breakdown and installation state of the editor.
+#[allow(clippy::too_many_arguments)]
+fn preset_editor_info(
+    app: &Rc<App>,
+    miner_row: &adw::ComboRow,
+    version_row: &adw::ComboRow,
+    pool_fee: &adw::SpinRow,
+    miner_fee: &adw::SpinRow,
+    info_desc: &adw::ActionRow,
+    info_fee: &adw::ActionRow,
+    info_install: &adw::ActionRow,
+    state: &gtk::Label,
+) {
+    let Some(def) = catalog::miners().get(miner_row.selected() as usize) else {
         return;
     };
-    let preset = app
-        .config
-        .borrow()
-        .presets
-        .get(&*app.editor.current_id.borrow())
-        .cloned();
-    let values = preset
-        .as_ref()
-        .map(|p| p.miner_options.clone())
-        .unwrap_or_default();
-    for option in &miner.options {
-        let value = values
-            .get(&option.key)
-            .cloned()
-            .or_else(|| option.default_value());
-        let (row_widget, option_widget) = build_option(option, value.as_ref());
-        app.editor.options_box.append(&row_widget);
-        app.editor.options.borrow_mut().push(OptionRow {
-            key: option.key.clone(),
-            widget: option_widget,
+    let version = selected_version(app, miner_row, version_row);
+    let install = app.config.borrow().install(&def.id, &version).cloned();
+    info_desc.set_subtitle(def.short_description());
+    let miner_fee_pct = if def.fee_configurable {
+        miner_fee.value()
+    } else {
+        def.fee_pct
+    };
+    info_fee.set_subtitle(&format!(
+        "{}: {:.2}% · {}: {:.2}% · {}: <b>{:.2}%</b>",
+        tr("miner", "майнер"),
+        def.fee_pct,
+        tr("pool", "пул"),
+        pool_fee.value(),
+        tr("total", "всего"),
+        miner_fee_pct + pool_fee.value()
+    ));
+    match install {
+        Some(install) => {
+            info_install.set_subtitle(&install.path);
+            state.set_text(&tr("installed", "установлен"));
+            state.set_css_classes(&["caption", "success"]);
+        }
+        None => {
+            info_install.set_subtitle(&tr(
+                "One installation is shared by every preset; download or import a binary.",
+                "Установка одна для всех пресетов; скачайте или импортируйте бинарник.",
+            ));
+            state.set_text(&tr("not installed", "не установлен"));
+            state.set_css_classes(&["caption", "warning"]);
+        }
+    }
+    miner_fee.set_sensitive(def.fee_configurable);
+}
+
+/// Modal editor for one preset. The main window keeps the list; everything
+/// else happens here, so there is no in-page "Back" navigation.
+fn preset_editor_dialog(app: &Rc<App>, id: &str) {
+    let Some(base) = app.config.borrow().presets.get(id).cloned() else {
+        return;
+    };
+    let simple = app.config.borrow().behavior.simple_mode;
+
+    let window = gtk::Window::builder()
+        .title(tr("Preset", "Пресет"))
+        .modal(true)
+        .transient_for(&app.window)
+        .default_width(640)
+        .default_height(780)
+        .build();
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&adw::WindowTitle::new(
+        &base.name,
+        &tr("Preset", "Пресет"),
+    )));
+    let cancel = gtk::Button::with_label(&tr("Cancel", "Отмена"));
+    header.pack_start(&cancel);
+    let save = gtk::Button::builder()
+        .label(tr("Save", "Сохранить"))
+        .css_classes(["suggested-action"])
+        .build();
+    header.pack_end(&save);
+    window.set_titlebar(Some(&header));
+
+    let page = adw::PreferencesPage::new();
+
+    let miner_group = adw::PreferencesGroup::builder()
+        .title(tr("Miner", "Майнер"))
+        .build();
+    let info_desc = adw::ActionRow::builder()
+        .title(tr("Description", "Описание"))
+        .use_markup(true)
+        .build();
+    let info_fee = adw::ActionRow::builder()
+        .title(tr("Fee", "Комиссия"))
+        .use_markup(true)
+        .build();
+    let info_install = adw::ActionRow::builder()
+        .title(tr("Installation", "Установка"))
+        .build();
+    info_install.set_subtitle_lines(2);
+    let install_state = label("", &["caption"]);
+    install_state.set_valign(gtk::Align::Center);
+    info_install.add_suffix(&install_state);
+    let install_button = gtk::Button::builder()
+        .label(tr("Install…", "Установить…"))
+        .css_classes(["flat"])
+        .valign(gtk::Align::Center)
+        .build();
+    info_install.add_suffix(&install_button);
+    miner_group.add(&info_desc);
+    miner_group.add(&info_fee);
+    miner_group.add(&info_install);
+    page.add(&miner_group);
+
+    let form_group = adw::PreferencesGroup::builder()
+        .title(tr("Preset", "Пресет"))
+        .build();
+    let name = adw::EntryRow::builder()
+        .title(tr("Name", "Название"))
+        .text(&base.name)
+        .build();
+    let pool = adw::ComboRow::builder()
+        .title(tr("Pool", "Пул"))
+        .model(&string_list(&pool_names()))
+        .selected(pool_index(&base.pool))
+        .build();
+    let pool_url = adw::EntryRow::builder()
+        .title(tr("Pool address", "Адрес пула"))
+        .text(&base.pool_url)
+        .build();
+    let miner = adw::ComboRow::builder()
+        .title(tr("Miner", "Майнер"))
+        .model(&string_list(&miner_names()))
+        .selected(miner_index(&base.miner))
+        .build();
+    let version = adw::ComboRow::builder()
+        .title(tr("Version", "Версия"))
+        .build();
+    let wallet = adw::EntryRow::builder()
+        .title(tr("Wallet", "Кошелёк"))
+        .text(&base.wallet)
+        .build();
+    let worker = adw::EntryRow::builder()
+        .title(tr("Worker", "Воркер"))
+        .text(&base.worker)
+        .build();
+    let pool_fee = spin_row(
+        &tr("Pool fee", "Комиссия пула"),
+        &tr(
+            "Used for effective hashrate; the pool sets the real fee",
+            "Для расчёта effective; реальную ставку задаёт пул",
+        ),
+        base.pool_fee_pct,
+        0.0,
+        20.0,
+    );
+    let miner_fee = spin_row(
+        &tr("Miner fee override", "Переопределение комиссии майнера"),
+        &tr(
+            "Editable only when the miner supports it",
+            "Редактируется только если майнер это поддерживает",
+        ),
+        base.miner_fee_override_pct.unwrap_or(base.miner_fee_pct),
+        0.0,
+        100.0,
+    );
+    let extra = adw::EntryRow::builder()
+        .title(tr("Extra arguments", "Доп. аргументы"))
+        .text(&base.extra_args)
+        .build();
+    form_group.add(&name);
+    form_group.add(&pool);
+    form_group.add(&pool_url);
+    form_group.add(&miner);
+    form_group.add(&version);
+    form_group.add(&wallet);
+    form_group.add(&worker);
+    form_group.add(&pool_fee);
+    form_group.add(&miner_fee);
+    form_group.add(&extra);
+    page.add(&form_group);
+
+    let options_group = adw::PreferencesGroup::builder()
+        .title(tr("Miner options", "Настройки майнера"))
+        .description(tr(
+            "Defaults come from the selected miner version.",
+            "Значения по умолчанию берутся из выбранной версии майнера.",
+        ))
+        .build();
+    let options_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    options_group.add(&options_box);
+    page.add(&options_group);
+    options_group.set_visible(!simple);
+    extra.set_visible(!simple);
+    miner_fee.set_visible(!simple);
+
+    let actions_group = adw::PreferencesGroup::new();
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_halign(gtk::Align::Center);
+    actions.set_margin_top(8);
+    actions.set_margin_bottom(8);
+    let duplicate = gtk::Button::builder()
+        .label(tr("Duplicate", "Дублировать"))
+        .css_classes(["flat"])
+        .build();
+    let delete = gtk::Button::builder()
+        .label(tr("Delete…", "Удалить…"))
+        .css_classes(["destructive-action"])
+        .build();
+    actions.append(&duplicate);
+    actions.append(&delete);
+    actions_group.add(&actions);
+    page.add(&actions_group);
+    window.set_child(Some(&page));
+
+    let options: Rc<RefCell<Vec<OptionRow>>> = Rc::new(RefCell::new(Vec::new()));
+    preset_editor_versions(app, &miner, &version, &base.miner_version);
+    rebuild_editor_options(app, id, &miner, &miner_fee, &options_box, &options);
+    preset_editor_info(
+        app,
+        &miner,
+        &version,
+        &pool_fee,
+        &miner_fee,
+        &info_desc,
+        &info_fee,
+        &info_install,
+        &install_state,
+    );
+
+    let refresh_info: Rc<dyn Fn()> = {
+        let app = app.clone();
+        let miner = miner.clone();
+        let version = version.clone();
+        let pool_fee = pool_fee.clone();
+        let miner_fee = miner_fee.clone();
+        let info_desc = info_desc.clone();
+        let info_fee = info_fee.clone();
+        let info_install = info_install.clone();
+        let install_state = install_state.clone();
+        Rc::new(move || {
+            preset_editor_info(
+                &app,
+                &miner,
+                &version,
+                &pool_fee,
+                &miner_fee,
+                &info_desc,
+                &info_fee,
+                &info_install,
+                &install_state,
+            );
+        })
+    };
+
+    {
+        let app = app.clone();
+        let id = id.to_string();
+        let version_row = version.clone();
+        let miner_fee = miner_fee.clone();
+        let options_box = options_box.clone();
+        let options = options.clone();
+        let refresh_info = refresh_info.clone();
+        miner.connect_notify_local(Some("selected"), move |row, _| {
+            preset_editor_versions(&app, row, &version_row, "");
+            rebuild_editor_options(&app, &id, row, &miner_fee, &options_box, &options);
+            refresh_info();
         });
     }
-    if miner.options.is_empty() {
-        let label = gtk::Label::new(Some(&tr(
-            "No miner-specific options.",
-            "Специфических настроек у майнера нет.",
-        )));
-        label.add_css_class("dim-label");
-        label.set_margin_top(8);
-        label.set_margin_bottom(8);
-        app.editor.options_box.append(&label);
+    {
+        let refresh_info = refresh_info.clone();
+        version.connect_notify_local(Some("selected"), move |_, _| refresh_info());
     }
+    {
+        let pool_url = pool_url.clone();
+        let pool_fee = pool_fee.clone();
+        pool.connect_notify_local(Some("selected"), move |row, _| {
+            if let Some(def) = catalog::pools().get(row.selected() as usize) {
+                pool_url.set_text(&def.url);
+                pool_fee.set_value(def.fee_pct);
+            }
+        });
+    }
+    {
+        let refresh = refresh_info.clone();
+        pool_fee.connect_notify_local(Some("value"), move |_, _| refresh());
+        let refresh = refresh_info.clone();
+        miner_fee.connect_notify_local(Some("value"), move |_, _| refresh());
+    }
+    {
+        let app = app.clone();
+        let miner = miner.clone();
+        let version = version.clone();
+        let refresh_info = refresh_info.clone();
+        install_button.connect_clicked(move |_| {
+            let Some(def) = catalog::miners().get(miner.selected() as usize) else {
+                return;
+            };
+            let miner_id = def.id.clone();
+            let selected = selected_version(&app, &miner, &version);
+            let app_done = app.clone();
+            let miner_done = miner.clone();
+            let version_done = version.clone();
+            let refresh_done = refresh_info.clone();
+            let version_text = selected.clone();
+            let on_done: Rc<dyn Fn()> = Rc::new(move || {
+                preset_editor_versions(&app_done, &miner_done, &version_done, &version_text);
+                refresh_done();
+            });
+            miner_install_dialog(&app, &miner_id, selected, Some(on_done));
+        });
+    }
+    {
+        let app = app.clone();
+        let window = window.clone();
+        let id = id.to_string();
+        let name = name.clone();
+        let pool = pool.clone();
+        let pool_url = pool_url.clone();
+        let miner = miner.clone();
+        let version = version.clone();
+        let wallet = wallet.clone();
+        let worker = worker.clone();
+        let extra = extra.clone();
+        let pool_fee = pool_fee.clone();
+        let miner_fee = miner_fee.clone();
+        let options = options.clone();
+        save.connect_clicked(move |_| {
+            let Some(def) = catalog::miners().get(miner.selected() as usize) else {
+                return;
+            };
+            let miner_id = def.id.clone();
+            let version_text = selected_version(&app, &miner, &version);
+            let mut values = BTreeMap::new();
+            for row in options.borrow().iter() {
+                values.insert(row.key.clone(), row.value());
+            }
+            let pool_id = catalog::pools()
+                .get(pool.selected() as usize)
+                .map(|item| item.id.clone())
+                .unwrap_or_else(|| "pearlhash".into());
+            let mut preset_name = name.text().trim().to_string();
+            if preset_name.is_empty() {
+                preset_name = tr("Preset", "Пресет").to_string();
+            }
+            {
+                let mut cfg = app.config.borrow_mut();
+                if let Some(preset) = cfg.presets.get_mut(&id) {
+                    preset.name = preset_name;
+                    preset.pool = pool_id;
+                    preset.pool_url = pool_url.text().to_string();
+                    preset.pool_fee_pct = pool_fee.value();
+                    preset.miner = miner_id;
+                    preset.miner_version = version_text;
+                    preset.wallet = wallet.text().to_string();
+                    preset.worker = worker.text().to_string();
+                    preset.extra_args = extra.text().to_string();
+                    preset.miner_options = values;
+                    preset.miner_fee_pct = def.fee_pct;
+                    preset.miner_fee_override_pct = if def.fee_configurable {
+                        Some(miner_fee.value())
+                    } else {
+                        None
+                    };
+                    preset.updated_at = util::now_unix();
+                }
+            }
+            mark_dirty(&app);
+            refresh_preset_list(&app);
+            refresh_miners(&app);
+            window.close();
+            save_and_apply(&app);
+        });
+    }
+    {
+        let app = app.clone();
+        let window = window.clone();
+        let id = id.to_string();
+        duplicate.connect_clicked(move |_| {
+            if let Some(new_id) = duplicate_preset(&app, &id) {
+                window.close();
+                preset_editor_dialog(&app, &new_id);
+            }
+        });
+    }
+    {
+        let app = app.clone();
+        let window = window.clone();
+        let id = id.to_string();
+        delete.connect_clicked(move |_| delete_preset(&app, &window, &id));
+    }
+    {
+        let window = window.clone();
+        cancel.connect_clicked(move |_| window.close());
+    }
+    window.present();
+    if let Some(path) = std::env::var_os("TROMMEL_PRESET_SCREENSHOT") {
+        let path = path.to_string_lossy().into_owned();
+        let capture = window.clone();
+        let application = app.window.application();
+        glib::timeout_add_seconds_local(2, move || {
+            if let Some(application) = application.clone() {
+                schedule_window_screenshot(capture.clone(), path.clone(), application, 0);
+            }
+            glib::ControlFlow::Break
+        });
+    }
+}
+
+fn new_preset(app: &Rc<App>) {
+    let id = {
+        let mut cfg = app.config.borrow_mut();
+        let base = cfg.preset().cloned().unwrap_or_else(Preset::new_pearl);
+        let id = format!("preset-{}", util::now_unix());
+        let mut preset = base;
+        preset.id = id.clone();
+        preset.name = tr("New preset", "Новый пресет");
+        preset.created_at = util::now_unix();
+        preset.updated_at = preset.created_at;
+        cfg.presets.insert(id.clone(), preset);
+        cfg.active_preset = Some(id.clone());
+        id
+    };
+    mark_dirty(app);
+    refresh_preset_list(app);
+    preset_editor_dialog(app, &id);
+}
+
+fn duplicate_preset(app: &Rc<App>, id: &str) -> Option<String> {
+    let new_id = {
+        let mut cfg = app.config.borrow_mut();
+        let base = cfg.presets.get(id).cloned()?;
+        let new_id = format!("preset-{}", util::now_unix());
+        let mut copy = base;
+        copy.id = new_id.clone();
+        copy.name = format!("{} {}", copy.name, tr("(copy)", "(копия)"));
+        copy.created_at = util::now_unix();
+        copy.updated_at = copy.created_at;
+        cfg.presets.insert(new_id.clone(), copy);
+        cfg.active_preset = Some(new_id.clone());
+        new_id
+    };
+    mark_dirty(app);
+    refresh_preset_list(app);
+    Some(new_id)
+}
+
+fn delete_preset(app: &Rc<App>, window: &gtk::Window, id: &str) {
+    let Some(preset) = app.config.borrow().presets.get(id).cloned() else {
+        return;
+    };
+    if app.config.borrow().presets.len() <= 1 {
+        app.toast.add_toast(adw::Toast::new(&tr(
+            "At least one preset is required.",
+            "Нужен хотя бы один пресет.",
+        )));
+        return;
+    }
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr("Delete preset?", "Удалить пресет?"))
+        .body(format!(
+            "{} «{}». {}",
+            tr("This removes", "Удаляется"),
+            preset.name,
+            tr(
+                "The daemon keeps mining with the previously applied preset until you apply another one.",
+                "Сервис продолжит майнить с ранее применённым пресетом, пока вы не примените другой."
+            )
+        ))
+        .build();
+    dialog.add_response("cancel", &tr("Cancel", "Отмена"));
+    dialog.add_response("delete", &tr("Delete", "Удалить"));
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    dialog.set_close_response("cancel");
+    let app = app.clone();
+    let window = window.clone();
+    let parent = window.clone();
+    let id = id.to_string();
+    dialog.choose(Some(&parent), None::<&gio::Cancellable>, move |response| {
+        if response != "delete" {
+            return;
+        }
+        {
+            let mut cfg = app.config.borrow_mut();
+            cfg.presets.remove(&id);
+            if cfg.active_preset.as_deref() == Some(id.as_str()) {
+                cfg.active_preset = cfg.presets.keys().next().cloned();
+            }
+        }
+        mark_dirty(&app);
+        refresh_preset_list(&app);
+        window.close();
+    });
 }
 
 fn build_option(
@@ -1672,158 +1942,50 @@ fn build_option(
     }
 }
 
-fn update_miner_info(app: &Rc<App>) {
-    let miner = catalog::miners().get(app.editor.miner.selected() as usize);
-    let version_index = app.editor.version.selected() as usize;
-    let preset = app
-        .config
-        .borrow()
-        .presets
-        .get(&*app.editor.current_id.borrow())
-        .cloned();
-    let Some(miner) = miner else {
-        app.editor.info_desc.set_subtitle("");
-        app.editor.info_fee.set_subtitle("");
-        app.editor.info_install.set_subtitle("");
-        return;
-    };
-    let version = miner.versions.get(version_index);
-    let selected_version = version
-        .map(|v| v.version.clone())
-        .or_else(|| preset.as_ref().map(|p| p.miner_version.clone()))
-        .unwrap_or_default();
-    let installed = app
-        .config
-        .borrow()
-        .install(&miner.id, &selected_version)
-        .is_some();
-    let fee = preset
-        .as_ref()
-        .map(|p| p.total_fee_pct())
-        .unwrap_or(miner.fee_pct);
-    app.editor.info_desc.set_subtitle(miner.short_description());
-    app.editor.miner_fee.set_sensitive(miner.fee_configurable);
-    let fee_hint = if miner.fee_configurable {
-        tr("Passed to the miner", "Передаётся майнеру")
-    } else {
-        tr(
-            "Fixed by the miner; shown for reference",
-            "Фиксирована майнером; показана справочно",
-        )
-    };
-    app.editor.miner_fee.set_subtitle(&fee_hint);
-    app.editor.info_fee.set_subtitle(&format!(
-        "{}: {:.2}% · {}: {:.2}% · {}: {:.2}%",
-        tr("miner", "майнер"),
-        miner.fee_pct,
-        tr("pool", "пул"),
-        preset.as_ref().map(|p| p.pool_fee_pct).unwrap_or(0.0),
-        tr("total", "всего"),
-        fee
-    ));
-    let install_text = if installed {
-        tr("Installed", "Установлен").to_string()
-    } else {
-        tr("Not installed", "Не установлен").to_string()
-    };
-    app.editor.info_install.set_subtitle(&format!(
-        "{install_text} · {} {}",
-        selected_version,
-        version
-            .map(|v| if v.verified { "✓" } else { "⚠" })
-            .unwrap_or("")
-    ));
-    app.editor.install_button.set_sensitive(!installed);
-    app.editor.install_button.set_visible(!installed);
-}
-
 fn refresh_miners(app: &Rc<App>) {
     clear_box(&app.miners_box);
     let cfg = app.config.borrow();
     for miner in catalog::miners() {
         let installed = catalog::installed_versions(&cfg, &miner.id);
-        let subtitle = format!(
-            "{} · {} {:.2}% · {} {}",
-            miner.short_description(),
-            tr("fee", "комиссия"),
-            miner.fee_pct,
-            tr("installed", "установлено"),
-            if installed.is_empty() {
-                "—".to_string()
-            } else {
-                installed.join(", ")
-            }
-        );
         let row = adw::ActionRow::builder()
             .title(&miner.name)
-            .subtitle(&subtitle)
+            .subtitle(miner.short_description())
             .build();
-        let import = gtk::Button::builder()
-            .label(tr("Import binary", "Импорт бинарника"))
-            .css_classes(["pill"])
-            .build();
-        let source = gtk::Button::builder()
-            .label(tr("Release page", "Страница релиза"))
-            .css_classes(["flat"])
-            .build();
-        row.add_suffix(&source);
-        row.add_suffix(&import);
-        let app_import = app.clone();
+        row.set_activatable(true);
+        row.set_subtitle_lines(2);
+        let hint = if installed.is_empty() {
+            tr(
+                "Click to install a version. Install once and every preset can use it.",
+                "Нажмите, чтобы установить версию. Одна установка доступна всем пресетам.",
+            )
+        } else {
+            tr(
+                "Click to install or update. Installed versions are shared by every preset.",
+                "Нажмите, чтобы установить или обновить. Установленные версии общие для пресетов.",
+            )
+        };
+        row.set_tooltip_text(Some(&hint));
+        if !installed.is_empty() {
+            let versions = label(&installed.join(" · "), &["caption", "success"]);
+            versions.set_valign(gtk::Align::Center);
+            row.add_suffix(&versions);
+        }
+        let chevron = gtk::Image::from_icon_name("go-next-symbolic");
+        chevron.add_css_class("dim-label");
+        chevron.set_valign(gtk::Align::Center);
+        row.add_suffix(&chevron);
+
+        let app_row = app.clone();
         let miner_id = miner.id.clone();
         let version = miner
             .latest_version()
-            .map(|v| v.version.clone())
+            .map(|item| item.version.clone())
             .unwrap_or_default();
-        import.connect_clicked(move |_| import_miner(&app_import, &miner_id, &version));
-        let url = miner.source_url.clone();
-        source.connect_clicked(move |_| {
-            let _ = gio::AppInfo::launch_default_for_uri(&url, None::<&gio::AppLaunchContext>);
+        row.connect_activated(move |_| {
+            miner_install_dialog(&app_row, &miner_id, version.clone(), None);
         });
         app.miners_box.append(&row);
     }
-}
-
-fn import_miner(app: &Rc<App>, miner: &str, version: &str) {
-    let dialog = gtk::FileChooserNative::builder()
-        .title(tr("Select miner binary", "Выберите бинарник майнера"))
-        .action(gtk::FileChooserAction::Open)
-        .build();
-    dialog.connect_response({
-        let app = app.clone();
-        let miner = miner.to_string();
-        let version = version.to_string();
-        move |dialog, response| {
-            if response == gtk::ResponseType::Accept {
-                if let Some(file) = dialog.file() {
-                    if let Some(path) = file.path() {
-                        let install = MinerInstall {
-                            miner: miner.clone(),
-                            version: version.clone(),
-                            path: path.to_string_lossy().into_owned(),
-                            sha256: String::new(),
-                            source_url: String::new(),
-                            verified: false,
-                            custom: true,
-                            installed_at: util::now_unix(),
-                        };
-                        {
-                            let mut cfg = app.config.borrow_mut();
-                            cfg.add_install(install);
-                            let _ = cfg.save();
-                        }
-                        refresh_miners(&app);
-                        refresh_preset_editor(&app);
-                        app.toast.add_toast(adw::Toast::new(&tr(
-                            "Miner imported. It is now available in every preset.",
-                            "Майнер импортирован. Теперь он доступен во всех пресетах.",
-                        )));
-                    }
-                }
-            }
-            dialog.destroy();
-        }
-    });
-    dialog.show();
 }
 
 fn extension_settings() -> Option<gio::Settings> {
@@ -1953,6 +2115,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         .cloned()
         .unwrap_or_default();
     let tuning = profile.tuning_for(&uuid);
+    let custom = profile.per_gpu.contains_key(&uuid);
     let enabled = tuning.enabled;
     let (same_uuids, all_uuids) = {
         let status = app.status.borrow();
@@ -2103,6 +2266,24 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     target_hint.set_margin_start(6);
     target_hint.set_margin_top(4);
     target_group.add(&target_hint);
+    let source_hint = label(
+        &if custom {
+            tr(
+                "These values are this card's own override.",
+                "Эти значения — собственная настройка этой карты.",
+            )
+        } else {
+            tr(
+                "These values come from the default profile. Saving creates a per-card override.",
+                "Эти значения взяты из профиля по умолчанию. Сохранение создаст настройку для этой карты.",
+            )
+        },
+        &["caption", "dim-label"],
+    );
+    source_hint.set_margin_start(6);
+    source_hint.set_margin_top(6);
+    source_hint.set_wrap(true);
+    group.add(&source_hint);
     page.add(&group);
     page.add(&target_group);
     window.set_child(Some(&page));
@@ -2215,20 +2396,51 @@ struct SetupCard {
     stock_w: Option<f64>,
 }
 
+/// Subtitle of a wizard card row: stock limit plus the currently chosen limit,
+/// so filling the 80 % value is visible without expanding the row.
+fn setup_card_subtitle(stock: Option<f64>, limit_w: u32) -> String {
+    let limit = if limit_w == 0 {
+        tr("auto", "авто")
+    } else {
+        format!("{limit_w} W")
+    };
+    match stock {
+        Some(watts) => format!(
+            "{}: {:.0} W · {}: {}",
+            tr("stock", "сток"),
+            watts,
+            tr("limit", "лимит"),
+            limit
+        ),
+        None => format!("{}: {}", tr("limit", "лимит"), limit),
+    }
+}
+
 fn string_list(values: &[String]) -> gtk::StringList {
     let refs: Vec<&str> = values.iter().map(String::as_str).collect();
     gtk::StringList::new(&refs)
 }
 
-fn setup_miner_versions(miner_row: &adw::ComboRow, version_row: &adw::ComboRow) {
+fn setup_miner_versions(app: &Rc<App>, miner_row: &adw::ComboRow, version_row: &adw::ComboRow) {
     let previous = version_row.selected() as usize;
-    let versions: Vec<String> = catalog::miners()
-        .get(miner_row.selected() as usize)
-        .map(|def| def.versions.iter().map(|v| v.version.clone()).collect())
-        .unwrap_or_default();
-    version_row.set_model(Some(&string_list(&versions)));
-    if !versions.is_empty() {
-        version_row.set_selected(previous.min(versions.len() - 1) as u32);
+    let Some(def) = catalog::miners().get(miner_row.selected() as usize) else {
+        version_row.set_model(Some(&string_list(&[])));
+        return;
+    };
+    let installed = catalog::installed_versions(&app.config.borrow(), &def.id);
+    let labels: Vec<String> = miner_version_list(&app.config.borrow(), def)
+        .into_iter()
+        .map(|version| {
+            if installed.contains(&version) {
+                format!("{version} ✓")
+            } else {
+                version
+            }
+        })
+        .collect();
+    version_row.set_model(Some(&string_list(&labels)));
+    if !labels.is_empty() {
+        version_row.set_selected(previous.min(labels.len() - 1) as u32);
     }
 }
 
@@ -2244,11 +2456,7 @@ fn setup_miner_state(
         fee_row.set_subtitle("—");
         return;
     };
-    let version = def
-        .versions
-        .get(version_row.selected() as usize)
-        .map(|v| v.version.clone())
-        .unwrap_or_default();
+    let version = selected_version(app, miner_row, version_row);
     let installed = app.config.borrow().install(&def.id, &version).is_some();
     let state = if installed {
         tr("Installed", "Установлен")
@@ -2256,6 +2464,7 @@ fn setup_miner_state(
         tr("Not installed", "Не установлен")
     };
     install_row.set_subtitle(&format!("{state} · {} {version}", def.id));
+    install_row.set_subtitle_lines(2);
     fee_row.set_subtitle(&format!(
         "{:.2}% · {}",
         def.fee_pct,
@@ -2296,7 +2505,7 @@ fn show_setup_step(
         tr("Next", "Далее")
     };
     next.set_label(&next_text);
-    status.set_text("");
+    set_status_text(status, "", "");
 }
 
 /// Three-step wizard for a first start: cards → miner → wallet → Start.
@@ -2357,27 +2566,40 @@ fn quick_setup_wizard(app: &Rc<App>) {
         ))
         .build();
     for gpu in &gpus {
-        let tuning = profile.tuning_for(&gpu.uuid);
+        // The wizard writes per-card overrides, so it must start from the
+        // per-card value (or "auto"), not from a default profile that may have
+        // been tuned for another model.
+        let explicit = profile.per_gpu.get(&gpu.uuid).cloned();
         let stock = gpu.power_default_w.or(gpu.power_limit_w);
-        let subtitle = match stock {
-            Some(watts) => format!("{}: {:.0} W", tr("stock limit", "стоковый лимит"), watts),
-            None => tr("stock limit unknown", "стоковый лимит неизвестен").to_string(),
-        };
+        let limit = explicit
+            .as_ref()
+            .and_then(|tuning| tuning.power_limit_w)
+            .unwrap_or(0);
+        let enabled = explicit
+            .as_ref()
+            .map(|tuning| tuning.enabled)
+            .unwrap_or(true);
         let row = adw::ExpanderRow::builder()
             .title(format!("GPU #{} · {}", gpu.index, gpu.name))
-            .subtitle(&subtitle)
+            .subtitle(setup_card_subtitle(stock, limit))
             .build();
         row.set_show_enable_switch(true);
-        row.set_enable_expansion(tuning.enabled);
+        row.set_enable_expansion(enabled);
         row.set_expanded(false);
         let power = spin_row(
             &tr("Power limit", "Лимит питания"),
             &tr("W — 0 = driver auto", "Вт — 0 = авто драйвера"),
-            tuning.power_limit_w.unwrap_or(0) as f64,
+            limit as f64,
             0.0,
             1000.0,
         );
         row.add_row(&power);
+        {
+            let row = row.clone();
+            power.connect_notify_local(Some("value"), move |spin, _| {
+                row.set_subtitle(&setup_card_subtitle(stock, spin.value() as u32));
+            });
+        }
         cards_group.add(&row);
         cards.borrow_mut().push(SetupCard {
             uuid: gpu.uuid.clone(),
@@ -2409,13 +2631,13 @@ fn quick_setup_wizard(app: &Rc<App>) {
     let fill_row = adw::ActionRow::builder()
         .title(tr("80% of stock power", "80% стокового питания"))
         .subtitle(tr(
-            "Applied to every ticked card",
-            "Применяется ко всем отмеченным картам",
+            "Fills the limit row of every ticked card",
+            "Заполняет лимит каждой отмеченной карты",
         ))
         .build();
     let fill = gtk::Button::builder()
-        .label(tr("Fill", "Заполнить"))
-        .css_classes(["pill"])
+        .label(tr("Apply 80 %", "Поставить 80 %"))
+        .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .build();
     fill_row.add_suffix(&fill);
@@ -2438,14 +2660,32 @@ fn quick_setup_wizard(app: &Rc<App>) {
     stack.add_named(&cards_page, Some("cards"));
     {
         let cards = cards.clone();
+        let fill_row = fill_row.clone();
         fill.connect_clicked(move |_| {
+            let mut applied = Vec::new();
             for card in cards.borrow().iter() {
                 if !card.row.enables_expansion() {
                     continue;
                 }
-                if let Some(stock) = card.stock_w {
-                    card.power.set_value((stock * 0.8).round().max(50.0));
-                }
+                let Some(stock) = card.stock_w else {
+                    continue;
+                };
+                let watts = (stock * 0.8).round().max(50.0);
+                card.power.set_value(watts);
+                card.row.set_expanded(true);
+                applied.push(format!("{watts:.0} W"));
+            }
+            if applied.is_empty() {
+                fill_row.set_subtitle(&tr(
+                    "Tick a card with a known stock limit first.",
+                    "Сначала отметьте карту с известным стоковым лимитом.",
+                ));
+            } else {
+                fill_row.set_subtitle(&format!(
+                    "{}: {}",
+                    tr("Applied", "Применено"),
+                    applied.join(" · ")
+                ));
             }
         });
     }
@@ -2481,31 +2721,24 @@ fn quick_setup_wizard(app: &Rc<App>) {
     let install_row = adw::ActionRow::builder()
         .title(tr("Installation", "Установка"))
         .build();
-    let download = gtk::Button::builder()
-        .label(tr("Download", "Скачать"))
-        .css_classes(["pill"])
+    let install_button = gtk::Button::builder()
+        .label(tr("Install…", "Установить…"))
+        .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .build();
-    let import_button = gtk::Button::builder()
-        .label(tr("Import", "Импорт"))
-        .css_classes(["pill"])
-        .valign(gtk::Align::Center)
-        .build();
-    install_row.add_suffix(&download);
-    install_row.add_suffix(&import_button);
+    install_row.add_suffix(&install_button);
     miner_group.add(&miner_row);
     miner_group.add(&version_row);
     miner_group.add(&fee_row);
     miner_group.add(&install_row);
     miner_page.add(&miner_group);
     stack.add_named(&miner_page, Some("miner"));
-    setup_miner_versions(&miner_row, &version_row);
-    if let Some(index) = catalog::miner(&preset.miner).and_then(|def| {
-        def.versions
-            .iter()
-            .position(|v| v.version == preset.miner_version)
-    }) {
-        version_row.set_selected(index as u32);
+    setup_miner_versions(app, &miner_row, &version_row);
+    if let Some(def) = catalog::miner(&preset.miner) {
+        let versions = miner_version_list(&app.config.borrow(), def);
+        if let Some(index) = versions.iter().position(|v| *v == preset.miner_version) {
+            version_row.set_selected(index as u32);
+        }
     }
     setup_miner_state(app, &miner_row, &version_row, &install_row, &fee_row);
     {
@@ -2515,7 +2748,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
         let install_row = install_row.clone();
         let fee_row = fee_row.clone();
         miner_row.connect_notify_local(Some("selected"), move |row, _| {
-            setup_miner_versions(row, &version_row);
+            setup_miner_versions(&app, row, &version_row);
             setup_miner_state(&app, row, &version_row, &install_row, &fee_row);
         });
     }
@@ -2534,37 +2767,27 @@ fn quick_setup_wizard(app: &Rc<App>) {
         let version_row = version_row.clone();
         let install_row = install_row.clone();
         let fee_row = fee_row.clone();
-        download.connect_clicked(move |_| {
+        install_button.connect_clicked(move |_| {
             let id = catalog::miners()
                 .get(miner_row.selected() as usize)
                 .map(|def| def.id.clone())
                 .unwrap_or_else(|| "wildrig".into());
-            let version = catalog::miners()
-                .get(miner_row.selected() as usize)
-                .and_then(|def| def.versions.get(version_row.selected() as usize))
-                .cloned();
-            download_dialog(&app, &id, version);
-            setup_miner_state(&app, &miner_row, &version_row, &install_row, &fee_row);
-        });
-    }
-    {
-        let app = app.clone();
-        let miner_row = miner_row.clone();
-        let version_row = version_row.clone();
-        let install_row = install_row.clone();
-        let fee_row = fee_row.clone();
-        import_button.connect_clicked(move |_| {
-            let id = catalog::miners()
-                .get(miner_row.selected() as usize)
-                .map(|def| def.id.clone())
-                .unwrap_or_else(|| "wildrig".into());
-            let version = catalog::miners()
-                .get(miner_row.selected() as usize)
-                .and_then(|def| def.versions.get(version_row.selected() as usize))
-                .map(|v| v.version.clone())
-                .unwrap_or_default();
-            import_miner(&app, &id, &version);
-            setup_miner_state(&app, &miner_row, &version_row, &install_row, &fee_row);
+            let version = selected_version(&app, &miner_row, &version_row);
+            let app_done = app.clone();
+            let miner_done = miner_row.clone();
+            let version_done = version_row.clone();
+            let install_done = install_row.clone();
+            let fee_done = fee_row.clone();
+            let on_done: Rc<dyn Fn()> = Rc::new(move || {
+                setup_miner_state(
+                    &app_done,
+                    &miner_done,
+                    &version_done,
+                    &install_done,
+                    &fee_done,
+                );
+            });
+            miner_install_dialog(&app, &id, version, Some(on_done));
         });
     }
 
@@ -2688,10 +2911,14 @@ fn quick_setup_wizard(app: &Rc<App>) {
                     .iter()
                     .any(|card| card.row.enables_expansion());
                 if !picked && !cards.borrow().is_empty() {
-                    status.set_text(&tr(
-                        "Tick at least one card, or leave the wizard and tune cards later.",
-                        "Отметьте хотя бы одну карту или настройте карты позже.",
-                    ));
+                    set_status_text(
+                        &status,
+                        &tr(
+                            "Tick at least one card, or leave the wizard and tune cards later.",
+                            "Отметьте хотя бы одну карту или настройте карты позже.",
+                        ),
+                        "warning",
+                    );
                     return;
                 }
                 step.set(1);
@@ -2764,35 +2991,47 @@ fn finish_quick_setup(
         .get(miner_row.selected() as usize)
         .cloned()
     else {
-        status.set_text(&tr("Choose a miner.", "Выберите майнера."));
+        set_status_text(
+            status,
+            &tr("Choose a miner.", "Выберите майнера."),
+            "warning",
+        );
         return false;
     };
-    let version = def
-        .versions
-        .get(version_row.selected() as usize)
-        .map(|v| v.version.clone())
-        .unwrap_or_default();
+    let version = selected_version(app, miner_row, version_row);
     if app.config.borrow().install(&def.id, &version).is_none() {
-        status.set_text(&tr(
-            "Install the selected miner version first — use Download or Import.",
-            "Сначала установите выбранную версию майнера — «Скачать» или «Импорт».",
-        ));
+        set_status_text(
+            status,
+            &tr(
+                "Install the selected miner version first — use Install.",
+                "Сначала установите выбранную версию майнера — кнопка «Установить».",
+            ),
+            "warning",
+        );
         return false;
     }
     let wallet = wallet_row.text().trim().to_string();
     if wallet.is_empty() {
-        status.set_text(&tr(
-            "Enter the wallet address — mining cannot start without it.",
-            "Введите адрес кошелька — без него майнинг не запустится.",
-        ));
+        set_status_text(
+            status,
+            &tr(
+                "Enter the wallet address — mining cannot start without it.",
+                "Введите адрес кошелька — без него майнинг не запустится.",
+            ),
+            "warning",
+        );
         return false;
     }
     let pool_url = pool_url_row.text().trim().to_string();
     if !pool_url.contains(':') {
-        status.set_text(&tr(
-            "The pool address needs a port, for example pool.pearlhash.xyz:9000.",
-            "В адресе пула нужен порт, например pool.pearlhash.xyz:9000.",
-        ));
+        set_status_text(
+            status,
+            &tr(
+                "The pool address needs a port, for example pool.pearlhash.xyz:9000.",
+                "В адресе пула нужен порт, например pool.pearlhash.xyz:9000.",
+            ),
+            "warning",
+        );
         return false;
     }
     let pool_id = catalog::pools()
@@ -2849,7 +3088,6 @@ fn finish_quick_setup(
     }
     mark_dirty(app);
     refresh_preset_list(app);
-    refresh_preset_editor(app);
     window.close();
     app.stack.set_visible_child_name("dashboard");
     if running {
@@ -2869,175 +3107,434 @@ fn finish_quick_setup(
     true
 }
 
-fn download_dialog(app: &Rc<App>, miner: &str, version: Option<catalog::MinerVersion>) {
-    let dialog = gtk::Window::builder()
-        .title(tr("Download miner", "Скачать майнер"))
+// ------------------------------------------------------- miner installation
+
+/// Fill the download fields from a catalogue version, if the version is known.
+fn prefill_miner_source(
+    miner_id: &str,
+    version: &str,
+    url: &adw::EntryRow,
+    sha: &adw::EntryRow,
+    archive: &adw::EntryRow,
+    binary: &adw::EntryRow,
+) {
+    let Some(item) = catalog::miner(miner_id).and_then(|def| def.version(version)) else {
+        return;
+    };
+    if !item.url.is_empty() {
+        url.set_text(&item.url);
+    }
+    sha.set_text(&item.sha256);
+    if !item.archive.is_empty() {
+        archive.set_text(&item.archive);
+    }
+    if !item.binary.is_empty() {
+        binary.set_text(&item.binary);
+    }
+}
+
+/// The one place that installs a miner. The Miners page, the preset editor and
+/// the quick-setup wizard all open this dialog, so version handling, download,
+/// import and the installed state live here exactly once.
+fn miner_install_dialog(
+    app: &Rc<App>,
+    miner_id: &str,
+    version: String,
+    on_done: Option<Rc<dyn Fn()>>,
+) {
+    let Some(def) = catalog::miner(miner_id) else {
+        return;
+    };
+    let installed_versions = catalog::installed_versions(&app.config.borrow(), miner_id);
+    let mut choices: Vec<(String, Option<catalog::MinerVersion>)> = def
+        .versions
+        .iter()
+        .map(|item| {
+            let label = if installed_versions.contains(&item.version) {
+                format!("{} ✓", item.version)
+            } else {
+                item.version.clone()
+            };
+            (label, Some(item.clone()))
+        })
+        .collect();
+    for custom in &installed_versions {
+        if def.version(custom).is_none() {
+            choices.push((format!("{custom} ✓"), None));
+        }
+    }
+
+    let window = gtk::Window::builder()
+        .title(tr("Install miner", "Установка майнера"))
         .modal(true)
         .transient_for(&app.window)
-        .default_width(520)
+        .default_width(580)
         .build();
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    content.set_margin_top(16);
-    content.set_margin_bottom(16);
-    content.set_margin_start(16);
-    content.set_margin_end(16);
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&adw::WindowTitle::new(
+        &def.name,
+        &tr("Install miner", "Установка майнера"),
+    )));
+    let cancel = gtk::Button::with_label(&tr("Cancel", "Отмена"));
+    header.pack_start(&cancel);
+    if !def.source_url.is_empty() {
+        let release = gtk::Button::builder()
+            .icon_name("web-browser-symbolic")
+            .tooltip_text(tr("Release page", "Страница релиза"))
+            .css_classes(["flat"])
+            .build();
+        let source_url = def.source_url.clone();
+        release.connect_clicked(move |_| {
+            let _ =
+                gio::AppInfo::launch_default_for_uri(&source_url, None::<&gio::AppLaunchContext>);
+        });
+        header.pack_end(&release);
+    }
+    window.set_titlebar(Some(&header));
 
-    let title = gtk::Label::builder()
-        .label(format!(
-            "{miner} {}",
-            version.as_ref().map(|v| v.version.as_str()).unwrap_or("")
-        ))
-        .xalign(0.0)
-        .css_classes(["title-4"])
-        .build();
-    content.append(&title);
+    let page = adw::PreferencesPage::new();
 
-    let url = gtk::Entry::builder()
-        .placeholder_text(tr(
-            "Direct HTTPS archive or binary URL",
-            "Прямая HTTPS-ссылка на архив или бинарник",
+    let version_group = adw::PreferencesGroup::builder()
+        .title(tr("Version", "Версия"))
+        .description(tr(
+            "Miners are updated often. Pick a catalogue version, or type the version name of a build you downloaded upstream.",
+            "Майнеры часто обновляются. Выберите версию из каталога или введите название версии сборки, скачанной самостоятельно.",
         ))
-        .text(version.as_ref().map(|v| v.url.clone()).unwrap_or_default())
         .build();
-    let sha = gtk::Entry::builder()
-        .placeholder_text(tr("SHA-256 (recommended)", "SHA-256 (рекомендуется)"))
+    let version_combo = adw::ComboRow::builder()
+        .title(tr("Catalogue version", "Версия из каталога"))
+        .subtitle(tr(
+            "Fills the URL and checksum",
+            "Подставляет ссылку и контрольную сумму",
+        ))
+        .model(&string_list(
+            &choices
+                .iter()
+                .map(|(label, _)| label.clone())
+                .collect::<Vec<_>>(),
+        ))
+        .build();
+    if let Some(index) = choices
+        .iter()
+        .position(|(_, item)| item.as_ref().map(|v| v.version == version).unwrap_or(false))
+    {
+        version_combo.set_selected(index as u32);
+    }
+    let version_entry = adw::EntryRow::builder()
+        .title(tr("Version name", "Название версии"))
+        .text(&version)
+        .build();
+    let state_row = adw::ActionRow::builder()
+        .title(tr("Installation", "Установка"))
+        .build();
+    let state_label = label("", &["caption"]);
+    state_row.add_suffix(&state_label);
+    version_group.add(&version_combo);
+    version_group.add(&version_entry);
+    version_group.add(&state_row);
+    page.add(&version_group);
+
+    let source_group = adw::PreferencesGroup::builder()
+        .title(tr("Download", "Загрузка"))
+        .description(tr(
+            "HTTPS only. A SHA-256 is checked when provided; archives are extracted without path escapes.",
+            "Только HTTPS. SHA-256 проверяется, если указан; архивы распаковываются без выхода за каталог.",
+        ))
+        .build();
+    let url_entry = adw::EntryRow::builder()
+        .title("URL")
         .text(
-            version
-                .as_ref()
-                .map(|v| v.sha256.clone())
+            def.version(&version)
+                .map(|item| item.url.clone())
                 .unwrap_or_default(),
         )
         .build();
-    let binary = gtk::Entry::builder()
-        .placeholder_text(tr(
-            "Binary name inside the archive",
-            "Имя бинарника внутри архива",
-        ))
+    let sha_entry = adw::EntryRow::builder()
+        .title("SHA-256")
         .text(
-            version
-                .as_ref()
-                .map(|v| v.binary.clone())
-                .unwrap_or_else(|| "wildrig-multi".into()),
+            def.version(&version)
+                .map(|item| item.sha256.clone())
+                .unwrap_or_default(),
         )
         .build();
-    let archive = gtk::Entry::builder()
-        .placeholder_text(tr("binary, tar.gz or zip", "binary, tar.gz или zip"))
+    let details = adw::ExpanderRow::builder()
+        .title(tr("Archive details", "Параметры архива"))
+        .subtitle(tr("binary, tar.gz or zip", "binary, tar.gz или zip"))
+        .build();
+    let archive_entry = adw::EntryRow::builder()
+        .title(tr("Archive", "Архив"))
         .text(
-            version
-                .as_ref()
-                .map(|v| v.archive.clone())
+            def.version(&version)
+                .map(|item| item.archive.clone())
                 .unwrap_or_else(|| "binary".into()),
         )
         .build();
-    for (label_text, widget) in [
-        (tr("URL", "URL"), &url),
-        (tr("SHA-256", "SHA-256"), &sha),
-        (tr("Binary", "Бинарник"), &binary),
-        (tr("Archive", "Архив"), &archive),
-    ] {
-        let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        let label = gtk::Label::builder()
-            .label(label_text)
-            .xalign(0.0)
-            .css_classes(["caption", "dim-label"])
-            .build();
-        row.append(&label);
-        row.append(widget);
-        content.append(&row);
-    }
+    let binary_entry = adw::EntryRow::builder()
+        .title(tr("Binary", "Бинарник"))
+        .text(
+            def.version(&version)
+                .map(|item| item.binary.clone())
+                .unwrap_or_else(|| "wildrig-multi".into()),
+        )
+        .build();
+    details.add_row(&archive_entry);
+    details.add_row(&binary_entry);
+    source_group.add(&url_entry);
+    source_group.add(&sha_entry);
+    source_group.add(&details);
+    page.add(&source_group);
 
-    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    buttons.set_halign(gtk::Align::End);
-    buttons.set_margin_top(8);
-    let cancel = gtk::Button::with_label(&tr("Cancel", "Отмена"));
-    let start = gtk::Button::builder()
-        .label(tr("Download", "Скачать"))
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    footer.set_margin_top(10);
+    footer.set_margin_bottom(12);
+    footer.set_margin_start(12);
+    footer.set_margin_end(12);
+    let status = label("", &["caption", "dim-label"]);
+    status.set_hexpand(true);
+    let import = gtk::Button::builder()
+        .label(tr("Import binary…", "Импортировать бинарник…"))
+        .css_classes(["flat"])
+        .build();
+    let download = gtk::Button::builder()
+        .label(tr("Download and install", "Скачать и установить"))
         .css_classes(["suggested-action"])
         .build();
-    buttons.append(&cancel);
-    buttons.append(&start);
-    content.append(&buttons);
-    dialog.set_child(Some(&content));
+    footer.append(&status);
+    footer.append(&import);
+    footer.append(&download);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    page.set_vexpand(true);
+    content.append(&page);
+    content.append(&footer);
+    window.set_child(Some(&content));
 
+    let update_state: Rc<dyn Fn()> = {
+        let app = app.clone();
+        let miner_id = miner_id.to_string();
+        let state_row = state_row.clone();
+        let state_label = state_label.clone();
+        let version_entry = version_entry.clone();
+        Rc::new(move || {
+            let version = version_entry.text().trim().to_string();
+            let install = app.config.borrow().install(&miner_id, &version).cloned();
+            match install {
+                Some(install) => {
+                    state_row.set_subtitle(&install.path);
+                    state_label.set_text(&tr("installed", "установлен"));
+                    state_label.set_css_classes(&["caption", "success"]);
+                }
+                None => {
+                    state_row.set_subtitle(&tr(
+                        "Not installed; one installation is shared by every preset.",
+                        "Не установлен; одна установка доступна всем пресетам.",
+                    ));
+                    state_label.set_text(&tr("not installed", "не установлен"));
+                    state_label.set_css_classes(&["caption", "warning"]);
+                }
+            }
+        })
+    };
+    update_state();
+
+    let finish_install: Rc<dyn Fn(MinerInstall)> = {
+        let app = app.clone();
+        let window = window.clone();
+        let on_done = on_done.clone();
+        Rc::new(move |install: MinerInstall| {
+            {
+                let mut cfg = app.config.borrow_mut();
+                cfg.add_install(install);
+                let _ = cfg.save();
+            }
+            refresh_miners(&app);
+            if let Some(callback) = &on_done {
+                callback();
+            }
+            app.toast.add_toast(adw::Toast::new(&tr(
+                "Miner installed. It is available in every preset.",
+                "Майнер установлен. Он доступен во всех пресетах.",
+            )));
+            window.close();
+        })
+    };
+
+    let miner_key = miner_id.to_string();
     {
-        let dialog = dialog.clone();
-        cancel.connect_clicked(move |_| dialog.close());
+        let choices = choices.clone();
+        let version_entry = version_entry.clone();
+        let url_entry = url_entry.clone();
+        let sha_entry = sha_entry.clone();
+        let archive_entry = archive_entry.clone();
+        let binary_entry = binary_entry.clone();
+        let update_state = update_state.clone();
+        version_combo.connect_notify_local(Some("selected"), move |row, _| {
+            let index = row.selected() as usize;
+            let Some((_, Some(item))) = choices.get(index) else {
+                return;
+            };
+            version_entry.set_text(&item.version);
+            prefill_miner_source(
+                &miner_key,
+                &item.version,
+                &url_entry,
+                &sha_entry,
+                &archive_entry,
+                &binary_entry,
+            );
+            update_state();
+        });
     }
     {
-        let dialog = dialog.clone();
-        let app = app.clone();
-        let miner = miner.to_string();
-        let url = url.clone();
-        let sha = sha.clone();
-        let binary = binary.clone();
-        let archive = archive.clone();
-        let start_button = start.clone();
-        start.connect_clicked(move |_| {
-            let url_text = url.text().to_string();
-            if !url_text.starts_with("https://") {
-                app.toast.add_toast(adw::Toast::new(&tr(
-                    "Only HTTPS URLs are accepted.",
-                    "Принимаются только HTTPS-ссылки.",
-                )));
+        let update_state = update_state.clone();
+        version_entry.connect_notify_local(Some("text"), move |_, _| update_state());
+    }
+    {
+        let window = window.clone();
+        cancel.connect_clicked(move |_| window.close());
+    }
+    {
+        let window = window.clone();
+        let miner_id = miner_id.to_string();
+        let version_entry = version_entry.clone();
+        let finish_install = finish_install.clone();
+        import.connect_clicked(move |_| {
+            let dialog = gtk::FileChooserNative::builder()
+                .title(tr("Select miner binary", "Выберите бинарник майнера"))
+                .action(gtk::FileChooserAction::Open)
+                .build();
+            dialog.set_transient_for(Some(&window));
+            let miner_id = miner_id.clone();
+            let version_entry = version_entry.clone();
+            let finish_install = finish_install.clone();
+            dialog.connect_response(move |dialog, response| {
+                if response == gtk::ResponseType::Accept {
+                    if let Some(path) = dialog.file().and_then(|file| file.path()) {
+                        let mut version = version_entry.text().trim().to_string();
+                        if version.is_empty() {
+                            version = tr("custom", "своя").to_string();
+                        }
+                        finish_install(MinerInstall {
+                            miner: miner_id.clone(),
+                            version,
+                            path: path.to_string_lossy().into_owned(),
+                            sha256: String::new(),
+                            source_url: String::new(),
+                            verified: false,
+                            custom: true,
+                            installed_at: util::now_unix(),
+                        });
+                    }
+                }
+                dialog.destroy();
+            });
+            dialog.show();
+        });
+    }
+    {
+        let miner_id = miner_id.to_string();
+        let source_url = def.source_url.clone();
+        let version_entry = version_entry.clone();
+        let url_entry = url_entry.clone();
+        let sha_entry = sha_entry.clone();
+        let archive_entry = archive_entry.clone();
+        let binary_entry = binary_entry.clone();
+        let status = status.clone();
+        let finish_install = finish_install.clone();
+        download.connect_clicked(move |button| {
+            let version = version_entry.text().trim().to_string();
+            let url = url_entry.text().trim().to_string();
+            if version.is_empty() {
+                set_status_text(
+                    &status,
+                    &tr(
+                        "Enter a version name first.",
+                        "Сначала введите название версии.",
+                    ),
+                    "error",
+                );
                 return;
             }
-            start_button.set_sensitive(false);
-            start_button.set_label(&tr("Downloading…", "Скачиваю…"));
+            if !url.starts_with("https://") {
+                set_status_text(
+                    &status,
+                    &tr(
+                        "Only HTTPS URLs are accepted.",
+                        "Принимаются только HTTPS-ссылки.",
+                    ),
+                    "error",
+                );
+                return;
+            }
+            button.set_sensitive(false);
+            button.set_label(&tr("Downloading…", "Скачиваю…"));
+            set_status_text(&status, &tr("Downloading…", "Скачиваю…"), "accent");
             let request = trommel_core::download::DownloadRequest {
-                miner: miner.clone(),
-                version: version
-                    .as_ref()
-                    .map(|v| v.version.clone())
-                    .unwrap_or_default(),
-                url: url_text,
-                sha256: sha.text().to_string(),
-                archive: archive.text().to_string(),
-                binary: binary.text().to_string(),
-                source_url: String::new(),
+                miner: miner_id.clone(),
+                version,
+                url,
+                sha256: sha_entry.text().to_string(),
+                archive: archive_entry.text().to_string(),
+                binary: binary_entry.text().to_string(),
+                source_url: source_url.clone(),
             };
-            let (tx, rx) = std::sync::mpsc::channel::<Result<MinerInstall, String>>();
             let root = trommel_core::download::miner_root();
+            let (tx, rx) = std::sync::mpsc::channel::<Result<MinerInstall, String>>();
             std::thread::spawn(move || {
                 let result =
-                    trommel_core::download::install(&request, &root).map_err(|e| e.to_string());
+                    trommel_core::download::install(&request, &root).map_err(|err| err.to_string());
                 let _ = tx.send(result);
             });
-            let app = app.clone();
-            let dialog = dialog.clone();
+            let button = button.clone();
+            let status = status.clone();
+            let finish_install = finish_install.clone();
             glib::timeout_add_local(Duration::from_millis(200), move || match rx.try_recv() {
                 Ok(Ok(install)) => {
-                    {
-                        let mut cfg = app.config.borrow_mut();
-                        cfg.add_install(install);
-                        let _ = cfg.save();
-                    }
-                    refresh_miners(&app);
-                    refresh_preset_editor(&app);
-                    app.toast.add_toast(adw::Toast::new(&tr(
-                        "Miner installed. It is available in every preset.",
-                        "Майнер установлен. Он доступен во всех пресетах.",
-                    )));
-                    dialog.close();
+                    finish_install(install);
                     glib::ControlFlow::Break
                 }
                 Ok(Err(error)) => {
-                    app.toast.add_toast(adw::Toast::new(&error));
-                    dialog.close();
+                    set_status_text(&status, &error, "error");
+                    button.set_sensitive(true);
+                    button.set_label(&tr("Download and install", "Скачать и установить"));
                     glib::ControlFlow::Break
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    app.toast.add_toast(adw::Toast::new(&tr(
-                        "Download thread stopped unexpectedly.",
-                        "Поток загрузки неожиданно завершился.",
-                    )));
-                    dialog.close();
+                    set_status_text(
+                        &status,
+                        &tr(
+                            "Download thread stopped unexpectedly.",
+                            "Поток загрузки неожиданно завершился.",
+                        ),
+                        "error",
+                    );
                     glib::ControlFlow::Break
                 }
             });
         });
     }
-    dialog.present();
+    window.present();
+    if let Some(path) = std::env::var_os("TROMMEL_INSTALL_SCREENSHOT") {
+        let path = path.to_string_lossy().into_owned();
+        let capture = window.clone();
+        let application = app.window.application();
+        glib::timeout_add_seconds_local(2, move || {
+            if let Some(application) = application.clone() {
+                schedule_window_screenshot(capture.clone(), path.clone(), application, 0);
+            }
+            glib::ControlFlow::Break
+        });
+    }
+}
+
+/// Set text plus one semantic colour class on a status label.
+fn set_status_text(widget: &gtk::Label, text: &str, class: &str) {
+    widget.set_text(text);
+    if class.is_empty() {
+        widget.set_css_classes(&["caption", "dim-label"]);
+    } else {
+        widget.set_css_classes(&["caption", class]);
+    }
 }
 
 fn load_settings(app: &Rc<App>) {
@@ -3113,9 +3610,6 @@ fn load_settings(app: &Rc<App>) {
 
 fn apply_simple_mode(app: &Rc<App>) {
     let simple = app.config.borrow().behavior.simple_mode;
-    app.editor.options_group.set_visible(!simple);
-    app.editor.extra.set_visible(!simple);
-    app.editor.miner_fee.set_visible(!simple);
     app.settings.core_lock.set_visible(!simple);
     app.settings.core.set_visible(!simple);
     app.settings.memory_lock.set_visible(!simple);
@@ -3183,114 +3677,6 @@ fn nonzero(value: u32) -> Option<u32> {
     } else {
         Some(value)
     }
-}
-
-fn save_editor(app: &Rc<App>) {
-    let id = app.editor.current_id.borrow().clone();
-    let miner_id = catalog::miners()
-        .get(app.editor.miner.selected() as usize)
-        .map(|m| m.id.clone())
-        .unwrap_or_else(|| "wildrig".into());
-    let version = catalog::miners()
-        .get(app.editor.miner.selected() as usize)
-        .and_then(|m| m.versions.get(app.editor.version.selected() as usize))
-        .map(|v| v.version.clone())
-        .unwrap_or_else(|| "0.51.8".into());
-    let mut options = BTreeMap::new();
-    for row in app.editor.options.borrow().iter() {
-        options.insert(row.key.clone(), row.value());
-    }
-    let pool = catalog::pools()
-        .get(app.editor.pool.selected() as usize)
-        .map(|p| p.id.clone())
-        .unwrap_or_else(|| "pearlhash".into());
-    let mut cfg = app.config.borrow_mut();
-    if let Some(preset) = cfg.presets.get_mut(&id) {
-        preset.name = app.editor.name.text().to_string();
-        preset.pool = pool;
-        preset.pool_url = app.editor.pool_url.text().to_string();
-        preset.pool_fee_pct = app.editor.pool_fee.value();
-        preset.miner = miner_id.clone();
-        preset.miner_version = version;
-        preset.wallet = app.editor.wallet.text().to_string();
-        preset.worker = app.editor.worker.text().to_string();
-        preset.extra_args = app.editor.extra.text().to_string();
-        preset.miner_options = options;
-        let def = catalog::miner(&miner_id);
-        preset.miner_fee_pct = def.map(|m| m.fee_pct).unwrap_or(0.0);
-        preset.miner_fee_override_pct = if def.map(|m| m.fee_configurable).unwrap_or(false) {
-            Some(app.editor.miner_fee.value())
-        } else {
-            None
-        };
-        preset.updated_at = util::now_unix();
-    }
-    drop(cfg);
-    mark_dirty(app);
-    refresh_preset_list(app);
-    refresh_miners(app);
-}
-
-fn new_preset(app: &Rc<App>) {
-    let mut cfg = app.config.borrow_mut();
-    let base = cfg.preset().cloned().unwrap_or_else(Preset::new_pearl);
-    let id = format!("preset-{}", util::now_unix());
-    let mut preset = base;
-    preset.id = id.clone();
-    preset.name = tr("New preset", "Новый пресет");
-    preset.created_at = util::now_unix();
-    preset.updated_at = preset.created_at;
-    cfg.presets.insert(id.clone(), preset);
-    cfg.active_preset = Some(id.clone());
-    drop(cfg);
-    load_preset_into_editor(app, &id);
-    app.editor.stack.set_visible_child_name("editor");
-    mark_dirty(app);
-    refresh_preset_list(app);
-}
-
-fn duplicate_preset(app: &Rc<App>) {
-    let id = app.editor.current_id.borrow().clone();
-    let mut cfg = app.config.borrow_mut();
-    let Some(base) = cfg.presets.get(&id).cloned() else {
-        return;
-    };
-    let new_id = format!("preset-{}", util::now_unix());
-    let mut copy = base;
-    copy.id = new_id.clone();
-    copy.name = format!("{} {}", copy.name, tr("(copy)", "(копия)"));
-    copy.created_at = util::now_unix();
-    copy.updated_at = copy.created_at;
-    cfg.presets.insert(new_id.clone(), copy);
-    cfg.active_preset = Some(new_id.clone());
-    drop(cfg);
-    load_preset_into_editor(app, &new_id);
-    app.editor.stack.set_visible_child_name("editor");
-    mark_dirty(app);
-    refresh_preset_list(app);
-}
-
-fn delete_preset(app: &Rc<App>) {
-    let id = app.editor.current_id.borrow().clone();
-    let mut cfg = app.config.borrow_mut();
-    if cfg.presets.len() <= 1 {
-        drop(cfg);
-        app.toast.add_toast(adw::Toast::new(&tr(
-            "At least one preset is required.",
-            "Нужен хотя бы один пресет.",
-        )));
-        return;
-    }
-    cfg.presets.remove(&id);
-    if cfg.active_preset.as_deref() == Some(id.as_str()) {
-        cfg.active_preset = cfg.presets.keys().next().cloned();
-    }
-    let next = cfg.active_preset.clone().unwrap_or_default();
-    drop(cfg);
-    load_preset_into_editor(app, &next);
-    app.editor.stack.set_visible_child_name("list");
-    mark_dirty(app);
-    refresh_preset_list(app);
 }
 
 fn save_and_apply(app: &Rc<App>) {
@@ -3371,6 +3757,8 @@ fn handle_event(app: &Rc<App>, event: Ev) {
             app.hero_line.set_tooltip_text(Some(&message));
             app.action_button.set_sensitive(false);
             app.pill.set_text(&tr("offline", "нет связи"));
+            app.pill
+                .set_css_classes(&["caption", "trommel-pill", "trommel-pill-offline"]);
         }
         Ev::Error(message) => {
             app.toast.add_toast(adw::Toast::new(&message));
@@ -3797,16 +4185,18 @@ fn apply_status(app: &Rc<App>, status: Status) {
     } else {
         "suggested-action"
     }]);
-    let pill_text = if running {
+    let (pill_text, pill_class) = if running {
         if status.state.external {
-            tr("external", "вручную")
+            (tr("external", "вручную"), "trommel-pill-external")
         } else {
-            tr("mining", "майнится")
+            (tr("mining", "майнится"), "trommel-pill-running")
         }
     } else {
-        tr("stopped", "остановлен")
+        (tr("stopped", "остановлен"), "trommel-pill-stopped")
     };
     app.pill.set_text(&pill_text);
+    app.pill
+        .set_css_classes(&["caption", "trommel-pill", pill_class]);
     let hashrate = status
         .total
         .hashrate
@@ -3814,6 +4204,11 @@ fn apply_status(app: &Rc<App>, status: Status) {
         .map(util::format_hashrate)
         .unwrap_or_else(|| "—".into());
     app.hero_hashrate.set_text(&hashrate);
+    app.hero_hashrate.set_css_classes(&[
+        "title-1",
+        "numeric",
+        if running { "accent" } else { "dim-label" },
+    ]);
     app.hero_line.set_text(&format!(
         "{} · {} {} · {:.2}%",
         status.state.preset_name,
@@ -3853,13 +4248,12 @@ fn apply_status(app: &Rc<App>, status: Status) {
             .map(|v| v.to_string())
             .unwrap_or_else(|| "—".into())
     ));
-    app.shares.set_subtitle(&format!(
-        "{} / {}",
-        status.miner.accepted.unwrap_or(0),
-        status.miner.rejected.unwrap_or(0)
-    ));
+    app.shares_ok
+        .set_text(&status.miner.accepted.unwrap_or(0).to_string());
+    app.shares_bad
+        .set_text(&status.miner.rejected.unwrap_or(0).to_string());
     if let Some(pool) = &status.pool {
-        app.pool_balance.set_subtitle(&format!(
+        app.pool_balance_value.set_text(&format!(
             "{} PRL",
             pool.balance
                 .map(|v| format!("{v:.3}"))
@@ -3870,13 +4264,17 @@ fn apply_status(app: &Rc<App>, status: Status) {
             status.state.preset_name, pool.fee_pct
         ));
     } else {
-        app.pool_balance.set_subtitle("—");
+        app.pool_balance_value.set_text("—");
         app.pool_meta.set_subtitle("—");
     }
     if status.warnings.is_empty() {
         app.warnings.set_title(&tr("No notes", "Замечаний нет"));
+        app.warning_badge.set_text("✓");
+        app.warning_badge.set_css_classes(&["caption", "success"]);
     } else {
         app.warnings.set_title(&status.warnings.join(" · "));
+        app.warning_badge.set_text("⚠");
+        app.warning_badge.set_css_classes(&["caption", "warning"]);
     }
 
     let signature = status
