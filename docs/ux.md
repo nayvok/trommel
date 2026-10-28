@@ -23,11 +23,12 @@ when a screen is added, removed or moved.
 
 ## Responsive layout
 
-The window opens at 680×760 with a 380 px minimum. Above the breakpoint the
-navigation switcher sits in the header; below it the header title is hidden and
-the bottom `AdwViewSwitcherBar` appears. GPU cards use `AdwBreakpoint`
-conditions for one to three columns. Dialogs have their own scroll area and a
-size that fits small screens. Page changes animate through `AdwViewStack`.
+The window opens at 680×760 with a 380 px minimum. Navigation lives in a single
+`AdwViewSwitcherBar` at the bottom: the header keeps the app title, so the
+switcher is never duplicated at the top and never disappears on a narrow
+window. GPU cards wrap through the dashboard's 900 px clamp (one to three
+columns); dialogs have their own scroll area and a size that fits small
+screens. Page changes animate through `AdwViewStack`.
 
 ## Navigation rules
 

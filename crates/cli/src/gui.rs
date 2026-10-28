@@ -11,7 +11,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adw::prelude::*;
-use glib::value::ToValue;
 use gtk::{gdk, gio, glib};
 
 use trommel_core::catalog::{self, MinerOption, OptionKind};
@@ -422,20 +421,15 @@ fn build_ui(app: &adw::Application) {
     stack.set_transition_duration(220);
     toast.set_child(Some(&stack));
 
-    let title = adw::ViewSwitcherTitle::builder()
-        .stack(&stack)
-        .title("Trommel")
-        .subtitle(tr("NVIDIA mining rig manager", "Менеджер NVIDIA-рига"))
-        .build();
+    let title = adw::WindowTitle::new(
+        "Trommel",
+        &tr("NVIDIA mining rig manager", "Менеджер NVIDIA-рига"),
+    );
+    // One navigation surface, always available: the bottom switcher bar. The
+    // header keeps the window title, so the switcher can never be duplicated
+    // at the top and disappear at the bottom on narrow windows.
     let switcher_bar = adw::ViewSwitcherBar::builder().stack(&stack).build();
-    {
-        // The bottom bar is the narrow-window replacement for the header
-        // switcher, so it must be visible exactly when the title is not.
-        let switcher_bar = switcher_bar.clone();
-        title.connect_notify_local(Some("title-visible"), move |title, _| {
-            switcher_bar.set_reveal(!title.is_title_visible());
-        });
-    }
+    switcher_bar.set_reveal(true);
 
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&title));
@@ -539,7 +533,7 @@ fn build_ui(app: &adw::Application) {
         .build();
     let gpu_flow = gtk::FlowBox::new();
     gpu_flow.set_selection_mode(gtk::SelectionMode::None);
-    gpu_flow.set_max_children_per_line(2);
+    gpu_flow.set_max_children_per_line(3);
     gpu_flow.set_min_children_per_line(1);
     gpu_flow.set_homogeneous(true);
     gpu_flow.set_column_spacing(10);
@@ -547,22 +541,6 @@ fn build_ui(app: &adw::Application) {
     gpu_flow.set_margin_top(6);
     gpu_flow.set_margin_bottom(6);
     rig_group.add(&gpu_flow);
-    {
-        let narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
-            adw::BreakpointConditionLengthType::MaxWidth,
-            560.0,
-            adw::LengthUnit::Px,
-        ));
-        narrow.add_setter(&gpu_flow, "max-children-per-line", Some(&1u32.to_value()));
-        window.add_breakpoint(narrow);
-        let wide = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
-            adw::BreakpointConditionLengthType::MinWidth,
-            780.0,
-            adw::LengthUnit::Px,
-        ));
-        wide.add_setter(&gpu_flow, "max-children-per-line", Some(&3u32.to_value()));
-        window.add_breakpoint(wide);
-    }
     dashboard_box.append(&rig_group);
 
     let totals_group = adw::PreferencesGroup::builder()
