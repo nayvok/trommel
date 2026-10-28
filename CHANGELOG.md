@@ -19,10 +19,10 @@ Changelog; versions use SemVer.
   accepted/rejected shares, pool balance, install state and warnings. Rounded
   16 px GPU cards and a hero card for the hashrate.
 - UX map in `docs/ux.md` / `docs/ux.ru.md` describing every window and rule.
-- Adaptive layout: the window opens at 680×760 and can shrink to 380 px; the
-  header view switcher is replaced by the bottom bar on narrow windows, GPU
-  cards ask for one to three columns through AdwBreakpoint, and page switches
-  animate.
+- Adaptive layout: the window opens at 680×760 and can shrink to 380 px,
+  navigation is a single bottom bar (never duplicated in the header and never
+  missing on narrow windows), GPU cards wrap into up to three columns, and page
+  switches animate.
 
 ### Changed
 
