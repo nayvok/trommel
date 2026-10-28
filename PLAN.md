@@ -1,9 +1,15 @@
 # Trommel — план следующей goal-сессии
 
-**Статус:** v0.2 собран и закоммичен; рабочее дерево чистое.
-**Цель следующей сессии:** довести UX обычного пользователя до конца
+**Статус:** v0.3.0: мастер быстрой настройки, таблица карт, MCP smoke-тест,
+скриншоты и docs сделаны; идёт финальная упаковка и тег.
+**Цель сессии:** довести UX обычного пользователя до конца
 (quick-setup wizard, advanced-настройки, документация/скриншоты, smoke-тесты
 MCP), не сломав уже сделанные опциональные локи и текущий e2e.
+
+> **Итог сессии v0.3.0:** пункты 5–7 раздела 7 выполнены (мастер из 3 шагов,
+> таблица карт + advanced-скриншоты, `scripts/test-mcp.sh`), документация
+> обновлена, полная редакция кошельков вынесена в `Config::redacted()`.
+> Остаётся пункт 8: финальные проверки, `.deb`, тег — см. раздел 7.
 
 > **Обновление после UX-итерации:** основная часть раздела 2 уже сделана:
 > карточки GPU, per-GPU список в настройках, опциональные core/memory locks,
@@ -148,28 +154,32 @@ f32f933 feat(config): add simple-mode preference
 
 ---
 
-## 3. Доработки UX для «обычного пользователя»
+## 3. Доработки UX для «обычного пользователя» (выполнено)
 
-- Довести Quick setup до мастера из 3 шагов (GPU → майнер → кошелёк/старт),
-  а не только кнопки, открывающей редактор.
-- В Simple mode скрыть fee override, extra args, miner options; оставить
-  power/temp/Start.
-- Проверить, что Recommended не выглядит как «оптимальные настройки»:
-  это безопасный старт, а не обещание максимума.
-- Добавить понятное пустое состояние «майнер не установлен» с Download/Import
-  прямо в пресете (частично есть).
+- ~~Quick setup — мастер из 3 шагов (карты → майнер → кошелёк/старт).~~
+  Сделано: `quick_setup_wizard`, шаги с валидацией, `Fill`/`Use auto`,
+  установка майнера, `Start mining` через `Cmd::ApplyStart`. При запущенном
+  майнере — обычный диалог Apply and restart/stop, без тихого перезапуска.
+- ~~В Simple mode скрыть fee override, extra args, miner options; оставить
+  power/temp/Start.~~ Сделано ранее.
+- ~~Recommended — безопасный старт, а не «оптимальные настройки».~~ Текст в
+  визарде и диалоге прямо это говорит.
+- ~~Пустое состояние «майнер не установлен» с Download/Import.~~ Есть в
+  пресете, каталоге и шаге майнера визарда.
 - Локализовать оставшиеся технические строки в UI (gettext — позже, сейчас
   `tr(en, ru)`).
 
-## 4. Agent/MCP hardening
+## 4. Agent/MCP hardening (выполнено)
 
-- MCP уже есть; добавить тест-скрипт `scripts/test-mcp.sh` с initialize/
-  tools/list/tools/call и проверкой, что write-инструменты недоступны без
-  `--allow-write`.
-- `trommel config apply` и MCP apply должны требовать явного режима и
-  возвращать diff; не auto-apply.
-- Диагностика не должна содержать wallet/seed; проверить redaction.
-- Документировать Codex config и ограничения.
+- ~~`scripts/test-mcp.sh` с initialize/tools/list/tools/call и проверкой, что
+  write-инструменты недоступны без `--allow-write`.~~ Сделано, включая
+  отклонение неверного режима и проверку редакции кошельков.
+- ~~`trommel config apply` и MCP apply требуют явного режима.~~ Есть:
+  `mode = live|restart|stop`, diff возвращается/печатается, auto-apply нет.
+- ~~Диагностика не должна содержать wallet/seed.~~ `Config::redacted()`
+  скрывает кошельки **всех** пресетов; используется в `diagnose` и MCP
+  (`trommel_config`, `trommel_preset_get`).
+- ~~Документировать Codex config и ограничения.~~ `docs/agents.md`.
 - Встроенный AI-ассистент не делать в v1; внешний агент — достаточно.
 
 ## 5. Упаковка и проверки
@@ -202,11 +212,13 @@ f32f933 feat(config): add simple-mode preference
 2. ~~`feat(ui): add explicit core/memory lock switches`~~ — сделано.
 3. ~~`test(e2e): cover optional locks and reset`~~ — сделано.
 4. ~~`docs: explain memory lock trade-offs`~~ — базово сделано, расширить.
-5. `feat(ui): finish quick-setup wizard` — 3 шага, 1–3 карты.
-6. `feat(ui): add advanced GPU table / advanced screenshot` — таблица карт,
-   locks, копирование на similar/all уже есть в диалоге.
-7. `test(agents): add MCP smoke test` + docs.
-8. Rebuild deb, screenshots, final checks, tag `v0.2.1` (или `v0.3.0`).
+5. ~~`feat(ui): finish quick-setup wizard` — 3 шага, 1–3 карты.~~ Сделано.
+6. ~~`feat(ui): add advanced GPU table / advanced screenshot` — таблица карт,
+   locks, копирование на similar/all уже есть в диалоге.~~ Сделано: таблица в
+   Settings → Обнаруженные карты, `docs/images/gpu-tune-en-dark.png`,
+   `settings-advanced-en-dark.png`, `setup-en-dark.png`.
+7. ~~`test(agents): add MCP smoke test` + docs.~~ Сделано.
+8. Финальные проверки, пересборка `.deb`, тег `v0.3.0` — **в работе**.
 
 ## 8. Definition of Done
 

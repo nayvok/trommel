@@ -56,7 +56,24 @@ Read-only tools include `trommel_status`, `trommel_gpus`, `trommel_presets`,
 `trommel_preset_get`, `trommel_config`, `trommel_config_validate`,
 `trommel_config_diff`, `trommel_miners` and `trommel_diagnose`. With
 `--allow-write`, `trommel_start`, `trommel_stop` and `trommel_apply_config` are
-also exposed.
+also exposed. Without the flag a write tool call returns a plain JSON-RPC error
+(`write tool disabled; start the MCP server with --allow-write`) and the server
+keeps serving.
+
+`trommel_config`, `trommel_preset_get` and `trommel diagnose --json` replace
+**every** preset wallet with `<redacted>`, not only the active one.
+
+### Smoke test
+
+```bash
+./scripts/test-mcp.sh
+```
+
+The script builds the CLI, points `XDG_CONFIG_HOME` at a temporary fixture with
+two presets, and checks `initialize`, `ping`, `tools/list`, `tools/call`, the
+read-only tool set, `--allow-write` gating, bad arguments, unknown tools and
+that no wallet-shaped string appears in the output. It never calls a write tool
+for real.
 
 ## Safety rules for agents
 
