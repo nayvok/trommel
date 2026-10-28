@@ -190,7 +190,16 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Some(Cmd::Mcp { allow_write }) => mcp::run(allow_write),
+        Some(Cmd::Mcp { allow_write }) => {
+            // The MCP loop is synchronous. Run it on a plain thread: tool
+            // handlers build their own small runtimes for D-Bus calls, which
+            // panics ("cannot start a runtime from within a runtime") when the
+            // loop is driven from `#[tokio::main]`.
+            match std::thread::spawn(move || mcp::run(allow_write)).join() {
+                Ok(result) => result,
+                Err(_) => Err(anyhow!("MCP server thread panicked")),
+            }
+        }
         Some(Cmd::Diagnose { json }) => {
             let status = match connect().await {
                 Ok(proxy) => proxy
