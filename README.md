@@ -37,6 +37,9 @@ arguments are hidden until you turn them on.
 - **Optional clock locks** — core/memory locks are off by default; enable them
   per card, copy to identical cards or all GPUs. A lower memory lock can save
   power on some coins and hurt others, so it is an advanced choice.
+- **Per-card tuning table** — **Settings → Detected GPUs** lists power, clock
+  locks, fan and temperature for every card; simple mode shows only power and
+  temperature, and **Advanced settings** reveals the rest.
 - **Safe apply flow** — if the miner is running and you edit the profile, you
   choose **Apply and restart** or **Apply and stop**; failures roll back.
 - **GNOME Shell integration** — a panel indicator, live popup, Quick Settings
@@ -62,7 +65,7 @@ AMD/Intel, X11-specific paths and non-GNOME desktops are out of scope for v1.
 ### Debian package (recommended for v1)
 
 ```bash
-sudo apt install ./dist/trommel_0.2.0_amd64.deb
+sudo apt install ./dist/trommel_0.3.0_amd64.deb
 ```
 
 The package contains the app, `trommeld`, the polkit helper, desktop entry,
@@ -91,7 +94,21 @@ needs without a broad sandbox; a GUI-only Flatpak would be a different product.
 
 ## First run
 
-A **Quick setup** button appears on the dashboard until a wallet and an installed miner are ready.
+A **Quick setup** button appears on the dashboard until a wallet and an installed
+miner are ready. It opens a three-step wizard for a 1–3 card rig:
+
+1. **Cards** — tick the cards to mine on and give each one a power limit
+   (**Fill** = 80% of the stock limit, **Use auto** = no limit).
+2. **Miner** — choose a miner and version, then **Download** or **Import** it
+   once for every preset.
+3. **Wallet** — preset name, wallet, worker, pool and pool address. Nothing is
+   sent to the daemon or started until you press **Start mining**; a running
+   miner gets the usual Apply and restart / Apply and stop dialog instead of a
+   silent restart.
+
+![Quick setup](docs/images/setup-en-dark.png)
+
+The classic path still works:
 
 1. Open **Trommel** from the application menu.
 2. Create a preset: coin → pool → miner/version (import or install a binary) →
