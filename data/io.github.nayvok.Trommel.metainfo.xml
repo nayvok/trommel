@@ -90,6 +90,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.0" date="2026-10-28">
+      <description>
+        <p>Quick-setup wizard, per-card tuning table, MCP smoke test and full wallet redaction for agents.</p>
+        <p xml:lang="ru">Мастер быстрой настройки, таблица настроек по картам, smoke-тест MCP и полное скрытие кошельков для агентов.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-10-28">
       <description>
         <p>First Trommel release: multi-GPU dashboard, presets, miner catalogue, stock snapshot and GNOME extension.</p>
