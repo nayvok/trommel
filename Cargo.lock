@@ -1704,7 +1704,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "trommel"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "trommel-core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "flate2",
@@ -1737,7 +1737,7 @@ dependencies = [
 
 [[package]]
 name = "trommeld"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "serde_json",

@@ -90,6 +90,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.4.3" date="2026-10-28">
+      <description>
+        <p>UI polish for real use: aligned Settings action buttons, readable per-GPU cards with configured and live metrics, a clearer GPU tuning dialog, a working Cancel for the GPU switch, numeric empty states, and Start opening Quick setup on a pristine install. New lock-mismatch warnings show when the driver does not honour a configured clock lock.</p>
+        <p xml:lang="ru">Доводка UI для реальной работы: выровнены кнопки в «Действиях», карточки карт показывают заданные и живые значения, диалог настройки GPU понятнее, отмена переключателя карты действительно откатывает состояние, вместо прочерков — числовые заглушки, а Start на чистой установке открывает быструю настройку. Новые предупреждения показывают, если драйвер не применил заданный лок частоты.</p>
+      </description>
+    </release>
     <release version="0.4.2" date="2026-10-28">
       <description>
         <p>Start applies the edited GPU profile before launching. Preset and miner chevrons open their dialogs, the window can shrink to ~400 px, and the GNOME extension no longer fails with an undefined menu on enable.</p>

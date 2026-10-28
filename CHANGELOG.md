@@ -3,6 +3,41 @@
 All notable changes to Trommel are documented here. Format follows Keep a
 Changelog; versions use SemVer.
 
+## [0.4.3] - 2026-10-28
+
+### Fixed
+
+- The **Settings → Actions** buttons were stretched to the height of their
+  `AdwActionRow`; the pill buttons are now vertically centred and have a
+  consistent height at both ~400 px and the default width.
+- Detected GPUs in Settings are individual rounded cards with an icon, name,
+  three labelled configured metrics (power/core/memory) and live
+  temperature/fan/load chips. The old `auto · auto / 810 MHz …` string did not
+  say which value was which.
+- Toggling a GPU off while mining and then choosing **Cancel** left the switch
+  off and the draft dirty. The switch, the per-card override and the dirty
+  banner are now restored; Apply-and-restart / Apply-and-stop still work.
+- The GPU tuning dialog no longer shows a stale 1620/810 value next to an
+  enabled-looking lock. The value row appears only when the lock is on, the
+  dialog shows the current clocks, and a single-GPU machine no longer gets an
+  empty “Apply to” section.
+- The dashboard no longer renders lone dashes when the miner is stopped:
+  hashrate shows `0 TH/s`, pool balance shows a numeric placeholder, and the
+  pool row still names the configured endpoint. Core and memory clocks are
+  labelled separately on the GPU card.
+- Status now warns when a configured core/memory lock is not what the driver
+  reports. This makes a real 810-vs-9501 mismatch visible instead of hiding it
+  behind an ambiguous “1770 / 810 MHz” label.
+- On a first start with no wallet or no miner binary, **Start** opens Quick
+  setup instead of failing with a toast. A new `scripts/first-run-smoke.sh`
+  covers the pristine-install path.
+
+### Added
+
+- `scripts/first-run-smoke.sh` and the `first-run` AT-SPI phase: clean XDG
+  dirs, no config, no installed miner, one fake GPU, placeholders, wizard and
+  single-GPU tune dialog.
+
 ## [0.4.2] - 2026-10-28
 
 ### Fixed

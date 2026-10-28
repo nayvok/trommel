@@ -29,6 +29,7 @@
 /.e2e/
 /.shots/
 /.uicheck/
+/.first-run-check/
 /.fake-pc/
 /.fakelibs/
 /.testtmp/

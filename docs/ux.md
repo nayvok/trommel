@@ -23,7 +23,11 @@ when a screen is added, removed or moved.
 
 ## Responsive layout
 
-The window opens at 680×760 and stays usable down to ~400 px; the per-card settings rows use a short GPU name and keep the full name in the tooltip. Navigation lives in a single
+The window opens at 680×760 and stays usable down to ~400 px; every detected
+GPU is a rounded settings card with its own icon, name, three configured
+metrics, and live temperature/fan/load chips. The full tuning and UUID stay in
+the tooltip. Action buttons in Settings are vertically centred so a wrapped row
+never stretches a pill to an uneven height. Navigation lives in a single
 `AdwViewSwitcherBar` at the bottom: the header keeps the app title, so the
 switcher is never duplicated at the top and never disappears on a narrow
 window. GPU cards wrap through the dashboard's 900 px clamp (one to three
@@ -61,6 +65,18 @@ suggested version and a refresh callback. The dialog owns:
 The catalogue is a convenience, not a gate: miners release often, so the user
 can always type a version and paste a URL from the upstream release page.
 
+## GPU tuning details
+
+- The dialog starts with a **Now** row (power, core, memory, temperature), so a
+  target can be compared with the live state before saving.
+- A clock value row is visible only while its lock switch is on. With the lock
+  off the row would otherwise show a stale 1620/810 and look configured.
+- The switch subtitle names the current driver value when the lock is off.
+- **Apply to** (similar GPUs / all GPUs) is only shown on a machine with more
+  than one card. A single-GPU dialog has no empty “apply to” section.
+- **Recommended** means 80 % of the stock power limit with both clock locks
+  off; its tooltip says so.
+
 ## Theme
 
 Trommel is a libadwaita app: it uses libadwaita's widget styling and inherits
@@ -93,6 +109,12 @@ System/Light/Dark and applies immediately.
 
 - Service offline: pill says “offline”, start is disabled, refresh keeps
   retrying; the note row explains that `trommeld` is not running.
-- No GPU: cards area and settings table show one explanatory row, not an empty
+- No GPU: cards area and settings rows show one explanatory row, not an empty
   box.
-- No preset: dashboard offers “Quick setup”.
+- No wallet or no miner: **Start** opens Quick setup instead of only showing an
+  error toast; the dashboard offers the same wizard.
+- Miner stopped: hashrate reads `0 TH/s`, pool balance is `0.000 PRL` (or
+  `0 PRL` when no wallet is set), and the pool row still names the configured
+  endpoint. No lone dashes are used as placeholders.
+- Lock configured but not honoured: status adds a “memory/core lock … is not
+  active” warning with the requested and actual MHz.

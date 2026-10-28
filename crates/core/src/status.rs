@@ -5,6 +5,7 @@ use std::path::Path;
 
 use crate::catalog;
 use crate::config::Config;
+use crate::i18n::tr;
 use crate::minerapi::{self, MinerStats};
 use crate::nvidia::{self, GpuStats};
 use crate::pool::{self, PoolStats};
@@ -86,6 +87,58 @@ pub struct Status {
     pub ts: u64,
     pub ts_iso: String,
     pub version: String,
+}
+
+/// Compare requested clock locks with what the driver actually reports.
+///
+/// A hard `-lgc`/`-lmc` lock should match exactly; the tolerances only absorb
+/// rounding. Core is checked under load because an idle GPU legitimately
+/// downclocks below the lock.
+fn lock_warnings(cfg: &Config, gpus: &[GpuStats], running: bool, uptime_s: u64) -> Vec<String> {
+    if !running {
+        return Vec::new();
+    }
+    let Some(profile) = cfg.gpu_profile() else {
+        return Vec::new();
+    };
+    let mut warnings = Vec::new();
+    for gpu in gpus {
+        let tuning = profile.tuning_for(&gpu.uuid);
+        if !tuning.enabled {
+            continue;
+        }
+        if let (Some(want), Some(have)) = (tuning.memory_clock_mhz, gpu.mem_mhz) {
+            if want.abs_diff(have) > 50 {
+                warnings.push(tr(
+                    &format!(
+                        "GPU #{}: memory lock {want} MHz is not active (now {have} MHz)",
+                        gpu.index
+                    ),
+                    &format!(
+                        "Карта #{}: лок памяти {want} MHz не применился (сейчас {have} MHz)",
+                        gpu.index
+                    ),
+                ));
+            }
+        }
+        if uptime_s >= 10 && gpu.util_pct.unwrap_or(0) >= 80 {
+            if let (Some(want), Some(have)) = (tuning.core_clock_mhz, gpu.core_mhz) {
+                if want.abs_diff(have) > 100 {
+                    warnings.push(tr(
+                        &format!(
+                            "GPU #{}: core lock {want} MHz is not active (now {have} MHz)",
+                            gpu.index
+                        ),
+                        &format!(
+                            "Карта #{}: лок ядра {want} MHz не применился (сейчас {have} MHz)",
+                            gpu.index
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    warnings
 }
 
 impl Status {
@@ -196,6 +249,13 @@ impl Status {
         };
 
         let ts = util::now_unix();
+        let mut warnings = cfg.warnings();
+        warnings.extend(lock_warnings(
+            cfg,
+            &gpus,
+            state.running && !state.external,
+            state.uptime_s(),
+        ));
         Self {
             contract_version: CONTRACT_VERSION,
             state: StateView {
@@ -227,7 +287,7 @@ impl Status {
             miner,
             pool,
             oc,
-            warnings: cfg.warnings(),
+            warnings,
             total_fee_pct,
             expected_hashrate,
             temp_limit,
@@ -340,5 +400,85 @@ mod tests {
     #[test]
     fn tail_of_missing_file_is_empty() {
         assert!(read_tail(Path::new("/nonexistent/file.log"), 1024).is_empty());
+    }
+
+    fn tuned_config(uuid: &str) -> Config {
+        let mut cfg = Config::default();
+        let profile = cfg.gpu_profiles.get_mut("balanced").unwrap();
+        profile.per_gpu.insert(
+            uuid.to_string(),
+            crate::config::GpuTuning {
+                enabled: true,
+                power_limit_w: Some(300),
+                core_clock_mhz: Some(1620),
+                memory_clock_mhz: Some(810),
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    fn tuned_gpu(uuid: &str) -> GpuStats {
+        GpuStats {
+            index: 0,
+            uuid: uuid.into(),
+            core_mhz: Some(1620),
+            mem_mhz: Some(810),
+            util_pct: Some(100),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn matching_locks_do_not_warn() {
+        let uuid = "GPU-test";
+        let cfg = tuned_config(uuid);
+        let warnings = lock_warnings(&cfg, &[tuned_gpu(uuid)], true, 60);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn memory_mismatch_warns_even_at_idle() {
+        let uuid = "GPU-test";
+        let cfg = tuned_config(uuid);
+        let mut gpu = tuned_gpu(uuid);
+        gpu.mem_mhz = Some(9501);
+        gpu.util_pct = Some(0);
+        let warnings = lock_warnings(&cfg, &[gpu], true, 60);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("810"), "{warnings:?}");
+        assert!(warnings[0].contains("9501"), "{warnings:?}");
+    }
+
+    #[test]
+    fn core_mismatch_is_ignored_while_idle_or_starting() {
+        let uuid = "GPU-test";
+        let cfg = tuned_config(uuid);
+        let mut gpu = tuned_gpu(uuid);
+        gpu.core_mhz = Some(1770);
+        gpu.util_pct = Some(10);
+        assert!(lock_warnings(&cfg, &[gpu.clone()], true, 60).is_empty());
+        gpu.util_pct = Some(100);
+        assert!(lock_warnings(&cfg, &[gpu.clone()], true, 5).is_empty());
+        let warnings = lock_warnings(&cfg, &[gpu], true, 60);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("1620"), "{warnings:?}");
+        assert!(warnings[0].contains("1770"), "{warnings:?}");
+    }
+
+    #[test]
+    fn disabled_gpu_does_not_warn() {
+        let uuid = "GPU-test";
+        let mut cfg = tuned_config(uuid);
+        cfg.gpu_profiles
+            .get_mut("balanced")
+            .unwrap()
+            .per_gpu
+            .get_mut(uuid)
+            .unwrap()
+            .enabled = false;
+        let mut gpu = tuned_gpu(uuid);
+        gpu.mem_mhz = Some(9501);
+        assert!(lock_warnings(&cfg, &[gpu], true, 60).is_empty());
     }
 }

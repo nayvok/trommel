@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build the GitHub release assets locally:
-#   dist/release/trommel_0.4.2_amd64.deb
+#   dist/release/trommel_0.4.3_amd64.deb
 #   dist/release/trommel_amd64.deb          (stable latest URL)
 #   dist/release/*.sha256                   (basenames)
 #   dist/release/trommel-install.sh

@@ -212,7 +212,9 @@ class UI:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pid", type=int, required=True)
-    parser.add_argument("--phase", choices=("main", "editor", "tune", "install"))
+    parser.add_argument(
+        "--phase", choices=("main", "editor", "tune", "install", "first-run")
+    )
     args = parser.parse_args()
     ui = UI(args.pid)
 
@@ -228,6 +230,8 @@ def main() -> int:
         phase_tune(ui)
     elif args.phase == "install":
         phase_install(ui)
+    elif args.phase == "first-run":
+        phase_first_run(ui)
 
     print(f"  {ui.checks - ui.failures}/{ui.checks} checks passed")
     return 0 if ui.failures == 0 else 1
@@ -330,6 +334,35 @@ def phase_main(ui: UI) -> None:
             is not None,
             "hashrate appears on the dashboard",
         )
+        # Cancelling the restart prompt must restore the optimistic switch.
+        gpu_toggle = ui.switch("GPU 0 enable")
+        ui.check(gpu_toggle is not None, "GPU enable switch is labelled")
+        if gpu_toggle is not None:
+            ui.click(gpu_toggle, "disable GPU while mining")
+            alert = ui.wait(
+                lambda: ui.alert("Apply changes"), 8.0, "apply confirmation"
+            )
+            if alert is not None:
+                ui.click_button("Cancel", alert, "cancel GPU disable")
+                ui.check(
+                    ui.wait(
+                        lambda: ui.find(frame, "button", "Stop"), 5.0, "mining"
+                    )
+                    is not None,
+                    "Cancel keeps the miner running",
+                )
+                restored = ui.switch("GPU 0 enable")
+                checked = False
+                if restored is not None:
+                    try:
+                        checked = restored.get_state_set().contains(
+                            Atspi.StateType.CHECKED
+                        )
+                    except Exception:
+                        checked = False
+                ui.check(checked, "Cancel restores the GPU switch")
+            else:
+                ui.fail("GPU disable did not ask for confirmation")
         ui.click(stopped, "header Stop")
         start = ui.wait(lambda: ui.find(frame, "button", "Start"), 15.0, "stopped")
         ui.check(start is not None, "Stop returns to Start")
@@ -508,6 +541,110 @@ def phase_install(ui: UI) -> None:
         # A destroyed modal frame can linger in the AT-SPI tree; the same
         # click closes the window in the manual check.
         print("  … install frame lingers in AT-SPI after Cancel (manual close verified)")
+
+
+def phase_first_run(ui: UI) -> None:
+    """Clean install: default preset, empty wallet, no installed miner."""
+    frame = ui.find_frame("Trommel")
+    ui.check(frame is not None, "first-run window is visible")
+    if frame is None:
+        return
+
+    quick = ui.wait(
+        lambda: ui.find(frame, "button", "Quick setup"), 15.0, "Quick setup"
+    )
+    ui.check(quick is not None, "clean install offers Quick setup")
+    ui.check(ui.find(frame, "button", "Start") is not None, "Start button is present")
+    ui.check(
+        ui.wait(
+            lambda: ui.find(frame, "label", "0 TH/s", contains=True),
+            15.0,
+            "zero hashrate",
+        )
+        is not None,
+        "stopped dashboard shows 0 TH/s",
+    )
+    balance = ui.wait(
+        lambda: ui.find(frame, "label", "PRL", contains=True),
+        10.0,
+        "balance",
+    )
+    ui.check(
+        balance is not None and "—" not in (balance.get_name() or ""),
+        "stopped dashboard shows a numeric balance instead of a dash",
+    )
+    ui.check(
+        ui.find(frame, "label", "pool.pearlhash.xyz", contains=True) is not None,
+        "stopped dashboard still names the pool",
+    )
+
+    # Start on an incomplete profile must open the wizard, not just toast.
+    ui.click_button("Start", frame, "Start on a clean install")
+    wizard = ui.wait(lambda: ui.find_frame("Quick setup", timeout=1.0), 10.0, "wizard")
+    ui.check(wizard is not None, "Start opens Quick setup when setup is incomplete")
+    if wizard is not None:
+        ui.check(
+            ui.find(wizard, "label", "Step 1 of 3", contains=True) is not None,
+            "first-run wizard starts at step 1",
+        )
+        ui.click_button("Cancel", wizard, "first-run wizard Cancel")
+        ui.wait(lambda: ui.find_frame("Quick setup", timeout=1.0) is None, 5.0, "closed")
+
+    ui.tab("Miners")
+    ui.check(
+        ui.wait(
+            lambda: ui.find(ui.app(), "list item", "WildRig Multi"),
+            8.0,
+            "miner row",
+        )
+        is not None,
+        "clean install lists WildRig as available",
+    )
+    ui.check(
+        ui.find(ui.app(), "label", "not installed", contains=True) is not None,
+        "clean install marks the miner as not installed",
+    )
+    chevron = ui.wait(
+        lambda: ui.find(ui.app(), "button", "Install or update this miner"),
+        5.0,
+        "miner chevron",
+    )
+    if ui.click(chevron, "miner chevron on clean install"):
+        install = ui.wait(
+            lambda: ui.find_frame("Install miner", timeout=1.0),
+            8.0,
+            "install dialog",
+        )
+        ui.check(install is not None, "install dialog opens without a config")
+        if install is not None:
+            ui.click_button("Cancel", install, "install Cancel on clean install")
+
+    ui.tab("Presets")
+    ui.check(
+        ui.wait(
+            lambda: ui.find(ui.app(), "list item", "Pearl", contains=True),
+            8.0,
+            "default preset",
+        )
+        is not None,
+        "clean install has the default Pearl preset",
+    )
+    ui.tab("Settings")
+    ui.check(
+        ui.wait(
+            lambda: ui.find(ui.app(), "button", "Tune"), 8.0, "GPU row"
+        )
+        is not None,
+        "clean install shows the detected GPU row",
+    )
+    ui.click_button("Tune", ui.app(), "Tune on clean install")
+    tune = ui.wait(lambda: ui.find_frame("GPU tuning", timeout=1.0), 8.0, "tune")
+    ui.check(tune is not None, "GPU tuning opens on a clean install")
+    if tune is not None:
+        ui.check(
+            ui.find(tune, "label", "Apply to", contains=True) is None,
+            "single-GPU tune dialog hides the Apply to section",
+        )
 
 
 if __name__ == "__main__":

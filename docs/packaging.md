@@ -14,7 +14,7 @@ a GitHub Release:
 
 ```bash
 ./scripts/release-bundle.sh
-# dist/release/trommel_0.4.2_amd64.deb
+# dist/release/trommel_0.4.3_amd64.deb
 # dist/release/trommel_amd64.deb          (stable latest URL)
 # dist/release/*.sha256
 # dist/release/trommel-install.sh
