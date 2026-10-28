@@ -177,7 +177,7 @@ export default class TrommelExtension extends Extension {
     }
 
     _buildMenu() {
-        this.menu.box.add_style_class_name('trommel-menu');
+        this._indicator.menu.box.add_style_class_name('trommel-menu');
 
         const header = new St.BoxLayout({x_expand: true});
         this._title = label('Trommel', 'trommel-title');
@@ -185,10 +185,10 @@ export default class TrommelExtension extends Extension {
         this._pill = label(tr('checking…', 'проверяю…'), 'trommel-pill');
         header.add_child(this._title);
         header.add_child(this._pill);
-        this.menu.addMenuItem(item(header));
+        this._indicator.menu.addMenuItem(item(header));
 
         this._subtitle = label('', 'trommel-caption');
-        this.menu.addMenuItem(item(this._subtitle));
+        this._indicator.menu.addMenuItem(item(this._subtitle));
 
         this._action = new St.Button({
             style_class: 'button',
@@ -198,7 +198,7 @@ export default class TrommelExtension extends Extension {
         this._actionLabel = label(tr('Start mining', 'Запустить майнинг'), '');
         this._action.set_child(this._actionLabel);
         this._action.connect('clicked', () => this._toggle());
-        this.menu.addMenuItem(item(this._action));
+        this._indicator.menu.addMenuItem(item(this._action));
 
         const card = new St.BoxLayout({
             vertical: true,
@@ -214,15 +214,15 @@ export default class TrommelExtension extends Extension {
         this._gpuLine = label('', 'trommel-caption trommel-mono');
         this._liveCard.add_child(this._gpuLine);
         card.add_child(this._liveCard);
-        this.menu.addMenuItem(item(card));
+        this._indicator.menu.addMenuItem(item(card));
         this._minerLine = label('', 'trommel-caption');
-        this.menu.addMenuItem(item(this._minerLine));
+        this._indicator.menu.addMenuItem(item(this._minerLine));
 
         this._sharesLine = label('', 'trommel-caption trommel-mono');
-        this.menu.addMenuItem(item(this._sharesLine));
+        this._indicator.menu.addMenuItem(item(this._sharesLine));
 
         this._poolLine = label('', 'trommel-caption trommel-mono');
-        this.menu.addMenuItem(item(this._poolLine));
+        this._indicator.menu.addMenuItem(item(this._poolLine));
 
         const footer = new St.BoxLayout({x_expand: true, y_align: Clutter.ActorAlign.CENTER});
         this._open = new St.Button({
@@ -232,7 +232,7 @@ export default class TrommelExtension extends Extension {
         });
         this._open.connect('clicked', () => this._openApp());
         footer.add_child(this._open);
-        this.menu.addMenuItem(item(footer));
+        this._indicator.menu.addMenuItem(item(footer));
 
         this._applyPanelMode();
         this._applyLiveActivity();
@@ -350,7 +350,7 @@ export default class TrommelExtension extends Extension {
     }
 
     _openApp() {
-        this.menu.close();
+        this._indicator.menu.close();
         this._call('OpenApp', error => {
             if (!error)
                 return;

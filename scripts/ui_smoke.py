@@ -352,6 +352,18 @@ def phase_main(ui: UI) -> None:
         is not None,
         "Presets page lists the preset",
     )
+    chevron = ui.wait(
+        lambda: ui.find(ui.app(), "button", "Open the preset editor"),
+        5.0,
+        "preset chevron",
+    )
+    if ui.click(chevron, "preset chevron"):
+        editor = ui.wait(
+            lambda: ui.find_frame("Preset", timeout=1.0), 5.0, "preset editor from chevron"
+        )
+        ui.check(editor is not None, "preset chevron opens the editor")
+        if editor is not None:
+            ui.click_button("Cancel", editor, "chevron editor Cancel")
     ui.tab("Miners")
     ui.check(
         ui.wait(
@@ -362,6 +374,20 @@ def phase_main(ui: UI) -> None:
         is not None,
         "Miners page lists WildRig",
     )
+    miner_chevron = ui.wait(
+        lambda: ui.find(ui.app(), "button", "Install or update this miner"),
+        5.0,
+        "miner chevron",
+    )
+    if ui.click(miner_chevron, "miner chevron"):
+        install = ui.wait(
+            lambda: ui.find_frame("Install miner", timeout=1.0),
+            5.0,
+            "install dialog from chevron",
+        )
+        ui.check(install is not None, "miner chevron opens the install dialog")
+        if install is not None:
+            ui.click_button("Cancel", install, "chevron install Cancel")
     ui.tab("Settings")
     simple = ui.wait(
         lambda: ui.switch("Simple mode"), 5.0, "simple switch"

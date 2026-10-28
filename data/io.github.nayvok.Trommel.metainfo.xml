@@ -90,6 +90,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.4.2" date="2026-10-28">
+      <description>
+        <p>Start applies the edited GPU profile before launching. Preset and miner chevrons open their dialogs, the window can shrink to ~400 px, and the GNOME extension no longer fails with an undefined menu on enable.</p>
+        <p xml:lang="ru">«Запустить» применяет отредактированный профиль GPU перед стартом. Стрелки пресетов и майнеров открывают диалоги, окно сужается до ~400 px, а расширение GNOME больше не падает из-за неопределённого меню при включении.</p>
+      </description>
+    </release>
     <release version="0.4.1" date="2026-10-28">
       <description>
         <p>Real-rig readiness: prompt-free polkit GPU tuning, miner installs reach the running daemon, stale external state and daemon restarts are handled, safer stock restore and a non-blocking pool lookup. GitHub Releases now ship the .deb, a checksum and an installer.</p>

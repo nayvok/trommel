@@ -3,6 +3,24 @@
 All notable changes to Trommel are documented here. Format follows Keep a
 Changelog; versions use SemVer.
 
+## [0.4.2] - 2026-10-28
+
+### Fixed
+
+- Header **Start** now applies the GUI draft before starting. Previously it
+  asked the daemon to start with its already-saved config, so a GPU profile
+  edited in the preset/GPU dialog could be ignored until Apply was pressed.
+- The chevrons in **Presets** and **Miners** are real buttons again. They open
+  the preset editor / miner installer on click instead of being decorative
+  images that did nothing.
+- Preset and miner rows are added directly to their `AdwPreferencesGroup`
+  instead of an intermediate box, restoring normal row activation.
+- The GNOME extension crashed on enable with `TypeError: can't access property
+  "box", this.menu is undefined`; the menu now comes from the panel button.
+- The main window can shrink from ~698 px to ~400 px. The per-card settings
+  table is now one compact row per card instead of six columns, so the
+  Settings page no longer sets the minimum window width.
+
 ## [0.4.1] - 2026-10-28
 
 ### Added

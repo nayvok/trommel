@@ -13,6 +13,19 @@ step() { printf '\n\033[1;34m== %s ==\033[0m\n' "$*"; }
 step "Build"
 ( cd "$ROOT" && cargo build -q -p trommeld -p trommel ) || { echo "build failed" >&2; exit 1; }
 
+step "Extension source"
+EXT_JS="$ROOT/extension/trommel@nayvok.github.io/extension.js"
+if grep -q 'this\.menu' "$EXT_JS"; then
+    fail "extension uses Extension.menu instead of the panel button menu"
+else
+    pass "extension menu comes from the panel button"
+fi
+if grep -q 'this\._indicator\.menu' "$EXT_JS"; then
+    pass "panel menu is wired through this._indicator.menu"
+else
+    fail "panel menu wiring is missing"
+fi
+
 step "Prepare environment"
 rm -rf "$WORK"
 mkdir -p "$WORK/bin" "$WORK/config/trommel" "$WORK/state" "$WORK/data" "$WORK/cache"

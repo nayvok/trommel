@@ -248,9 +248,11 @@ struct App {
     pool_meta: adw::ActionRow,
     warnings: adw::ActionRow,
     warning_badge: gtk::Label,
-    preset_box: gtk::Box,
+    preset_group: adw::PreferencesGroup,
+    preset_rows: RefCell<Vec<adw::ActionRow>>,
     settings: SettingsWidgets,
-    miners_box: gtk::Box,
+    miners_group: adw::PreferencesGroup,
+    miner_rows: RefCell<Vec<adw::ActionRow>>,
 }
 
 fn install_css() {
@@ -420,7 +422,7 @@ fn build_ui(app: &adw::Application) {
         .default_width(680)
         .default_height(760)
         .build();
-    window.set_size_request(380, 420);
+    window.set_size_request(400, 420);
     // Documentation/verification helper: render the window at another width.
     if let Ok(value) = std::env::var("TROMMEL_WINDOW_WIDTH") {
         if let Ok(width) = value.parse::<i32>() {
@@ -619,11 +621,11 @@ fn build_ui(app: &adw::Application) {
     set_page_icon(&stack, &dashboard, "utilities-system-monitor-symbolic");
 
     // --------------------------------------------------------------- presets
-    let (presets_page, preset_box) = build_presets_page();
+    let (presets_page, preset_group) = build_presets_page();
     stack.add_titled(&presets_page, Some("presets"), &tr("Presets", "Пресеты"));
     set_page_icon(&stack, &presets_page, "document-open-recent-symbolic");
 
-    let (miners_page, miners_box) = build_miners_page();
+    let (miners_page, miners_group) = build_miners_page();
     stack.add_titled(&miners_page, Some("miners"), &tr("Miners", "Майнеры"));
     set_page_icon(&stack, &miners_page, "applications-engineering-symbolic");
 
@@ -663,9 +665,11 @@ fn build_ui(app: &adw::Application) {
         pool_meta,
         warnings,
         warning_badge,
-        preset_box,
+        preset_group,
+        preset_rows: RefCell::new(Vec::new()),
         settings,
-        miners_box,
+        miners_group,
+        miner_rows: RefCell::new(Vec::new()),
     });
     APP_SLOT.with(|slot| *slot.borrow_mut() = Some(app_state.clone()));
 
@@ -779,7 +783,7 @@ thread_local! {
     static APP_SLOT: RefCell<Option<Rc<App>>> = const { RefCell::new(None) };
 }
 
-fn build_presets_page() -> (adw::PreferencesPage, gtk::Box) {
+fn build_presets_page() -> (adw::PreferencesPage, adw::PreferencesGroup) {
     let page = adw::PreferencesPage::new();
     let list_group = adw::PreferencesGroup::builder()
         .title(tr("Mining presets", "Пресеты майнинга"))
@@ -788,8 +792,6 @@ fn build_presets_page() -> (adw::PreferencesPage, gtk::Box) {
             "Пресет объединяет монету, пул, кошелёк, майнер и профиль GPU. Откройте строку для правки.",
         ))
         .build();
-    let preset_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    list_group.add(&preset_box);
     page.add(&list_group);
 
     let actions = adw::PreferencesGroup::new();
@@ -804,14 +806,14 @@ fn build_presets_page() -> (adw::PreferencesPage, gtk::Box) {
     actions.add(&new_button);
     page.add(&actions);
     NEW_PRESET_BUTTON.with(|slot| *slot.borrow_mut() = Some(new_button));
-    (page, preset_box)
+    (page, list_group)
 }
 
 thread_local! {
     static NEW_PRESET_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
 }
 
-fn build_miners_page() -> (adw::PreferencesPage, gtk::Box) {
+fn build_miners_page() -> (adw::PreferencesPage, adw::PreferencesGroup) {
     let page = adw::PreferencesPage::new();
     let group = adw::PreferencesGroup::builder()
         .title(tr("Installed and supported miners", "Установленные и поддерживаемые майнеры"))
@@ -820,8 +822,6 @@ fn build_miners_page() -> (adw::PreferencesPage, gtk::Box) {
             "Установите один раз и используйте во всех пресетах. Импортируйте бинарник или откройте страницу релиза.",
         ))
         .build();
-    let box_ = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    group.add(&box_);
     page.add(&group);
 
     let bench_group = adw::PreferencesGroup::builder()
@@ -844,7 +844,7 @@ fn build_miners_page() -> (adw::PreferencesPage, gtk::Box) {
     page.add(&bench_group);
     BENCH_MINUTES.with(|slot| *slot.borrow_mut() = Some(minutes));
     BENCH_BUTTON.with(|slot| *slot.borrow_mut() = Some(run));
-    (page, box_)
+    (page, group)
 }
 
 thread_local! {
@@ -1060,8 +1060,11 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
         .css_classes(["pill"])
         .valign(gtk::Align::Center)
         .build();
+    // Icon-only: on a 400 px window a labelled button squeezed the row title
+    // into a one-character column. The tooltip keeps it discoverable.
     let extension_manager = gtk::Button::builder()
-        .label(tr("Extension Manager", "Менеджер расширений"))
+        .icon_name("application-x-addon-symbolic")
+        .tooltip_text(tr("Extension Manager", "Менеджер расширений"))
         .css_classes(["flat", "pill"])
         .valign(gtk::Align::Center)
         .build();
@@ -1154,9 +1157,27 @@ thread_local! {
 
 fn connect_signals(app: &Rc<App>) {
     {
-        let tx = app.tx.clone();
-        app.action_button.connect_clicked(move |_| {
-            let _ = tx.send(Cmd::Toggle);
+        let app = app.clone();
+        let button = app.action_button.clone();
+        let label = app.action_label.clone();
+        button.clone().connect_clicked(move |_| {
+            let running = app
+                .status
+                .borrow()
+                .as_ref()
+                .map(|status| status.state.running)
+                .unwrap_or(false);
+            if running {
+                let _ = app.tx.send(Cmd::Toggle);
+                return;
+            }
+            // Apply the draft first: the header Start used to ask the daemon
+            // to start with its old config, silently ignoring GPU changes the
+            // user had just made in the editor.
+            let json = serde_json::to_string(&*app.config.borrow()).unwrap_or_default();
+            let _ = app.tx.send(Cmd::ApplyStart { json });
+            label.set_text(&tr("Starting…", "Запускаю…"));
+            button.set_sensitive(false);
         });
     }
     {
@@ -1370,7 +1391,9 @@ fn selected_version(
 }
 
 fn refresh_preset_list(app: &Rc<App>) {
-    clear_box(&app.preset_box);
+    for row in app.preset_rows.borrow_mut().drain(..) {
+        app.preset_group.remove(&row);
+    }
     let cfg = app.config.borrow();
     for (id, preset) in &cfg.presets {
         let row = adw::ActionRow::builder()
@@ -1408,14 +1431,24 @@ fn refresh_preset_list(app: &Rc<App>) {
             });
             row.add_suffix(&use_button);
         }
-        let chevron = gtk::Image::from_icon_name("go-next-symbolic");
-        chevron.add_css_class("dim-label");
-        chevron.set_valign(gtk::Align::Center);
+        // A real button, not a decorative image: clicking the arrow must
+        // open the editor even when the click lands outside the row's own
+        // activation area.
+        let chevron = gtk::Button::builder()
+            .icon_name("go-next-symbolic")
+            .css_classes(["flat"])
+            .valign(gtk::Align::Center)
+            .tooltip_text(tr("Open the preset editor", "Открыть редактор пресета"))
+            .build();
+        let app_chev = app.clone();
+        let id_chev = id.clone();
+        chevron.connect_clicked(move |_| preset_editor_dialog(&app_chev, &id_chev));
         row.add_suffix(&chevron);
         let app_row = app.clone();
         let id_row = id.clone();
         row.connect_activated(move |_| preset_editor_dialog(&app_row, &id_row));
-        app.preset_box.append(&row);
+        app.preset_group.add(&row);
+        app.preset_rows.borrow_mut().push(row);
     }
 }
 
@@ -2064,7 +2097,9 @@ fn build_option(
 }
 
 fn refresh_miners(app: &Rc<App>) {
-    clear_box(&app.miners_box);
+    for row in app.miner_rows.borrow_mut().drain(..) {
+        app.miners_group.remove(&row);
+    }
     let cfg = app.config.borrow();
     for miner in catalog::miners() {
         let installed = catalog::installed_versions(&cfg, &miner.id);
@@ -2091,21 +2126,35 @@ fn refresh_miners(app: &Rc<App>) {
             versions.set_valign(gtk::Align::Center);
             row.add_suffix(&versions);
         }
-        let chevron = gtk::Image::from_icon_name("go-next-symbolic");
-        chevron.add_css_class("dim-label");
-        chevron.set_valign(gtk::Align::Center);
-        row.add_suffix(&chevron);
-
+        let chevron = gtk::Button::builder()
+            .icon_name("go-next-symbolic")
+            .css_classes(["flat"])
+            .valign(gtk::Align::Center)
+            .tooltip_text(tr(
+                "Install or update this miner",
+                "Установить или обновить майнер",
+            ))
+            .build();
         let app_row = app.clone();
         let miner_id = miner.id.clone();
         let version = miner
             .latest_version()
             .map(|item| item.version.clone())
             .unwrap_or_default();
+        {
+            let app_chev = app.clone();
+            let miner_chev = miner.id.clone();
+            let version_chev = version.clone();
+            chevron.connect_clicked(move |_| {
+                miner_install_dialog(&app_chev, &miner_chev, version_chev.clone(), None);
+            });
+        }
+        row.add_suffix(&chevron);
         row.connect_activated(move |_| {
             miner_install_dialog(&app_row, &miner_id, version.clone(), None);
         });
-        app.miners_box.append(&row);
+        app.miners_group.add(&row);
+        app.miner_rows.borrow_mut().push(row);
     }
 }
 
@@ -4017,7 +4066,7 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
     let title = label(&format!("GPU #{}", gpu.index), &["trommel-gpu-title"]);
     let name = label(&gpu.name, &["caption", "dim-label"]);
     name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    name.set_max_width_chars(18);
+    name.set_max_width_chars(14);
     titles.append(&title);
     titles.append(&name);
     header.append(&titles);
@@ -4234,37 +4283,17 @@ fn refresh_gpu_settings(app: &Rc<App>, gpus: &[GpuStats]) {
         return;
     }
 
-    // Advanced table: one row per card, one column per tuned value.
+    // Compact per-card rows: name, live effective values, Tune. A six-column
+    // table forced the window to ~700 px, and at 460 px the card name was
+    // ellipsized to "#0…". One row per card stays readable at any width.
     let grid = gtk::Grid::new();
-    grid.set_column_spacing(18);
-    grid.set_row_spacing(8);
+    grid.set_column_spacing(10);
+    grid.set_row_spacing(6);
     grid.set_margin_top(6);
     grid.set_margin_bottom(6);
     grid.set_margin_start(6);
     grid.set_margin_end(6);
     grid.set_hexpand(true);
-
-    let mut columns = vec![tr("GPU", "Карта"), tr("Power", "Питание")];
-    if !simple {
-        columns.push(tr("Core", "Ядро"));
-        columns.push(tr("Memory", "Память"));
-    }
-    columns.push(tr("Temp", "Темп."));
-    if !simple {
-        columns.push(tr("Fan", "Вент."));
-    }
-    for (index, title) in columns.iter().enumerate() {
-        let head = label(title, &["caption", "dim-label"]);
-        head.set_halign(if index == 0 {
-            gtk::Align::Start
-        } else {
-            gtk::Align::Center
-        });
-        if index == 0 {
-            head.set_hexpand(true);
-        }
-        grid.attach(&head, index as i32, 0, 1, 1);
-    }
 
     let auto = tr("auto", "авто");
     for (row_index, gpu) in gpus.iter().enumerate() {
@@ -4274,61 +4303,50 @@ fn refresh_gpu_settings(app: &Rc<App>, gpus: &[GpuStats]) {
             .gpu_profile()
             .map(|profile| profile.tuning_for(&gpu.uuid))
             .unwrap_or_default();
-        let y = row_index as i32 + 1;
-        let name = label(&format!("#{} {}", gpu.index, gpu.name), &["bold"]);
-        name.set_hexpand(true);
+        let y = row_index as i32;
+        let short_name = gpu
+            .name
+            .strip_prefix("NVIDIA GeForce ")
+            .or_else(|| gpu.name.strip_prefix("NVIDIA "))
+            .unwrap_or(&gpu.name);
+        let name = label(&format!("#{} {}", gpu.index, short_name), &["bold"]);
+        name.set_width_chars(16);
+        name.set_ellipsize(gtk::pango::EllipsizeMode::End);
         name.set_tooltip_text(Some(&tuning_summary(app, &gpu.uuid).0));
         grid.attach(&name, 0, y, 1, 1);
 
-        let mut column = 1;
-        let power = tuning
+        let mut parts = vec![tuning
             .power_limit_w
             .map(|watts| format!("{watts} W"))
-            .unwrap_or_else(|| auto.clone());
-        let power_cell = label(&power, &["numeric"]);
-        power_cell.set_halign(gtk::Align::Center);
-        grid.attach(&power_cell, column, y, 1, 1);
-        column += 1;
+            .unwrap_or_else(|| auto.clone())];
         if !simple {
-            for value in [tuning.core_clock_mhz, tuning.memory_clock_mhz] {
-                let text = value
-                    .map(|mhz| format!("{mhz} MHz"))
-                    .unwrap_or_else(|| auto.clone());
-                let cell = label(&text, &["numeric"]);
-                cell.set_halign(gtk::Align::Center);
-                grid.attach(&cell, column, y, 1, 1);
-                column += 1;
-            }
+            let clocks = match (tuning.core_clock_mhz, tuning.memory_clock_mhz) {
+                (Some(core), Some(mem)) => format!("{core} / {mem} MHz"),
+                (Some(core), None) => format!("{core} / {auto} MHz"),
+                (None, Some(mem)) => format!("{auto} / {mem} MHz"),
+                (None, None) => format!("{auto} / {auto} MHz"),
+            };
+            parts.push(clocks);
         }
-        // Live card temperature/fan, not a tuning field: the per-GPU limit
-        // is global and the fan is a miner option.
-        let temp_text = gpu
-            .temp_c
-            .map(|value| format!("{value} °C"))
-            .unwrap_or_else(|| "—".into());
-        let temp_class = match gpu.temp_c {
-            Some(value) if value >= 80 => "trommel-hot",
-            Some(value) if value >= 70 => "trommel-warm",
-            _ => "",
-        };
-        let temp = if temp_class.is_empty() {
-            label(&temp_text, &["numeric"])
-        } else {
-            label(&temp_text, &["numeric", temp_class])
-        };
-        temp.set_halign(gtk::Align::Center);
-        grid.attach(&temp, column, y, 1, 1);
-        column += 1;
+        parts.push(
+            gpu.temp_c
+                .map(|value| format!("{value} °C"))
+                .unwrap_or_else(|| "— °C".into()),
+        );
         if !simple {
-            let fan = gpu
-                .fan_pct
-                .map(|pct| format!("{pct}%"))
-                .unwrap_or_else(|| "—".into());
-            let fan_cell = label(&fan, &["numeric"]);
-            fan_cell.set_halign(gtk::Align::Center);
-            grid.attach(&fan_cell, column, y, 1, 1);
-            column += 1;
+            parts.push(
+                gpu.fan_pct
+                    .map(|pct| format!("{pct}%"))
+                    .unwrap_or_else(|| "—".into()),
+            );
         }
+        let stats = label(&parts.join(" · "), &["caption", "numeric"]);
+        stats.set_hexpand(true);
+        stats.set_halign(gtk::Align::Start);
+        stats.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        stats.set_tooltip_text(Some(&tuning_summary(app, &gpu.uuid).0));
+        grid.attach(&stats, 1, y, 1, 1);
+
         let tune = gtk::Button::builder()
             .label(tr("Tune", "Настроить"))
             .css_classes(["pill"])
@@ -4339,7 +4357,7 @@ fn refresh_gpu_settings(app: &Rc<App>, gpus: &[GpuStats]) {
             let gpu = gpu.clone();
             tune.connect_clicked(move |_| gpu_tune_dialog(&app, &gpu));
         }
-        grid.attach(&tune, column, y, 1, 1);
+        grid.attach(&tune, 2, y, 1, 1);
     }
     app.settings.gpu_settings_box.append(&grid);
 
