@@ -43,6 +43,17 @@ makes it visible as `Installed` in every preset. If a preset references a
 missing version, Start is disabled until you import/download it or switch to an
 installed version. Removing a miner that is used by a preset is refused.
 
+## Appearance
+
+**Settings → Behavior → Appearance** selects System, Light or Dark. The change
+applies immediately and is saved with the rest of the behaviour settings.
+
+Trommel is a libadwaita application: it always uses libadwaita's own widget
+styling and inherits the desktop's GTK theme for colours (Yaru on Ubuntu,
+Adwaita on stock GNOME). There is deliberately no per-app theme switch: forcing
+`GTK_THEME` makes libadwaita skip its stylesheet and breaks row spacing, so
+theme changes belong to the desktop, not to the app.
+
 ## Fees
 
 The miner developer fee comes from the catalogue and is fixed unless the

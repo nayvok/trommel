@@ -176,6 +176,16 @@ pub struct CustomPool {
     pub min_payout: f64,
 }
 
+/// Colour scheme preference. `System` follows the desktop setting.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Behavior {
@@ -186,6 +196,8 @@ pub struct Behavior {
     pub start_mining_on_login: bool,
     pub notifications: bool,
     pub language: Language,
+    /// Colour scheme of the app window.
+    pub appearance: Appearance,
     /// Hide advanced miner options and extra arguments in the UI.
     pub simple_mode: bool,
 }
@@ -200,6 +212,7 @@ impl Default for Behavior {
             start_mining_on_login: false,
             notifications: true,
             language: Language::System,
+            appearance: Appearance::System,
             simple_mode: true,
         }
     }
@@ -708,6 +721,19 @@ mod tests {
         assert!(preset.wallet.is_empty());
         assert_eq!(cfg.total_fee_pct(), 1.0);
         assert!(!cfg.warnings().is_empty());
+    }
+
+    #[test]
+    fn appearance_is_optional_and_lowercase() {
+        // Old configs have no appearance key and must default to System.
+        let cfg: Config = serde_json::from_str(r#"{"behavior":{"language":"en"}}"#).unwrap();
+        assert_eq!(cfg.behavior.appearance, Appearance::System);
+        let dark = Behavior {
+            appearance: Appearance::Dark,
+            ..Behavior::default()
+        };
+        let json = serde_json::to_string(&dark).unwrap();
+        assert!(json.contains(r#""appearance":"dark""#));
     }
 
     #[test]

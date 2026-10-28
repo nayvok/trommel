@@ -29,9 +29,15 @@ arguments are hidden until you turn them on.
 - **Miner-dependent settings** — option descriptors come from the catalogue:
   types, ranges, defaults and CLI flags are chosen for the selected miner
   version. "Reset to miner defaults" is always available.
-- **One install, all presets** — install a miner version once; every preset
-  that references it shows `Installed`. Missing miners show a download/import
-  action and block Start until resolved.
+- **One install, all presets** — a single install dialog owns the version
+  list (catalogue plus your own imported builds), downloads over HTTPS and
+  imports local binaries. Install a version once; every preset that references
+  it shows `Installed`, and missing versions block Start until resolved.
+- **Preset editor as a dialog** — rows open a modal editor with Save/Cancel,
+  duplicate and a confirmation before deleting; no in-page Back navigation.
+- **Appearance** — System, Light or Dark colour scheme applied immediately and
+  remembered across restarts. Trommel uses libadwaita's own styling and the
+  system GTK theme, so it matches other GNOME apps on the same desktop.
 - **Stock snapshot** — before applying power/clocks, Trommel captures each
   GPU's current power limit and restores it on stop. No hardcoded `-pl 350`.
 - **Optional clock locks** — core/memory locks are off by default; enable them
@@ -50,7 +56,7 @@ arguments are hidden until you turn them on.
 - **Agent-friendly** — JSON config, CLI diagnostics, diff/apply commands and an
   optional MCP server for Codex/other agents. The agent proposes; you see the
   diff and approve.
-- **English and Russian UI**, light and dark themes, GNOME HIG-style widgets.
+- **English and Russian UI**, the desktop GTK theme (Yaru, Adwaita), light and dark colour schemes, GNOME HIG-style widgets.
 
 ## Requirements (v1)
 
@@ -65,7 +71,7 @@ AMD/Intel, X11-specific paths and non-GNOME desktops are out of scope for v1.
 ### Debian package (recommended for v1)
 
 ```bash
-sudo apt install ./dist/trommel_0.3.0_amd64.deb
+sudo apt install ./dist/trommel_0.4.0_amd64.deb
 ```
 
 The package contains the app, `trommeld`, the polkit helper, desktop entry,
@@ -98,9 +104,11 @@ A **Quick setup** button appears on the dashboard until a wallet and an installe
 miner are ready. It opens a three-step wizard for a 1–3 card rig:
 
 1. **Cards** — tick the cards to mine on and give each one a power limit
-   (**Fill** = 80% of the stock limit, **Use auto** = no limit).
-2. **Miner** — choose a miner and version, then **Download** or **Import** it
-   once for every preset.
+   (**Apply 80 %** fills the ticked cards from their stock limit, expands them
+   and shows the applied watts; **Use auto** = no limit).
+2. **Miner** — choose a miner and version, then **Install…**: the dialog can
+   download a catalogue version, take a version name that is newer than the
+   catalogue, or import a local binary. One installation serves every preset.
 3. **Wallet** — preset name, wallet, worker, pool and pool address. Nothing is
    sent to the daemon or started until you press **Start mining**; a running
    miner gets the usual Apply and restart / Apply and stop dialog instead of a
@@ -108,12 +116,20 @@ miner are ready. It opens a three-step wizard for a 1–3 card rig:
 
 ![Quick setup](docs/images/setup-en-dark.png)
 
+Presets open in a modal editor, and the same install dialog serves the Miners
+page, the editor and the wizard:
+
+![Preset editor](docs/images/preset-editor-en-dark.png)
+
+![Miner installation](docs/images/miner-install-en-dark.png)
+
 The classic path still works:
 
 1. Open **Trommel** from the application menu.
-2. Create a preset: coin → pool → miner/version (import or install a binary) →
-   wallet/worker → GPU profile → miner options.
-3. Choose **Save and apply**. If the miner is stopped, it is saved immediately;
+2. Open a preset row: the editor is a modal window with coin → pool →
+   miner/version (install or import a binary) → wallet/worker → GPU profile →
+   miner options.
+3. Choose **Save** (it saves and applies). If the miner is stopped, it is saved immediately;
    if it is running, you get the restart/stop dialog.
 4. Press **Start**. Trommel snapshots the stock power limit and applies the
    selected profile before spawning the miner.

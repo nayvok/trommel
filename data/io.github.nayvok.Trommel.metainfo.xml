@@ -90,6 +90,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.4.0" date="2026-10-28">
+      <description>
+        <p>Modal preset editor and a single miner install dialog, a fitted, adaptive window with animated page switches, coloured status values and a clearer quick-setup power action.</p>
+        <p xml:lang="ru">Модальный редактор пресета и единый диалог установки майнера, подгонка окна под контент с адаптивной компоновкой и анимацией, цветные статусы и понятное действие питания в быстрой настройке.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-10-28">
       <description>
         <p>Quick-setup wizard, per-card tuning table, MCP smoke test and full wallet redaction for agents.</p>
