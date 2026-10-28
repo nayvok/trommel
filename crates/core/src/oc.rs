@@ -4,8 +4,10 @@
 //! `/usr/libexec/trommel/trommel-oc` via `pkexec`. The helper accepts only a
 //! GPU UUID and numeric power/clock arguments; no paths or shell fragments.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -292,6 +294,11 @@ pub fn restore_snapshot(snapshot: &OcSnapshot) -> anyhow::Result<()> {
     }
 }
 
+/// How long a pkexec call may wait for polkit/authentication before the
+/// daemon gives up. The per-user rule makes this instant; the timeout only
+/// protects the supervisor from hanging forever when the rule is missing.
+const HELPER_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn run_helper(args: &[String]) -> anyhow::Result<()> {
     if !helper_installed() {
         anyhow::bail!(
@@ -299,19 +306,52 @@ fn run_helper(args: &[String]) -> anyhow::Result<()> {
             HELPER_PATH
         );
     }
-    let output = if let Some(helper) = std::env::var_os("TROMMEL_OC_HELPER") {
-        Command::new(helper).args(args).output()
+    let mut command = if let Some(helper) = std::env::var_os("TROMMEL_OC_HELPER") {
+        Command::new(helper)
     } else {
-        Command::new("pkexec").arg(HELPER_PATH).args(args).output()
+        let mut command = Command::new("pkexec");
+        command.arg(HELPER_PATH);
+        command
+    };
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("cannot start OC helper: {e}"))?;
+    let deadline = Instant::now() + HELPER_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!(
+                    "GPU helper did not answer within {} s; check the polkit rule (scripts/install-polkit-rule.sh)",
+                    HELPER_TIMEOUT.as_secs()
+                );
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(err) => anyhow::bail!("cannot poll OC helper: {err}"),
+        }
+    };
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
     }
-    .map_err(|e| anyhow::anyhow!("cannot start OC helper: {e}"))?;
-    if output.status.success() {
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    let stdout = stdout.trim().to_string();
+    let stderr = stderr.trim().to_string();
+    if status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let message = if !stderr.is_empty() { stderr } else { stdout };
-    let code = output.status.code().unwrap_or(-1);
+    let code = status.code().unwrap_or(-1);
     if code == 126 || code == 127 {
         anyhow::bail!("applying GPU settings was cancelled (pkexec, code {code})");
     }

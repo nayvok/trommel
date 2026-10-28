@@ -29,7 +29,7 @@ struct Cli {
 enum Cmd {
     /// Запустить майнинг (применяет разгон)
     Start,
-    /// Остановить майнинг и вернуть сток (350 W, частоты разблокированы)
+    /// Остановить майнинг и восстановить снимок стока (питание и частоты)
     Stop,
     /// Переключить: запущен → стоп, остановлен → старт
     Toggle,
@@ -209,17 +209,9 @@ async fn main() -> anyhow::Result<()> {
                     .and_then(|raw| Status::from_json(&raw).ok()),
                 Err(_) => None,
             };
-            let cfg = Config::load_or_default().redacted();
-            let report = serde_json::json!({
-                "app": "Trommel",
-                "version": trommel_core::VERSION,
-                "contract_version": trommel_core::status::CONTRACT_VERSION,
-                "config_path": paths::config_path(),
-                "state_path": paths::state_path(),
-                "config": cfg,
-                "status": status,
-                "gpus": trommel_core::nvidia::query_all().ok(),
-            });
+            let cfg = Config::load_or_default();
+            let mut report = trommel_core::diagnostics::report(&cfg, status.as_ref());
+            report["gpus"] = serde_json::json!(trommel_core::nvidia::query_all().ok());
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -373,6 +365,12 @@ async fn run_config_command(command: ConfigCmd) -> anyhow::Result<()> {
         ConfigCmd::Reset => {
             let cfg = Config::default();
             cfg.save()?;
+            if let Ok(proxy) = connect().await {
+                let json = serde_json::to_string(&cfg)?;
+                if let Err(err) = proxy.apply_config(&json, "live").await {
+                    eprintln!("config saved, but the daemon did not apply it: {err}");
+                }
+            }
             println!("config reset: {}", paths::config_path().display());
             Ok(())
         }
@@ -560,23 +558,16 @@ async fn run_miner_command(command: MinerCmd) -> anyhow::Result<()> {
             version,
             path,
         } => {
-            let path =
-                std::fs::canonicalize(&path).map_err(|e| anyhow!("cannot resolve {path}: {e}"))?;
-            if !path.is_file() {
-                anyhow::bail!("not a file: {}", path.display());
-            }
-            cfg.add_install(trommel_core::config::MinerInstall {
-                miner: miner.clone(),
-                version: version.clone(),
-                path: path.to_string_lossy().into_owned(),
-                sha256: String::new(),
-                source_url: String::new(),
-                verified: false,
-                custom: true,
-                installed_at: trommel_core::util::now_unix(),
-            });
+            let install = trommel_core::download::import_binary(
+                &miner,
+                &version,
+                std::path::Path::new(&path),
+                &trommel_core::download::miner_root(),
+            )?;
+            cfg.add_install(install);
             cfg.save()?;
-            println!("imported {miner} {version}");
+            apply_after_install(&cfg).await;
+            println!("imported {miner} {version} into the managed miner store");
             Ok(())
         }
         MinerCmd::Install {
@@ -600,9 +591,27 @@ async fn run_miner_command(command: MinerCmd) -> anyhow::Result<()> {
             let install = trommel_core::download::install(&request, &root)?;
             cfg.add_install(install);
             cfg.save()?;
+            apply_after_install(&cfg).await;
             println!("installed {miner} {version}");
             Ok(())
         }
+    }
+}
+
+/// Miner installs are part of the config the daemon owns. Save the file, then
+/// tell a running daemon about it; otherwise Start would use a stale copy and
+/// claim the miner is not installed.
+async fn apply_after_install(cfg: &Config) {
+    let Ok(proxy) = connect().await else {
+        return;
+    };
+    match serde_json::to_string(cfg) {
+        Ok(json) => {
+            if let Err(err) = proxy.apply_config(&json, "live").await {
+                eprintln!("config saved, but the daemon did not accept it: {err}");
+            }
+        }
+        Err(err) => eprintln!("cannot serialize config: {err}"),
     }
 }
 

@@ -86,10 +86,11 @@ pub fn install(req: &DownloadRequest, root: &Path) -> anyhow::Result<MinerInstal
                 path
             }
         };
+        check_executable(&binary)?;
         let final_dir = root.join(&req.miner).join(&req.version);
         std::fs::create_dir_all(&final_dir)?;
         let final_path = final_dir.join(binary.file_name().unwrap_or_default());
-        std::fs::rename(&binary, &final_path)?;
+        move_file(&binary, &final_path)?;
         make_executable(&final_path)?;
         Ok(final_path)
     })();
@@ -123,6 +124,83 @@ fn hex_digest(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// Linux executables we accept: ELF, or an interpreter script with `#!`.
+/// This rejects the HTML page of a GitHub release URL, which used to be
+/// installed as a "binary" and only failed later at spawn time.
+fn executable_format(head: &[u8]) -> bool {
+    head.starts_with(b"\x7fELF") || head.starts_with(b"#!")
+}
+
+fn check_executable(path: &Path) -> anyhow::Result<()> {
+    let mut file = std::fs::File::open(path)?;
+    let mut head = [0u8; 4];
+    let read = file.read(&mut head)?;
+    if !executable_format(&head[..read]) {
+        anyhow::bail!(
+            "downloaded file is not a Linux executable ({}); is the URL a release page instead of a file?",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("binary")
+        );
+    }
+    Ok(())
+}
+
+/// Copy a local binary into the managed miner store.
+///
+/// Imported builds become independent of the original path: the user can move
+/// or delete the download, and the config still points at a stable file.
+pub fn import_binary(
+    miner: &str,
+    version: &str,
+    source: &Path,
+    root: &Path,
+) -> anyhow::Result<MinerInstall> {
+    let source = std::fs::canonicalize(source)
+        .map_err(|e| anyhow::anyhow!("cannot resolve {}: {e}", source.display()))?;
+    if !source.is_file() {
+        anyhow::bail!("not a file: {}", source.display());
+    }
+    let bytes = std::fs::read(&source)?;
+    if bytes.len() as u64 > MAX_BYTES {
+        anyhow::bail!("miner binary is larger than 512 MiB");
+    }
+    if !executable_format(&bytes[..bytes.len().min(4)]) {
+        anyhow::bail!("{} is not a Linux executable or script", source.display());
+    }
+    let name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("miner")
+        .to_string();
+    let final_dir = root.join(miner).join(version);
+    std::fs::create_dir_all(&final_dir)?;
+    let final_path = final_dir.join(&name);
+    if final_path != source {
+        let staging =
+            std::env::temp_dir().join(format!("trommel-import-{}-{}", miner, std::process::id()));
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging)?;
+        let temp = staging.join(&name);
+        std::fs::write(&temp, &bytes)?;
+        make_executable(&temp)?;
+        move_file(&temp, &final_path)?;
+        let _ = std::fs::remove_dir_all(&staging);
+    } else {
+        make_executable(&final_path)?;
+    }
+    Ok(MinerInstall {
+        miner: miner.to_string(),
+        version: version.to_string(),
+        path: final_path.to_string_lossy().into_owned(),
+        sha256: hex_digest(&bytes),
+        source_url: String::new(),
+        verified: false,
+        custom: true,
+        installed_at: crate::util::now_unix(),
+    })
 }
 
 fn safe_name(name: &str) -> bool {
@@ -196,6 +274,17 @@ fn extract_zip(bytes: &[u8], dest: &Path, binary: &str) -> anyhow::Result<PathBu
     found.ok_or_else(|| anyhow::anyhow!("binary {binary:?} not found in archive"))
 }
 
+/// Move a staged file into the miner store. `/tmp` is often tmpfs, so a plain
+/// rename fails with EXDEV across filesystems; fall back to copy+remove.
+fn move_file(from: &Path, to: &Path) -> anyhow::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to)?;
+    std::fs::remove_file(from)?;
+    Ok(())
+}
+
 fn make_executable(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mut permissions = std::fs::metadata(path)?.permissions();
@@ -220,7 +309,7 @@ pub fn install_from_bytes(
     let final_dir = root.join(&req.miner).join(&req.version);
     std::fs::create_dir_all(&final_dir)?;
     let final_path = final_dir.join(&req.binary);
-    std::fs::rename(&path, &final_path)?;
+    move_file(&path, &final_path)?;
     let _ = std::fs::remove_dir_all(&staging);
     Ok(MinerInstall {
         miner: req.miner.clone(),
@@ -250,6 +339,37 @@ mod tests {
             source_url: String::new(),
         };
         assert!(install(&req, Path::new("/tmp/trommel-test")).is_err());
+    }
+
+    #[test]
+    fn rejects_html_binaries() {
+        let root = std::env::temp_dir().join(format!("trommel-html-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("page");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&src, b"<!doctype html><html>release</html>").unwrap();
+        let err = import_binary("wildrig", "1", &src, &root).unwrap_err();
+        assert!(err.to_string().contains("not a Linux executable"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn imports_elf_and_script_and_copies() {
+        let root = std::env::temp_dir().join(format!("trommel-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("wildrig-multi");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&src, b"\x7fELFfake").unwrap();
+        let install = import_binary("wildrig", "0.51.8", &src, &root).unwrap();
+        assert!(Path::new(&install.path).exists());
+        assert_ne!(install.path, src.to_string_lossy());
+        assert!(install.custom);
+        assert!(executable_format(b"#!/bin/bash\n"));
+
+        let script = root.join("fake-miner");
+        std::fs::write(&script, b"#!/bin/sh\nexec sleep 1\n").unwrap();
+        assert!(import_binary("wildrig", "custom", &script, &root).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

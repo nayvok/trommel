@@ -65,16 +65,32 @@ AMD/Intel, X11-специфика и не-GNOME окружения в v1 не п
 
 ## Установка
 
-### Debian-пакет (рекомендуется для v1)
+### GitHub Releases (рекомендуется)
+
+Trommel распространяется через **GitHub Releases**; apt-репозитория и PPA нет.
+Скачайте последний релиз: <https://github.com/nayvok/trommel/releases/latest> —
+и поставьте `.deb`:
 
 ```bash
-sudo apt install ./dist/trommel_0.4.0_amd64.deb
+sudo apt install ./trommel_amd64.deb
+```
+
+Или запустите установщик: он скачает последний `.deb`, проверит SHA-256 и
+поставит пакет:
+
+```bash
+curl -fsSLO https://github.com/nayvok/trommel/releases/latest/download/trommel-install.sh
+bash trommel-install.sh
 ```
 
 Пакет содержит приложение, `trommeld`, polkit-хелпер, desktop-файл, иконки,
 metainfo, GSettings-схему и расширение GNOME. Демон запускается по D-Bus;
-расширение включается в **Настройки → Интеграция с GNOME** (или в менеджере
-расширений). На Wayland может понадобиться перелогиниться.
+разгон GPU работает без пароля для пользователя, который ставил пакет.
+Расширение включается в **Настройки → Интеграция с GNOME** (или в менеджере
+расширений) после перелогина на Wayland.
+
+Обновление — установка нового `.deb` из свежего релиза; удаление —
+`sudo apt remove trommel`. Установка для разработки ниже — для контрибьюторов.
 
 ### Установка для разработки
 

@@ -15,6 +15,7 @@ for path in \
   ./usr/share/glib-2.0/schemas/org.gnome.shell.extensions.trommel.gschema.xml \
   ./usr/share/gnome-shell/extensions/trommel@nayvok.github.io/metadata.json \
   ./usr/share/polkit-1/actions/io.github.nayvok.trommel.policy \
+  ./usr/share/trommel/50-trommel.rules.in \
   ./usr/lib/systemd/user/trommeld.service \
   ./usr/share/dbus-1/services/io.github.nayvok.Trommel.Daemon.service
 do
@@ -24,4 +25,5 @@ do
   }
 done
 dpkg-deb -I "$DEB" | grep -q '^ Package: trommel$'
+dpkg-deb -I "$DEB" | grep -q 'postrm'
 echo "package layout ok: $DEB"

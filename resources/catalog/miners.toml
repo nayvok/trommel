@@ -24,24 +24,24 @@ default_options = { fan_speed = "0" }
 [[miners.versions]]
 version = "0.51.8"
 channel = "stable"
-url = "https://github.com/andru-kun/wildrig-multi/releases"
-sha256 = ""
-archive = "binary"
+url = "https://github.com/andru-kun/wildrig-multi/releases/download/0.51.8/wildrig-multi-linux-0.51.8.tar.gz"
+sha256 = "43f4071c743c922f2febf4b8ea44fc9f93dff668f5ffafcc24903dfd78f63771"
+archive = "tar.gz"
 binary = "wildrig-multi"
 verified = true
-released_at = "2026-10-26"
-notes = "Recommended for RTX 30/40/50 on PearlHash; 0% fee on this pool."
+released_at = "2026-10-24"
+notes = "Official Linux tarball; 0% fee on PearlHash. Recommended for RTX 30/40/50."
 
 [[miners.versions]]
 version = "0.51.5"
 channel = "older"
-url = "https://github.com/andru-kun/wildrig-multi/releases"
-sha256 = ""
-archive = "binary"
+url = "https://github.com/andru-kun/wildrig-multi/releases/download/0.51.5/wildrig-multi-linux-0.51.5.tar.gz"
+sha256 = "3980924f6409452aafb7d57c029151c436ea8e9379e414695504adc4c3cde5d0"
+archive = "tar.gz"
 binary = "wildrig-multi"
 verified = true
 released_at = "2026-09-01"
-notes = "Fallback if the newer version is unstable on your card."
+notes = "Official Linux tarball; fallback if 0.51.8 is unstable on your card."
 
 [[miners.options]]
 key = "fan_speed"

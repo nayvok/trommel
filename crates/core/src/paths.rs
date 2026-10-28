@@ -2,8 +2,28 @@
 
 use std::path::PathBuf;
 
+/// Unit tests must never touch the real `~/.config`, `~/.local/state` or a
+/// running rig's snapshot. The e2e binary sets XDG explicitly; this covers the
+/// in-process cargo test harness.
+#[cfg(test)]
+fn test_root() -> PathBuf {
+    use std::sync::OnceLock;
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = std::env::temp_dir().join(format!("trommel-test-paths-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        root
+    })
+    .clone()
+}
+
 /// `$XDG_CONFIG_HOME/trommel`, defaulting to `~/.config/trommel`.
 pub fn config_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        test_root().join("config").join("trommel")
+    }
+    #[cfg(not(test))]
     match std::env::var_os("XDG_CONFIG_HOME") {
         Some(v) if !v.is_empty() => PathBuf::from(v).join("trommel"),
         _ => home().join(".config").join("trommel"),
@@ -12,6 +32,11 @@ pub fn config_dir() -> PathBuf {
 
 /// `$XDG_STATE_HOME/trommel`, defaulting to `~/.local/state/trommel`.
 pub fn data_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        test_root().join("data").join("trommel")
+    }
+    #[cfg(not(test))]
     match std::env::var_os("XDG_DATA_HOME") {
         Some(v) if !v.is_empty() => PathBuf::from(v).join("trommel"),
         _ => home().join(".local").join("share").join("trommel"),
@@ -19,6 +44,11 @@ pub fn data_dir() -> PathBuf {
 }
 
 pub fn state_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        test_root().join("state").join("trommel")
+    }
+    #[cfg(not(test))]
     match std::env::var_os("XDG_STATE_HOME") {
         Some(v) if !v.is_empty() => PathBuf::from(v).join("trommel"),
         _ => home().join(".local").join("state").join("trommel"),
@@ -31,6 +61,14 @@ pub fn config_path() -> PathBuf {
 
 /// Old Pearl Miner config, read only for the one-time migration.
 pub fn legacy_config_path() -> PathBuf {
+    #[cfg(test)]
+    {
+        test_root()
+            .join("config")
+            .join("pearl-miner")
+            .join("config.json")
+    }
+    #[cfg(not(test))]
     match std::env::var_os("XDG_CONFIG_HOME") {
         Some(v) if !v.is_empty() => PathBuf::from(v).join("pearl-miner").join("config.json"),
         _ => home()

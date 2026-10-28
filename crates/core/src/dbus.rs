@@ -96,11 +96,10 @@ impl Engine {
         let mut inner = self.inner.lock().await;
         let cfg = inner.cfg.clone();
         let result = tokio::task::block_in_place(|| inner.sup.start(&cfg));
+        self.running
+            .store(inner.sup.is_running(), Ordering::Relaxed);
         match result {
-            Ok(()) => {
-                self.running.store(true, Ordering::Relaxed);
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(err) => Err(zbus::fdo::Error::Failed(err.to_string())),
         }
     }
@@ -114,8 +113,10 @@ impl Engine {
         match result {
             Ok(()) => Ok(()),
             Err(err) => {
+                // The miner is stopped but the stock restore failed. Keep the
+                // snapshot and surface the error instead of pretending success.
                 inner.status.state.last_error = Some(err.to_string());
-                Ok(())
+                Err(zbus::fdo::Error::Failed(err.to_string()))
             }
         }
     }
@@ -190,6 +191,7 @@ impl Engine {
                     .map_err(|e| zbus::fdo::Error::Failed(format!("cannot save config: {e}")))?;
                 i18n::set_language(next.behavior.language);
                 inner.cfg = next;
+                crate::pool::invalidate_cache();
                 self.running
                     .store(inner.sup.is_running(), Ordering::Relaxed);
                 Ok(serde_json::json!({
@@ -267,7 +269,19 @@ impl Engine {
     }
 
     /// Restore the snapshot captured before the current mining session.
+    ///
+    /// Refuses while a miner is running: Stop already restores the snapshot,
+    /// and changing power/clocks under a live miner is not a safe shortcut.
     async fn reset_oc(&self) -> zbus::fdo::Result<()> {
+        let running = {
+            let inner = self.inner.lock().await;
+            inner.sup.is_running()
+        };
+        if running {
+            return Err(zbus::fdo::Error::Failed(
+                "stop mining before restoring the stock profile".into(),
+            ));
+        }
         let result = tokio::task::block_in_place(|| {
             let Some(snapshot) = crate::oc::load_snapshot().or_else(crate::oc::fallback_snapshot)
             else {

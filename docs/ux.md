@@ -15,7 +15,7 @@ when a screen is added, removed or moved.
 | Settings | page | switcher | Behaviour, GPU defaults, detected-GPU table, GNOME integration, actions |
 | Preset editor | modal window | preset row / “New preset” | Edit one preset: miner, version, pool, wallet, fees, options |
 | Miner install | modal window | Miners row, preset editor, quick setup | Pick a version, download or import a binary |
-| GPU tuning | modal window | Dashboard card, settings table | Per-card power/clocks/fan/temperature and copy targets |
+| GPU tuning | modal window | Dashboard card, settings table | Per-card power/clocks and copy targets; temperature/fan are global/live |
 | Quick setup | modal window | “Quick setup” button | Three steps for a first start: cards → miner → wallet |
 | Apply-and-restart alert | `AdwAlertDialog` | Save/apply while mining | Explicit restart/stop choice for a running miner |
 | Delete-preset alert | `AdwAlertDialog` | Preset editor | Destructive confirmation |

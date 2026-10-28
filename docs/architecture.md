@@ -27,7 +27,8 @@ Extension ── D-Bus ──> trommeld (status/start/stop); never OC
   and fee data.
 - `gpu_profiles` — `default` tuning plus per-GPU overrides keyed by UUID.
 - `miner_installs` — **global** registry keyed `id@version`; presets reference
-  a version, never a path.
+  a version, never a path. Installs are applied to the daemon immediately, so a
+  running daemon sees a newly imported miner without a restart.
 - `behavior` — restart/poll/restore/logins/language.
 
 Old flat Pearl Miner configs are migrated from `~/.config/pearl-miner` on load;
@@ -61,8 +62,9 @@ read back through `nvidia-smi`; this limitation is shown in the UI.
 
 - The root helper is `/usr/libexec/trommel/trommel-oc`; it accepts only a GPU
   UUID and numeric `--pl/--lgc/--lmc` values.
-- The daemon runs as the user; polkit allows an active local user to call the
-  exact helper.
+- The daemon runs as the user; the polkit rule matches the annotated action
+  `io.github.nayvok.trommel.oc` for the installing user (deb postinst) or the
+  dev user. The helper is the only privileged program.
 - Miner processes are spawned directly with an argument vector; no shell.
 - Downloads are HTTPS-only, size-limited, optionally SHA-256 verified, and
   extracted with path-traversal checks.

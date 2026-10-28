@@ -3,6 +3,57 @@
 All notable changes to Trommel are documented here. Format follows Keep a
 Changelog; versions use SemVer.
 
+## [0.4.1] - 2026-10-28
+
+### Added
+
+- GitHub Releases distribution: versioned and stable `.deb` assets, SHA-256
+  files, `trommel-install.sh` and a tag-driven release workflow. No apt
+  repository or PPA is used; upgrades are a new release download.
+- `scripts/release-bundle.sh`, `scripts/install-polkit-rule.sh`,
+  `scripts/check-polkit.sh` and an AT-SPI `scripts/ui-smoke.sh` UI smoke test.
+
+### Changed
+
+- The Debian postinst writes a per-user polkit rule for `SUDO_USER`, so GPU
+  tuning works without a password prompt from the user service. The generic
+  `/usr/share` rule is only a local fallback.
+- WildRig catalogue versions 0.51.8/0.51.5 now point at the official Linux
+  tarballs with verified SHA-256 checksums and `tar.gz` extraction.
+- `miner import` copies the binary into the managed miner store instead of
+  referencing an external path; downloads reject HTML/non-executable files.
+- `Settings -> Power limit` accepts 0 = driver auto (it used to clamp 0 to
+  50 W and could save a dangerous 50 W limit).
+- The per-card table shows live temperature/fan; the per-card dialog no longer
+  pretends to tune fan/temperature, which are global.
+- GPU tuning and GPU enable switches apply immediately (with the usual
+  restart/stop dialog while mining), and preset "Use" applies the selection.
+- `install.sh` restarts `trommeld`, so an upgrade does not keep the old 0.3.0
+  process.
+
+### Fixed
+
+- Polkit rule matched `org.freedesktop.policykit.exec` while pkexec checks the
+  annotated `io.github.nayvok.trommel.oc` action; every OC call prompted or
+  hung. The helper now has a timeout with a clear error.
+- Miner installs were saved to disk but not sent to the running daemon, so
+  Start claimed the miner was missing. The GUI/CLI now apply the install to
+  the daemon (and the GUI no longer drops a dirty draft on Refresh).
+- Stale `external` state made Start a silent no-op; a daemon restart lost the
+  miner's process handle. State normalization, adoption by PID and auto-restart
+  now handle both.
+- `stop` swallowed stock-restore errors and a partially applied `--pl` could
+  survive a failed start. Errors are surfaced, the snapshot is kept for a
+  retry, and the current card is restored too.
+- The pool API could block status collection for up to 40 s; it now runs in a
+  background worker with a cache/backoff.
+- `Copy diagnostics` redacted only the active preset; all presets are now
+  redacted through `trommel_core::diagnostics`.
+- A cross-filesystem `/tmp` made installs fail with EXDEV; staged files are
+  moved with a copy fallback.
+- A second launch created a second window and D-Bus worker; it now presents the
+  existing window.
+
 ## [0.4.0] - 2026-10-28
 
 ### Added

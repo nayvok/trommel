@@ -1,17 +1,14 @@
-// Trommel: allow an active local user to run the narrow GPU helper without a
-// password prompt. The helper itself validates the GPU UUID and numeric ranges.
+// Trommel: allow a local user to run the narrow GPU helper without a password
+// prompt. The helper itself validates the GPU UUID and numeric ranges.
+//
+// This is the generic fallback. The Debian postinst also writes a per-user
+// rule to /etc/polkit-1/rules.d/50-trommel.rules for the user who installed
+// the package (SUDO_USER), which is stricter and takes precedence.
 polkit.addRule(function (action, subject) {
-    if (action.id !== "org.freedesktop.policykit.exec") {
+    if (action.id !== "io.github.nayvok.trommel.oc") {
         return polkit.Result.NOT_HANDLED;
     }
-    if (!subject.local || !subject.active) {
-        return polkit.Result.NOT_HANDLED;
-    }
-    if (action.lookup("program") !== "/usr/libexec/trommel/trommel-oc") {
-        return polkit.Result.NOT_HANDLED;
-    }
-    var command = action.lookup("argv1");
-    if (command !== "apply" && command !== "reset" && command !== "status") {
+    if (!subject.local) {
         return polkit.Result.NOT_HANDLED;
     }
     return polkit.Result.YES;

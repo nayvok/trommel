@@ -1,5 +1,6 @@
 #!/bin/sh
 set -e
+
 if command -v glib-compile-schemas >/dev/null 2>&1; then
     glib-compile-schemas /usr/share/glib-2.0/schemas || true
 fi
@@ -9,4 +10,24 @@ fi
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -q -t /usr/share/icons/hicolor || true
 fi
+
+# A stricter per-user rule for the account that ran apt. The generic
+# /usr/share rule is only a fallback; this one matches subject.user exactly and
+# does not depend on the session being active. Polkit reloads rules on its own.
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    case "$SUDO_USER" in
+        *[!a-zA-Z0-9._-]*) ;;
+        *)
+            if getent passwd "$SUDO_USER" >/dev/null 2>&1 \
+                && [ -f /usr/share/trommel/50-trommel.rules.in ] \
+                && [ -d /etc/polkit-1/rules.d ]; then
+                sed "s/@USER@/$SUDO_USER/g" \
+                    /usr/share/trommel/50-trommel.rules.in \
+                    > /etc/polkit-1/rules.d/50-trommel.rules
+                chmod 644 /etc/polkit-1/rules.d/50-trommel.rules
+            fi
+            ;;
+    esac
+fi
+
 exit 0

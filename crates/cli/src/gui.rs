@@ -14,7 +14,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use trommel_core::catalog::{self, MinerOption, OptionKind};
-use trommel_core::config::{Appearance, ChangeClass, Config, GpuTuning, MinerInstall, Preset};
+use trommel_core::config::{Appearance, ChangeClass, Config, MinerInstall, Preset};
 use trommel_core::dbus::MinerProxy;
 use trommel_core::i18n::{self, tr};
 use trommel_core::nvidia::GpuStats;
@@ -28,6 +28,9 @@ enum Cmd {
     Apply {
         json: String,
         mode: String,
+        /// Do not clear the GUI draft's dirty flag. Used for background work
+        /// (miner install, stock restore) that must not discard user edits.
+        quiet: bool,
     },
     /// Apply a draft and start the miner in one step (quick setup).
     ApplyStart {
@@ -45,7 +48,7 @@ enum Ev {
     Config(String),
     ServiceDown(String),
     Error(String),
-    Applied(String),
+    Applied { message: String, quiet: bool },
     Bench(String),
 }
 
@@ -106,9 +109,12 @@ fn spawn_worker(emit: Arc<dyn Fn(Ev) + Send + Sync>) -> tokio::sync::mpsc::Unbou
                                         Err(err) => emit(Ev::Error(err.to_string())),
                                     }
                                 }
-                                Cmd::Apply { json, mode } => {
+                                Cmd::Apply { json, mode, quiet } => {
                                     match client.apply_config(&json, &mode).await {
-                                        Ok(result) => emit(Ev::Applied(result)),
+                                        Ok(result) => emit(Ev::Applied {
+                                            message: result,
+                                            quiet,
+                                        }),
                                         Err(err) => emit(Ev::Error(err.to_string())),
                                     }
                                 }
@@ -116,7 +122,10 @@ fn spawn_worker(emit: Arc<dyn Fn(Ev) + Send + Sync>) -> tokio::sync::mpsc::Unbou
                                     match client.apply_config(&json, "live").await {
                                         Ok(_) => match client.start().await {
                                             Ok(_) => {
-                                                emit(Ev::Applied("Applied and started".into()));
+                                                emit(Ev::Applied {
+                                                    message: "Applied and started".into(),
+                                                    quiet: false,
+                                                });
                                                 if let Ok(json) = client.refresh().await {
                                                     emit(Ev::Status(json));
                                                 }
@@ -128,7 +137,10 @@ fn spawn_worker(emit: Arc<dyn Fn(Ev) + Send + Sync>) -> tokio::sync::mpsc::Unbou
                                 }
                                 Cmd::ResetOc => {
                                     match client.reset_oc().await {
-                                        Ok(_) => emit(Ev::Applied("Stock settings restored".into())),
+                                        Ok(_) => emit(Ev::Applied {
+                                            message: "Stock settings restored".into(),
+                                            quiet: true,
+                                        }),
                                         Err(err) => emit(Ev::Error(err.to_string())),
                                     }
                                 }
@@ -375,6 +387,12 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 fn build_ui(app: &adw::Application) {
+    // GApplication is single-instance: a second launch must present the open
+    // window, not build a second UI and a second D-Bus worker.
+    if let Some(existing) = APP_SLOT.with(|slot| slot.borrow().clone()) {
+        existing.window.present();
+        return;
+    }
     let cfg = Config::load_or_default();
     i18n::set_language(cfg.behavior.language);
     apply_appearance(cfg.behavior.appearance);
@@ -856,8 +874,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     let notifications = switch_row(
         &tr("Notifications", "Уведомления"),
         &tr(
-            "Start, stop and overheat notifications",
-            "Старт, стоп и перегрев",
+            "Start, stop and overheat; shown by the GNOME extension",
+            "Старт, стоп и перегрев; показывает расширение GNOME",
         ),
     );
     let start_login = switch_row(
@@ -924,9 +942,9 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
         .build();
     let power = spin_row(
         &tr("Power limit", "Лимит питания"),
-        "W",
+        &tr("W — 0 = driver auto", "Вт — 0 = авто драйвера"),
         300.0,
-        50.0,
+        0.0,
         1000.0,
     );
     let core_lock = switch_row(
@@ -995,8 +1013,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     let detected = adw::PreferencesGroup::builder()
         .title(tr("Detected GPUs", "Обнаруженные карты"))
         .description(tr(
-            "Tune each card separately; similar cards can be updated together.",
-            "Настраивайте каждую карту отдельно; одинаковые можно менять вместе.",
+            "Power and clock locks are per card; temperature and fan shown here are live values.",
+            "Питание и локи частот — по картам; температура и вентилятор здесь — живые значения.",
         ))
         .build();
     let gpu_settings_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1260,11 +1278,21 @@ fn install_actions(app: &adw::Application, state: &Rc<App>) {
     app.add_action(&about);
 
     let log = gio::SimpleAction::new("log", None);
-    log.connect_activate(|_, _| {
-        let path = trommel_core::paths::log_path();
-        let uri = gio::File::for_path(path).uri();
-        let _ = gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>);
-    });
+    {
+        let toast = state.toast.clone();
+        log.connect_activate(move |_, _| {
+            let path = trommel_core::paths::log_path();
+            if !path.exists() {
+                toast.add_toast(adw::Toast::new(&tr(
+                    "The miner log appears after the first start.",
+                    "Лог майнера появится после первого запуска.",
+                )));
+                return;
+            }
+            let uri = gio::File::for_path(path).uri();
+            let _ = gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>);
+        });
+    }
     app.add_action(&log);
 
     let quit = gio::SimpleAction::new("quit", None);
@@ -1376,10 +1404,7 @@ fn refresh_preset_list(app: &Rc<App>) {
                 }
                 mark_dirty(&app_use);
                 refresh_preset_list(&app_use);
-                app_use.toast.add_toast(adw::Toast::new(&tr(
-                    "Preset selected. Apply it when you are ready.",
-                    "Пресет выбран. Примените его, когда будете готовы.",
-                )));
+                save_and_apply(&app_use);
             });
             row.add_suffix(&use_button);
         }
@@ -1894,7 +1919,13 @@ fn new_preset(app: &Rc<App>) {
     let id = {
         let mut cfg = app.config.borrow_mut();
         let base = cfg.preset().cloned().unwrap_or_else(Preset::new_pearl);
-        let id = format!("preset-{}", util::now_unix());
+        let now = util::now_unix();
+        let mut id = format!("preset-{now}");
+        let mut suffix = 1;
+        while cfg.presets.contains_key(&id) {
+            id = format!("preset-{now}-{suffix}");
+            suffix += 1;
+        }
         let mut preset = base;
         preset.id = id.clone();
         preset.name = tr("New preset", "Новый пресет");
@@ -1913,7 +1944,13 @@ fn duplicate_preset(app: &Rc<App>, id: &str) -> Option<String> {
     let new_id = {
         let mut cfg = app.config.borrow_mut();
         let base = cfg.presets.get(id).cloned()?;
-        let new_id = format!("preset-{}", util::now_unix());
+        let now = util::now_unix();
+        let mut new_id = format!("preset-{now}");
+        let mut suffix = 1;
+        while cfg.presets.contains_key(&new_id) {
+            new_id = format!("preset-{now}-{suffix}");
+            suffix += 1;
+        }
         let mut copy = base;
         copy.id = new_id.clone();
         copy.name = format!("{} {}", copy.name, tr("(copy)", "(копия)"));
@@ -2157,22 +2194,11 @@ fn open_extension_manager(app: &Rc<App>) {
 }
 
 fn copy_diagnostics(app: &Rc<App>) {
-    let mut cfg = app.config.borrow().clone();
-    if let Some(preset) = cfg.preset_mut() {
-        if !preset.wallet.is_empty() {
-            preset.wallet = "<redacted>".into();
-        }
-    }
-    let report = serde_json::json!({
-        "app": "Trommel",
-        "version": trommel_core::VERSION,
-        "contract_version": trommel_core::status::CONTRACT_VERSION,
-        "config_path": trommel_core::paths::config_path(),
-        "state_path": trommel_core::paths::state_path(),
-        "config": cfg,
-        "status": app.status.borrow().clone(),
-        "warnings": cfg.warnings(),
-    });
+    let report = {
+        let cfg = app.config.borrow();
+        let status = app.status.borrow();
+        trommel_core::diagnostics::report(&cfg, status.as_ref())
+    };
     let text = serde_json::to_string_pretty(&report).unwrap_or_default();
     if let Some(display) = gdk::Display::default() {
         display.clipboard().set_text(&text);
@@ -2289,27 +2315,11 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     core.set_visible(!simple);
     memory_lock.set_visible(!simple);
     memory.set_visible(!simple);
-    let fan = spin_row(
-        &tr("Fan", "Вентилятор"),
-        "% — 0 = auto",
-        tuning.fan_pct.unwrap_or(0) as f64,
-        0.0,
-        100.0,
-    );
-    let temp = spin_row(
-        &tr("Temperature limit", "Порог температуры"),
-        "°C",
-        tuning.temp_limit_c as f64,
-        60.0,
-        100.0,
-    );
     group.add(&power);
     group.add(&core_lock);
     group.add(&core);
     group.add(&memory_lock);
     group.add(&memory);
-    group.add(&fan);
-    group.add(&temp);
 
     let target_group = adw::PreferencesGroup::builder()
         .title(tr("Apply to", "Применить к"))
@@ -2368,6 +2378,18 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     source_hint.set_margin_top(6);
     source_hint.set_wrap(true);
     group.add(&source_hint);
+    let global_hint = label(
+        &tr(
+            "Temperature limit is global (Settings → GPU defaults); fan speed is a miner option in the preset editor.",
+            "Порог температуры — глобальный (Настройки → Настройки GPU); вентилятор — опция майнера в редакторе пресета.",
+        ),
+        &["caption", "dim-label"],
+    );
+    global_hint.set_margin_start(6);
+    global_hint.set_margin_top(4);
+    global_hint.set_wrap(true);
+    group.add(&global_hint);
+    let base_tuning = tuning.clone();
     page.add(&group);
     page.add(&target_group);
     window.set_child(Some(&page));
@@ -2376,8 +2398,6 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         let power_row = power.clone();
         let core_row = core.clone();
         let memory_row = memory.clone();
-        let fan_row = fan.clone();
-        let temp_row = temp.clone();
         let core_lock_row = core_lock.clone();
         let memory_lock_row = memory_lock.clone();
         let base = default_power.unwrap_or(300.0);
@@ -2387,8 +2407,6 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
             memory_lock_row.set_active(false);
             core_row.set_value(1620.0);
             memory_row.set_value(810.0);
-            fan_row.set_value(0.0);
-            temp_row.set_value(85.0);
         });
     }
     {
@@ -2408,25 +2426,24 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         let uuid = uuid.clone();
         let same_uuids = same_uuids.clone();
         let all_uuids = all_uuids.clone();
+        let base_tuning = base_tuning.clone();
         save.connect_clicked(move |_| {
             let core_value = core.value() as u32;
             let memory_value = memory.value() as u32;
-            let tuning = GpuTuning {
-                enabled,
-                power_limit_w: nonzero(power.value() as u32),
-                core_clock_mhz: if core_lock.is_active() && core_value >= 100 {
-                    Some(core_value)
-                } else {
-                    None
-                },
-                memory_clock_mhz: if memory_lock.is_active() && memory_value >= 100 {
-                    Some(memory_value)
-                } else {
-                    None
-                },
-                fan_pct: nonzero(fan.value() as u32),
-                temp_limit_c: temp.value() as u32,
-                temp_resume_c: 65,
+            // Keep the fields this dialog does not own (fan/temperature are
+            // global and are edited elsewhere).
+            let mut tuning = base_tuning.clone();
+            tuning.enabled = enabled;
+            tuning.power_limit_w = nonzero(power.value() as u32);
+            tuning.core_clock_mhz = if core_lock.is_active() && core_value >= 100 {
+                Some(core_value)
+            } else {
+                None
+            };
+            tuning.memory_clock_mhz = if memory_lock.is_active() && memory_value >= 100 {
+                Some(memory_value)
+            } else {
+                None
             };
             let mut targets = vec![uuid.clone()];
             if apply_all.is_active() {
@@ -2448,11 +2465,12 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
             app.toast.add_toast(adw::Toast::new(&format!(
                 "{}: {}",
                 tr(
-                    "GPU tuning saved to draft",
-                    "Настройка GPU сохранена в draft"
+                    "GPU tuning saved; applying…",
+                    "Настройка GPU сохранена; применяю…"
                 ),
                 targets.len()
             )));
+            save_and_apply(&app);
         });
     }
     window.present();
@@ -3427,8 +3445,23 @@ fn miner_install_dialog(
         Rc::new(move |install: MinerInstall| {
             {
                 let mut cfg = app.config.borrow_mut();
-                cfg.add_install(install);
-                let _ = cfg.save();
+                cfg.add_install(install.clone());
+            }
+            // The daemon owns the applied config. Persist the install there
+            // and tell a running daemon, otherwise Start would still see the
+            // old in-memory config and claim the miner is not installed.
+            let applied = {
+                let mut applied = app.applied.borrow_mut();
+                applied.add_install(install);
+                let _ = applied.save();
+                applied.clone()
+            };
+            if let Ok(json) = serde_json::to_string(&applied) {
+                let _ = app.tx.send(Cmd::Apply {
+                    json,
+                    mode: "live".into(),
+                    quiet: true,
+                });
             }
             refresh_miners(&app);
             if let Some(callback) = &on_done {
@@ -3481,7 +3514,8 @@ fn miner_install_dialog(
         let miner_id = miner_id.to_string();
         let version_entry = version_entry.clone();
         let finish_install = finish_install.clone();
-        import.connect_clicked(move |_| {
+        let status = status.clone();
+        import.connect_clicked(move |button| {
             let dialog = gtk::FileChooserNative::builder()
                 .title(tr("Select miner binary", "Выберите бинарник майнера"))
                 .action(gtk::FileChooserAction::Open)
@@ -3490,6 +3524,8 @@ fn miner_install_dialog(
             let miner_id = miner_id.clone();
             let version_entry = version_entry.clone();
             let finish_install = finish_install.clone();
+            let status = status.clone();
+            let button = button.clone();
             dialog.connect_response(move |dialog, response| {
                 if response == gtk::ResponseType::Accept {
                     if let Some(path) = dialog.file().and_then(|file| file.path()) {
@@ -3497,15 +3533,68 @@ fn miner_install_dialog(
                         if version.is_empty() {
                             version = tr("custom", "своя").to_string();
                         }
-                        finish_install(MinerInstall {
-                            miner: miner_id.clone(),
-                            version,
-                            path: path.to_string_lossy().into_owned(),
-                            sha256: String::new(),
-                            source_url: String::new(),
-                            verified: false,
-                            custom: true,
-                            installed_at: util::now_unix(),
+                        button.set_sensitive(false);
+                        button.set_label(&tr("Importing…", "Импортирую…"));
+                        set_status_text(
+                            &status,
+                            &tr(
+                                "Copying the binary into the miner store…",
+                                "Копирую бинарник в хранилище майнеров…",
+                            ),
+                            "accent",
+                        );
+                        let (tx, rx) = std::sync::mpsc::channel::<Result<MinerInstall, String>>();
+                        let miner_id_thread = miner_id.clone();
+                        let version_thread = version.clone();
+                        std::thread::spawn(move || {
+                            let root = trommel_core::download::miner_root();
+                            let result = trommel_core::download::import_binary(
+                                &miner_id_thread,
+                                &version_thread,
+                                &path,
+                                &root,
+                            )
+                            .map_err(|err| err.to_string());
+                            let _ = tx.send(result);
+                        });
+                        let button = button.clone();
+                        let status = status.clone();
+                        let finish_install = finish_install.clone();
+                        glib::timeout_add_local(Duration::from_millis(100), move || {
+                            match rx.try_recv() {
+                                Ok(Ok(install)) => {
+                                    finish_install(install);
+                                    glib::ControlFlow::Break
+                                }
+                                Ok(Err(error)) => {
+                                    set_status_text(&status, &error, "error");
+                                    button.set_sensitive(true);
+                                    button.set_label(&tr(
+                                        "Import binary…",
+                                        "Импортировать бинарник…",
+                                    ));
+                                    glib::ControlFlow::Break
+                                }
+                                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                                    glib::ControlFlow::Continue
+                                }
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    set_status_text(
+                                        &status,
+                                        &tr(
+                                            "Import thread stopped unexpectedly.",
+                                            "Поток импорта неожиданно завершился.",
+                                        ),
+                                        "error",
+                                    );
+                                    button.set_sensitive(true);
+                                    button.set_label(&tr(
+                                        "Import binary…",
+                                        "Импортировать бинарник…",
+                                    ));
+                                    glib::ControlFlow::Break
+                                }
+                            }
                         });
                     }
                 }
@@ -3825,6 +3914,7 @@ fn save_and_apply(app: &Rc<App>) {
                 let _ = app.tx.send(Cmd::Apply {
                     json,
                     mode: mode.into(),
+                    quiet: false,
                 });
             }
         });
@@ -3833,6 +3923,7 @@ fn save_and_apply(app: &Rc<App>) {
         let _ = app.tx.send(Cmd::Apply {
             json,
             mode: "live".into(),
+            quiet: false,
         });
     }
 }
@@ -3848,11 +3939,16 @@ fn handle_event(app: &Rc<App>, event: Ev) {
             if let Ok(cfg) = serde_json::from_str::<Config>(&json) {
                 let cfg = cfg.normalize();
                 *app.applied.borrow_mut() = cfg.clone();
-                *app.config.borrow_mut() = cfg;
-                load_settings(app);
-                apply_simple_mode(app);
-                refresh_preset_list(app);
-                refresh_miners(app);
+                // The daemon owns the applied config, not the draft. A
+                // Refresh while the user is editing must not silently throw
+                // those edits away.
+                if !app.dirty.get() {
+                    *app.config.borrow_mut() = cfg;
+                    load_settings(app);
+                    apply_simple_mode(app);
+                    refresh_preset_list(app);
+                    refresh_miners(app);
+                }
             }
         }
         Ev::ServiceDown(message) => {
@@ -3867,9 +3963,11 @@ fn handle_event(app: &Rc<App>, event: Ev) {
         Ev::Error(message) => {
             app.toast.add_toast(adw::Toast::new(&message));
         }
-        Ev::Applied(message) => {
-            app.dirty.set(false);
-            update_dirty(app);
+        Ev::Applied { message, quiet } => {
+            if !quiet {
+                app.dirty.set(false);
+                update_dirty(app);
+            }
             app.toast
                 .add_toast(adw::Toast::new(&tr("Applied", "Применено")));
             let _ = message;
@@ -3947,8 +4045,8 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
             tuning.enabled = toggle.is_active();
             profile.per_gpu.insert(uuid.clone(), tuning);
             drop(cfg);
-            app.dirty.set(true);
-            update_dirty(&app);
+            mark_dirty(&app);
+            save_and_apply(&app);
         });
     }
     header.append(&toggle);
@@ -4086,12 +4184,8 @@ fn tuning_summary(app: &Rc<App>, uuid: &str) -> (String, bool) {
         .memory_clock_mhz
         .map(|value| format!("{value} MHz"))
         .unwrap_or_else(|| tr("auto", "авто"));
-    let fan = tuning
-        .fan_pct
-        .map(|value| format!("{value}%"))
-        .unwrap_or_else(|| tr("auto", "авто"));
     let text = format!(
-        "{} · {}: {} · {}: {} · {}: {} · {}: {} · {} °C",
+        "{} · {}: {} · {}: {} · {}: {}",
         if custom {
             tr("custom", "своя")
         } else {
@@ -4102,10 +4196,7 @@ fn tuning_summary(app: &Rc<App>, uuid: &str) -> (String, bool) {
         tr("core", "ядро"),
         core,
         tr("memory", "память"),
-        memory,
-        tr("fan", "вентилятор"),
-        fan,
-        tuning.temp_limit_c
+        memory
     );
     (text, custom)
 }
@@ -4209,15 +4300,30 @@ fn refresh_gpu_settings(app: &Rc<App>, gpus: &[GpuStats]) {
                 column += 1;
             }
         }
-        let temp = label(&format!("{} °C", tuning.temp_limit_c), &["numeric"]);
+        // Live card temperature/fan, not a tuning field: the per-GPU limit
+        // is global and the fan is a miner option.
+        let temp_text = gpu
+            .temp_c
+            .map(|value| format!("{value} °C"))
+            .unwrap_or_else(|| "—".into());
+        let temp_class = match gpu.temp_c {
+            Some(value) if value >= 80 => "trommel-hot",
+            Some(value) if value >= 70 => "trommel-warm",
+            _ => "",
+        };
+        let temp = if temp_class.is_empty() {
+            label(&temp_text, &["numeric"])
+        } else {
+            label(&temp_text, &["numeric", temp_class])
+        };
         temp.set_halign(gtk::Align::Center);
         grid.attach(&temp, column, y, 1, 1);
         column += 1;
         if !simple {
-            let fan = tuning
+            let fan = gpu
                 .fan_pct
                 .map(|pct| format!("{pct}%"))
-                .unwrap_or_else(|| auto.clone());
+                .unwrap_or_else(|| "—".into());
             let fan_cell = label(&fan, &["numeric"]);
             fan_cell.set_halign(gtk::Align::Center);
             grid.attach(&fan_cell, column, y, 1, 1);

@@ -90,6 +90,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.4.1" date="2026-10-28">
+      <description>
+        <p>Real-rig readiness: prompt-free polkit GPU tuning, miner installs reach the running daemon, stale external state and daemon restarts are handled, safer stock restore and a non-blocking pool lookup. GitHub Releases now ship the .deb, a checksum and an installer.</p>
+        <p xml:lang="ru">Готовность к реальной работе: разгон без пароля через polkit, установка майнера доходит до работающего демона, фантомное внешнее состояние и рестарт демона обрабатываются, безопаснее возврат стока, пул не блокирует статус. На GitHub Releases выходят .deb, контрольная сумма и установщик.</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-10-28">
       <description>
         <p>Modal preset editor and a single miner install dialog, a fitted, adaptive window with animated page switches, coloured status values and a clearer quick-setup power action.</p>

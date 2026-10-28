@@ -7,10 +7,11 @@
 - **Root helper is narrow.** `/usr/libexec/trommel/trommel-oc` is root-owned and
   accepts only a `GPU-…` UUID plus numeric `--pl/--lgc/--lmc` values in ranges.
   It runs `nvidia-smi` directly; no shell, paths or arbitrary commands.
-- **Polkit.** The developer installer writes a per-user rule for the exact
-  helper and commands. The Debian package installs a rule for active local
-  users; the helper remains the only privileged program. Remove the rule to
-  require a password prompt.
+- **Polkit.** The developer installer writes a per-user rule for the annotated
+  action `io.github.nayvok.trommel.oc`. The Debian `postinst` writes the same
+  kind of rule for `SUDO_USER`; the shipped `/usr/share` rule is only a local
+  fallback. The helper is the only privileged program and validates the GPU
+  UUID plus numeric ranges. Remove the rule to require a password prompt.
 - **Miner downloads.** HTTPS only, 512 MiB limit, optional SHA-256, path
   traversal/symlink checks in archives, atomic install into
   `~/.local/share/trommel/miners/`. Unverified/custom binaries are marked.

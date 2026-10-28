@@ -8,6 +8,7 @@ pub mod bench;
 pub mod catalog;
 pub mod config;
 pub mod dbus;
+pub mod diagnostics;
 pub mod download;
 pub mod i18n;
 pub mod minerapi;

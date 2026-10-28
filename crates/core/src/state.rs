@@ -63,6 +63,9 @@ impl State {
             self.started_at = None;
             self.restarts = 0;
             self.orphan = false;
+            // A phantom "started by a script" state used to keep the UI in
+            // "mining (external)" forever and made Start a silent no-op.
+            self.external = false;
         }
         self
     }
@@ -127,7 +130,14 @@ pub fn pid_matches_miner(pid: u32) -> bool {
 }
 
 /// Scan `/proc` for an already running miner started outside our control.
+///
+/// `TROMMEL_NO_EXTERNAL_SCAN=1` is a test isolation hook: the e2e/UI smoke
+/// daemons must not adopt (or stop) the real miner that may be running on the
+/// same machine under the same user.
 pub fn find_external_miner() -> Option<u32> {
+    if std::env::var_os("TROMMEL_NO_EXTERNAL_SCAN").is_some() {
+        return None;
+    }
     let entries = std::fs::read_dir("/proc").ok()?;
     let own = std::process::id();
     let mut found: Option<u32> = None;
@@ -166,10 +176,12 @@ mod tests {
             miner_pid: Some(4_000_000),
             started_at: Some(1),
             restarts: 3,
+            external: true,
             ..Default::default()
         };
         let normalized = state.normalize();
         assert!(!normalized.running);
+        assert!(!normalized.external);
         assert_eq!(normalized.miner_pid, None);
     }
 

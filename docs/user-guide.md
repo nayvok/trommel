@@ -2,9 +2,13 @@
 
 ## Install
 
-Use the `.deb` for Ubuntu 26.04 or `./install.sh` for development. A working
+Download the latest `.deb` from GitHub Releases
+(<https://github.com/nayvok/trommel/releases/latest>) and install it with
+`sudo apt install ./trommel_amd64.deb`, or run the release `trommel-install.sh`.
+There is no apt repository. `./install.sh` is the developer path. A working
 NVIDIA driver and `nvidia-smi` are required. The app talks to the daemon over
-D-Bus; the daemon runs as your user, the narrow GPU helper runs through polkit.
+D-Bus; the daemon runs as your user, the narrow GPU helper runs through polkit
+and works without a password for the user who installed the package.
 
 ## First run: Quick setup
 
@@ -74,10 +78,13 @@ Core and memory clock locks are opt-in and off in a fresh profile. Turn off
 **Simple mode** (or press **Advanced settings** under the card table) to see
 them in **Settings → GPU defaults** and in each card's **Tune** dialog.
 
-**Settings → Detected GPUs** is a per-card table. In simple mode it lists only
-power and temperature; in advanced mode it adds the core and memory locks and
-the fan value, so you can compare every card at a glance. Each row has **Tune**;
-the row tooltip repeats the full profile summary.
+**Settings → Detected GPUs** is a per-card table. In simple mode it lists power
+and live temperature; in advanced mode it adds the core and memory locks and
+live fan speed, so you can compare every card at a glance. Each row has
+**Tune**; the row tooltip repeats the profile summary. Fan speed and the
+temperature limit are **not** per-card controls: the limit is global in
+**Settings → GPU defaults** and fan speed is a miner option in the preset
+editor.
 
 ![Advanced GPU settings](images/settings-advanced-en-dark.png)
 

@@ -1,25 +1,17 @@
-// polkit-правило Trommel: активный локальный пользователь @USER@ может
-// запускать ровно один root-хелпер без запроса пароля.
+// Trommel: allow the user @USER@ to run the narrow GPU helper without a
+// password prompt.
 //
-// Ставится в /etc/polkit-1/rules.d/50-trommel.rules (install.sh подставляет
-// имя пользователя вместо @USER@). Если файл удалить — pkexec начнёт спрашивать
-// пароль, как обычная авторизация.
+// Install at /etc/polkit-1/rules.d/50-trommel.rules with @USER@ replaced by
+// the account that runs Trommel (install.sh and scripts/install-polkit-rule.sh
+// do this). The action id is the annotated pkexec action from
+// /usr/share/polkit-1/actions/io.github.nayvok.trommel.policy; the helper
+// itself validates the GPU UUID and numeric ranges, so this rule only
+// authorizes that one program.
 polkit.addRule(function (action, subject) {
-    if (action.id !== "org.freedesktop.policykit.exec") {
-        return polkit.Result.NOT_HANDLED;
-    }
-    if (!subject.local || !subject.active) {
+    if (action.id !== "io.github.nayvok.trommel.oc") {
         return polkit.Result.NOT_HANDLED;
     }
     if (subject.user !== "@USER@") {
-        return polkit.Result.NOT_HANDLED;
-    }
-    var program = action.lookup("program");
-    if (program !== "/usr/libexec/trommel/trommel-oc") {
-        return polkit.Result.NOT_HANDLED;
-    }
-    var command = action.lookup("argv1");
-    if (command !== "apply" && command !== "reset" && command !== "status") {
         return polkit.Result.NOT_HANDLED;
     }
     return polkit.Result.YES;

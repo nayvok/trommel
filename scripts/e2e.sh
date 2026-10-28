@@ -98,12 +98,14 @@ export XDG_STATE_HOME="$WORK/state"
 export XDG_DATA_HOME="$WORK/data"
 export XDG_CACHE_HOME="$WORK/cache"
 export TROMMEL_OC_HELPER="$WORK/bin/oc-helper"
+export TROMMEL_NO_EXTERNAL_SCAN=1
 export TROMMEL_OC_LOG="$WORK/oc.log"
 BUS_OUT=$(dbus-daemon --config-file="$WORK/bus.conf" --print-address --print-pid --fork 2>/dev/null)
 export DBUS_SESSION_BUS_ADDRESS="$(printf '%s\n' "$BUS_OUT" | sed -n 1p)"
 BUS_PID="$(printf '%s\n' "$BUS_OUT" | sed -n 2p)"
 cleanup() {
     pkill -f "$WORK/bin/wildrig-multi" 2>/dev/null || true
+    pkill -f "$WORK/data/trommel/miners" 2>/dev/null || true
     [ -n "${DAEMON_PID:-}" ] && kill "$DAEMON_PID" 2>/dev/null || true
     [ -n "$BUS_PID" ] && kill "$BUS_PID" 2>/dev/null || true
 }
@@ -169,6 +171,141 @@ step "Preset commands"
 
 step "Config and migration sanity"
 "$BIN/trommel" config get | python3 -c 'import json,sys; c=json.load(sys.stdin); assert c["schema_version"]==2; assert c["active_preset"]=="pearl-wildrig"' && pass "config v2 is active" || fail "config v2"
+
+step "Diagnostics redaction"
+if "$BIN/trommel" diagnose --json > "$WORK/diagnostics.json" 2>/dev/null \
+    && ! grep -q 'prl1testwallet' "$WORK/diagnostics.json" \
+    && grep -q '<redacted>' "$WORK/diagnostics.json"; then
+    pass "diagnose hides every preset wallet"
+else
+    fail "diagnose leaked a wallet or failed"; head -20 "$WORK/diagnostics.json" 2>/dev/null
+fi
+
+step "Stop failure keeps the snapshot"
+"$BIN/trommel" start >/dev/null 2>&1
+sleep 1
+cat > "$WORK/bin/oc-helper" <<SH
+#!/bin/bash
+echo "\$*" >> "$WORK/oc.log"
+case "\$1" in
+  reset) exit 1 ;;
+esac
+exit 0
+SH
+chmod +x "$WORK/bin/oc-helper"
+if "$BIN/trommel" stop >/dev/null 2>&1; then
+    fail "stop reported success although reset failed"
+else
+    pass "stop returns an error when reset fails"
+fi
+if [ -f "$WORK/state/trommel/oc-snapshot.json" ]; then
+    pass "snapshot kept for a retry"
+else
+    fail "snapshot was lost after a failed restore"
+fi
+cat > "$WORK/bin/oc-helper" <<SH
+#!/bin/bash
+echo "\$*" >> "$WORK/oc.log"
+exit 0
+SH
+chmod +x "$WORK/bin/oc-helper"
+"$BIN/trommel" stop >/dev/null 2>&1 || true
+if [ ! -f "$WORK/state/trommel/oc-snapshot.json" ]; then
+    pass "retry restored stock and cleared the snapshot"
+else
+    fail "snapshot still present after a successful retry"
+fi
+
+step "Install sync while the daemon is running"
+kill "$DAEMON_PID" 2>/dev/null || true
+sleep 1
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+work = pathlib.Path(sys.argv[1])
+p = work/"config"/"trommel"/"config.json"
+cfg = json.loads(p.read_text())
+cfg["miner_installs"] = {}
+p.write_text(json.dumps(cfg, indent=2))
+PY
+setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
+DAEMON_PID=$!
+sleep 2
+if "$BIN/trommel" start >/dev/null 2>&1; then
+    fail "start succeeded without an installed miner"
+else
+    pass "start is blocked until the miner is installed"
+fi
+if "$BIN/trommel" miner import wildrig 0.51.8 "$WORK/bin/wildrig-multi" >/dev/null 2>&1; then
+    pass "miner imported into the managed store"
+else
+    fail "miner import failed"
+fi
+sleep 1
+if "$BIN/trommel" start >/dev/null 2>&1; then
+    sleep 2
+    if "$BIN/trommel" status --json 2>/dev/null | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if s["state"]["running"] else 1)'; then
+        pass "running daemon sees the newly imported miner"
+    else
+        fail "daemon did not start the newly imported miner"
+    fi
+else
+    fail "start failed after import"
+fi
+COUNT=$(pgrep -fc "$WORK/data/trommel/miners/wildrig/0.51.8/wildrig-multi" 2>/dev/null || true)
+[ "$COUNT" = "1" ] && pass "exactly one miner process" || fail "expected one miner, found ${COUNT:-0}"
+"$BIN/trommel" stop >/dev/null 2>&1 || true
+
+step "Daemon restart adopts the miner and auto-restarts"
+"$BIN/trommel" start >/dev/null 2>&1
+sleep 2
+MINER_PID=$(pgrep -f "$WORK/data/trommel/miners/wildrig/0.51.8/wildrig-multi" | head -1)
+[ -n "$MINER_PID" ] && pass "miner is running before the daemon restart" || fail "miner did not start"
+kill "$DAEMON_PID" 2>/dev/null || true
+sleep 1
+setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
+DAEMON_PID=$!
+sleep 2
+if "$BIN/trommel" status --json 2>/dev/null | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if s["state"]["running"] else 1)'; then
+    pass "restarted daemon still reports the miner as running"
+else
+    fail "restarted daemon lost the running miner"
+fi
+kill "$MINER_PID" 2>/dev/null || true
+sleep 5
+NEW_PID=$(pgrep -f "$WORK/data/trommel/miners/wildrig/0.51.8/wildrig-multi" | head -1)
+if [ -n "$NEW_PID" ] && [ "$NEW_PID" != "$MINER_PID" ]; then
+    pass "orphan was auto-restarted with a new PID"
+else
+    fail "orphan was not auto-restarted (old=$MINER_PID new=${NEW_PID:-none})"
+fi
+"$BIN/trommel" stop >/dev/null 2>&1 || true
+
+step "Stale external state is cleared"
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys, time
+work = pathlib.Path(sys.argv[1])
+state = {"running": True, "miner_pid": 4000000, "started_at": int(time.time()) - 600,
+         "restarts": 0, "last_error": None, "external": True, "orphan": False,
+         "preset_id": "pearl-wildrig", "miner": "wildrig", "miner_version": "0.51.8"}
+(work/"state"/"trommel"/"state.json").write_text(json.dumps(state, indent=2))
+PY
+kill "$DAEMON_PID" 2>/dev/null || true
+sleep 1
+setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
+DAEMON_PID=$!
+sleep 2
+if "$BIN/trommel" status --json 2>/dev/null | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if not s["state"]["running"] and not s["state"]["external"] else 1)'; then
+    pass "phantom external state is gone"
+else
+    fail "phantom external state survived normalize"
+fi
+if "$BIN/trommel" start >/dev/null 2>&1; then
+    sleep 1
+    pass "start works after the stale state was cleared"
+    "$BIN/trommel" stop >/dev/null 2>&1 || true
+else
+    fail "start still blocked by stale state"
+fi
 
 echo
 if [ "$FAILS" -eq 0 ]; then

@@ -68,16 +68,32 @@ AMD/Intel, X11-specific paths and non-GNOME desktops are out of scope for v1.
 
 ## Install
 
-### Debian package (recommended for v1)
+### GitHub release (recommended)
+
+Trommel is distributed from **GitHub Releases**; there is no apt repository or
+PPA. Download the latest release from
+<https://github.com/nayvok/trommel/releases/latest> and install the `.deb`:
 
 ```bash
-sudo apt install ./dist/trommel_0.4.0_amd64.deb
+sudo apt install ./trommel_amd64.deb
+```
+
+Or use the installer, which downloads the latest `.deb`, verifies its SHA-256
+and installs it:
+
+```bash
+curl -fsSLO https://github.com/nayvok/trommel/releases/latest/download/trommel-install.sh
+bash trommel-install.sh
 ```
 
 The package contains the app, `trommeld`, the polkit helper, desktop entry,
 icons, metainfo, GSettings schema and the GNOME extension. The daemon starts on
-demand over D-Bus; the extension is enabled from **Settings → GNOME integration**
-(or Extension Manager). A re-login may be needed on Wayland.
+demand over D-Bus; GPU tuning works without a password for the user who ran the
+install. The extension is enabled from **Settings → GNOME integration** (or
+Extension Manager) after a re-login on Wayland.
+
+Upgrade by installing the new release's `.deb`; remove with
+`sudo apt remove trommel`. The dev install below is for contributors.
 
 ### Developer install
 

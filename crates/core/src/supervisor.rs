@@ -65,7 +65,13 @@ impl Default for Supervisor {
 
 impl Supervisor {
     pub fn new() -> Self {
-        let state = State::load().normalize();
+        let mut state = State::load().normalize();
+        // The daemon restarted while a miner it spawned is still alive. We
+        // lost the Child handle, so monitor/adopt it by PID; otherwise its
+        // death would never be noticed and Stop would not know it is ours.
+        if state.running && !state.external && state.miner_alive() {
+            state.orphan = true;
+        }
         Self {
             child: None,
             restart_at: None,
@@ -81,10 +87,35 @@ impl Supervisor {
     /// Start the miner: snapshot stock, apply the GPU profile, spawn.
     pub fn start(&mut self, cfg: &Config) -> anyhow::Result<()> {
         if self.is_running() {
-            return Ok(());
+            if self.child.is_some() || self.state.miner_alive() {
+                return Ok(());
+            }
+            // A stale running flag must not make Start a silent no-op.
+            self.state = State::default();
+            let _ = self.state.save();
         }
+        // A stale external flag must not survive a Start attempt. Clear it
+        // before the external scan so a real script miner is still reported
+        // by the scan below (and never silently treated as "already ours").
         if self.state.external {
-            return Ok(());
+            self.state = State::default();
+            let _ = self.state.save();
+        }
+        // Never spawn a second miner next to a script/manual one. We do not
+        // kill it either: stopping an external process is the user's call.
+        if let Some(pid) = state::find_external_miner() {
+            anyhow::bail!(
+                "{} {} — {}",
+                tr(
+                    "An external miner is already running (PID",
+                    "Внешний майнер уже работает (PID"
+                ),
+                pid,
+                tr(
+                    "stop that process first, then press Start",
+                    "остановите его, затем нажмите «Запустить»"
+                )
+            );
         }
         let preset = cfg
             .preset()
@@ -141,6 +172,10 @@ impl Supervisor {
             if !tuning.enabled {
                 continue;
             }
+            // Register the card *before* applying: the helper applies --pl,
+            // --lgc and --lmc in order, so a failure halfway must restore this
+            // card as well, not just the previous ones.
+            applied.push(gpu.uuid.clone());
             if let Err(err) = oc::apply_tuning(gpu, &tuning) {
                 for uuid in &applied {
                     if let Some(snap) = snapshot.for_uuid(uuid) {
@@ -153,7 +188,6 @@ impl Supervisor {
                     err
                 );
             }
-            applied.push(gpu.uuid.clone());
         }
 
         if let Err(err) = self.spawn(cfg) {
@@ -168,6 +202,7 @@ impl Supervisor {
         self.state.running = true;
         self.state.external = false;
         self.state.orphan = false;
+        self.state.last_error = None;
         self.state.started_at = Some(util::now_unix());
         self.state.restarts = 0;
         self.state.preset_id = cfg.active_preset.clone();
@@ -245,6 +280,7 @@ impl Supervisor {
                             code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()),
                             tr("auto-restart is off", "автоперезапуск выключен")
                         ));
+                        restore_stock(cfg);
                         let _ = self.state.save();
                         events.push(Event::Stopped { code });
                     }
@@ -258,14 +294,48 @@ impl Supervisor {
                     self.child = Some(child);
                 }
             }
-        } else if self.state.running && self.state.orphan {
+        } else if self.state.external {
             if !self.state.miner_alive() {
-                self.state.running = false;
-                self.state.orphan = false;
-                self.state.started_at = None;
+                // The legacy script/manual miner is gone. Do not touch its
+                // power/clocks: they were not ours to restore.
+                self.state = State::default();
                 let _ = self.state.save();
                 events.push(Event::Stopped { code: None });
             }
+        } else if self.state.running && self.state.orphan {
+            if !self.state.miner_alive() {
+                self.state.miner_pid = None;
+                self.state.orphan = false;
+                if cfg.behavior.auto_restart && self.state.running {
+                    self.state.restarts += 1;
+                    self.state.last_error = Some(format!(
+                        "{} — {} {} {}",
+                        tr("Miner exited", "Майнер завершился"),
+                        tr("restarting in", "перезапуск через"),
+                        cfg.behavior.restart_delay_s.max(1),
+                        tr("s", "с")
+                    ));
+                    self.restart_at = Some(
+                        Instant::now() + Duration::from_secs(cfg.behavior.restart_delay_s.max(1)),
+                    );
+                    let _ = self.state.save();
+                    events.push(Event::Crashed {
+                        code: None,
+                        restart_in: cfg.behavior.restart_delay_s.max(1),
+                    });
+                } else {
+                    self.state.running = false;
+                    self.state.started_at = None;
+                    let _ = self.state.save();
+                    restore_stock(cfg);
+                    events.push(Event::Stopped { code: None });
+                }
+            }
+        } else if self.state.running && !self.state.miner_alive() {
+            restore_stock(cfg);
+            self.state = State::default();
+            let _ = self.state.save();
+            events.push(Event::Stopped { code: None });
         } else if !self.state.running {
             if let Some(pid) = state::find_external_miner() {
                 self.state.external = true;
@@ -294,6 +364,7 @@ impl Supervisor {
                                 "Не удалось перезапустить майнер:"
                             )
                         ));
+                        restore_stock(cfg);
                         let _ = self.state.save();
                         events.push(Event::Error(
                             self.state.last_error.clone().unwrap_or_default(),
@@ -379,6 +450,17 @@ impl Supervisor {
     }
 }
 
+/// Best-effort stock restore after the miner is gone for good. Keeps the
+/// snapshot when the helper fails, so a later Stop can retry.
+fn restore_stock(cfg: &Config) {
+    if !cfg.behavior.restore_stock_on_stop {
+        return;
+    }
+    if let Some(snapshot) = oc::load_snapshot() {
+        let _ = oc::restore_snapshot(&snapshot);
+    }
+}
+
 /// SIGTERM, then SIGKILL after a grace period.
 fn terminate(child: &mut Child) {
     terminate_pid(child.id());
@@ -460,10 +542,28 @@ mod tests {
     }
 
     #[test]
+    fn dead_external_state_does_not_silently_block_start() {
+        let mut supervisor = Supervisor::new();
+        supervisor.state = State {
+            running: false,
+            external: true,
+            miner_pid: Some(4_000_000),
+            ..Default::default()
+        };
+        let cfg = Config::default();
+        // No wallet/install: start must reach that validation error, not
+        // return Ok because a stale external flag said "already running".
+        assert!(supervisor.start(&cfg).is_err());
+        assert!(!supervisor.state.external);
+    }
+
+    #[test]
     fn stop_without_running_is_safe() {
         let mut supervisor = Supervisor::new();
         supervisor.state = State::default();
-        let cfg = Config::default();
+        let mut cfg = Config::default();
+        // Never try to restore a real GPU / pkexec from a unit test.
+        cfg.behavior.restore_stock_on_stop = false;
         let _ = supervisor.stop(&cfg);
         assert!(!supervisor.state.running);
     }

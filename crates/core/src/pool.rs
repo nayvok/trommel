@@ -106,9 +106,14 @@ pub fn query(cfg: &Config) -> anyhow::Result<PoolStats> {
 
 struct CacheEntry {
     wallet: String,
-    at: Instant,
+    at: Option<Instant>,
     value: Option<PoolStats>,
+    last_attempt: Option<Instant>,
+    in_flight: bool,
 }
+
+/// After a failed/slow fetch, do not hit the pool again immediately.
+const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(45);
 
 static CACHE: OnceLock<Mutex<Option<CacheEntry>>> = OnceLock::new();
 
@@ -116,30 +121,69 @@ fn cache() -> &'static Mutex<Option<CacheEntry>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
-/// Cached pool query: at most one request per wallet per minute.
+/// Cached pool query. Never blocks the status loop: a slow or broken pool API
+/// used to stall `Status::collect` for up to 40 seconds.
+///
+/// The first call returns the last known value (usually `None`), starts one
+/// background fetch, and subsequent calls return that value. A fresh value is
+/// fetched at most once per `CACHE_TTL`; failures back off for
+/// `RETRY_AFTER_FAILURE`.
 pub fn query_cached(cfg: &Config) -> Option<PoolStats> {
     let preset = cfg.preset()?;
     let wallet = preset.wallet.trim().to_string();
     if wallet.is_empty() || preset.pool != "pearlhash" {
         return None;
     }
-    {
-        let guard = cache().lock().ok()?;
-        if let Some(entry) = guard.as_ref() {
-            if entry.wallet == wallet && entry.at.elapsed() < CACHE_TTL {
-                return entry.value.clone();
+    let now = Instant::now();
+    let value = {
+        let mut guard = cache().lock().ok()?;
+        let entry = guard.get_or_insert_with(|| CacheEntry {
+            wallet: wallet.clone(),
+            at: None,
+            value: None,
+            last_attempt: None,
+            in_flight: false,
+        });
+        if entry.wallet != wallet {
+            *entry = CacheEntry {
+                wallet: wallet.clone(),
+                at: None,
+                value: None,
+                last_attempt: None,
+                in_flight: false,
+            };
+        }
+        let fresh = entry.at.map(|at| at.elapsed() < CACHE_TTL).unwrap_or(false);
+        let backoff = entry
+            .last_attempt
+            .map(|at| at.elapsed() < RETRY_AFTER_FAILURE)
+            .unwrap_or(false);
+        if fresh || entry.in_flight || backoff {
+            return entry.value.clone();
+        }
+        entry.in_flight = true;
+        entry.last_attempt = Some(now);
+        entry.value.clone()
+    };
+
+    let worker_cfg = cfg.clone();
+    let worker_wallet = wallet.clone();
+    std::thread::spawn(move || {
+        let result = query(&worker_cfg);
+        if let Ok(mut guard) = cache().lock() {
+            let Some(entry) = guard.as_mut() else {
+                return;
+            };
+            if entry.wallet != worker_wallet {
+                return;
+            }
+            entry.in_flight = false;
+            if let Ok(stats) = result {
+                entry.value = Some(stats);
+                entry.at = Some(Instant::now());
             }
         }
-    }
-
-    let value = query(cfg).ok();
-    if let Ok(mut guard) = cache().lock() {
-        *guard = Some(CacheEntry {
-            wallet,
-            at: Instant::now(),
-            value: value.clone(),
-        });
-    }
+    });
     value
 }
 
@@ -238,6 +282,11 @@ fn as_f64(value: &serde_json::Value) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn no_wallet_means_no_pool_request() {
+        let cfg = crate::config::Config::default();
+        assert!(super::query_cached(&cfg).is_none());
+    }
     use super::*;
 
     fn pearlhash_fixture() -> serde_json::Value {

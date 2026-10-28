@@ -80,15 +80,7 @@ esac
 
 if [ "$DO_HELPER" = 1 ]; then
     say "Installing the root GPU helper (sudo once)"
-    sudo install -d -m755 "$HELPER_DIR"
-    sudo install -m755 -o root -g root "$ROOT/polkit/trommel-oc" "$HELPER_DIR/trommel-oc"
-    sudo install -m644 -o root -g root \
-        "$ROOT/polkit/io.github.nayvok.trommel.policy" \
-        /usr/share/polkit-1/actions/io.github.nayvok.trommel.policy
-    TMP_RULE="$(mktemp)"
-    sed "s/@USER@/$USER/g" "$ROOT/polkit/50-trommel.rules.in" > "$TMP_RULE"
-    sudo install -m644 -o root -g root "$TMP_RULE" /etc/polkit-1/rules.d/50-trommel.rules
-    rm -f "$TMP_RULE"
+    sudo "$ROOT/scripts/install-polkit-rule.sh" "$USER"
     ok "power/clocks can be applied without a password for $USER"
 fi
 
@@ -101,7 +93,8 @@ sed 's#/usr/bin/trommel#%h/.local/bin/trommel#g' \
 install -m644 "$ROOT/systemd/io.github.nayvok.Trommel.Daemon.service" \
     "$DBUS_DIR/io.github.nayvok.Trommel.Daemon.service"
 systemctl --user daemon-reload
-systemctl --user enable --now trommeld.service
+systemctl --user enable trommeld.service
+systemctl --user restart trommeld.service
 ok "trommeld is $([ "$(systemctl --user is-active trommeld.service)" = active ] && echo active || echo inactive)"
 
 say "Installing desktop entry, icons and metadata"

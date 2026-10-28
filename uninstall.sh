@@ -10,7 +10,19 @@ EXT_UUID="trommel@nayvok.github.io"
 say() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
 say "Stopping mining"
-command -v trommel >/dev/null && trommel stop 2>/dev/null || true
+if command -v trommel >/dev/null; then
+    if ! trommel stop; then
+        echo "trommel stop failed (stock restore?); refusing to remove the helper." >&2
+        echo "Fix the GPU state first, then rerun uninstall." >&2
+        exit 1
+    fi
+    if ! trommel status --json | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if not s["state"]["running"] else 1)'; then
+        echo "the miner is still running; refusing to remove the helper." >&2
+        exit 1
+    fi
+else
+    echo "trommel is not in PATH; skipping the automatic stop"
+fi
 
 say "Removing user service"
 systemctl --user disable --now trommel-autostart.service 2>/dev/null || true
