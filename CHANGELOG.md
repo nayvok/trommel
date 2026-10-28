@@ -5,6 +5,12 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+### Fixed
+
+- The Dashboard navigation icon used `utilities-system-monitor-symbolic`, which
+  is missing from the Adwaita icon theme, so some themes showed a broken-image
+  placeholder. It now uses `view-grid-symbolic`, available in Adwaita and Yaru.
+
 ### Changed
 
 - Documentation was restructured by audience: a new index, an architecture and

@@ -643,7 +643,8 @@ fn build_ui(app: &adw::Application) {
     dashboard_box.append(&warnings_group);
 
     stack.add_titled(&dashboard, Some("dashboard"), &tr("Dashboard", "Дашборд"));
-    set_page_icon(&stack, &dashboard, "utilities-system-monitor-symbolic");
+    // Available in both Adwaita and Yaru; utilities-system-monitor-symbolic is Yaru-only.
+    set_page_icon(&stack, &dashboard, "view-grid-symbolic");
 
     // --------------------------------------------------------------- presets
     let (presets_page, preset_group) = build_presets_page();
