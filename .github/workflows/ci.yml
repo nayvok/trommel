@@ -17,7 +17,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
             desktop-file-utils appstream gettext librsvg2-bin \
-            python3 git ca-certificates
+            python3 git ca-certificates dbus
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -30,6 +30,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: End-to-end
+        run: ./scripts/e2e.sh
+      - name: MCP smoke test
+        run: ./scripts/test-mcp.sh
       - name: Build
         run: |
           cargo build --release -p trommeld
