@@ -6,7 +6,14 @@ Trommel is a GTK4/libadwaita control room for NVIDIA mining rigs. It manages
 miners, pools, coins, GPU profiles and reusable presets — without turning your
 desktop into a pile of shell scripts.
 
-![Dashboard](docs/images/dashboard-en-dark.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-en-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/dashboard-en-light.png">
+  <img src="docs/images/dashboard-en-dark.png" alt="Trommel dashboard with two NVIDIA GPUs mining at 125.8 TH/s" width="680">
+</picture>
+
+<sub>Dashboard with two GPUs. The image follows your system colour scheme; the dark
+theme is used here by default.</sub>
 
 > Trommel is a manager, not a miner. Miner binaries are downloaded separately,
 > only one miner runs at a time, and the app restores the stock power limit and
@@ -20,32 +27,35 @@ arguments are hidden until you turn them on.
 ## Features
 
 - **Multi-GPU dashboard** — per-card temperature, power, fan, clocks and
-  utilization; total power, temperature and efficiency for the whole rig.
-- **Presets** — bundle coin, pool, wallet, worker, miner version, GPU profile
-  and miner-specific options; switch without re-entering everything.
-- **Miner catalogue** — short description, version, source, license, developer
-  fee and supported algorithms. The fee is shown as a breakdown
-  (miner + pool = total) everywhere.
-- **Miner-dependent settings** — option descriptors come from the catalogue:
-  types, ranges, defaults and CLI flags are chosen for the selected miner
-  version. "Reset to miner defaults" is always available.
+  utilization; total power and maximum temperature for the whole rig (the
+  status JSON also carries J/TH efficiency).
+- **Presets** — bundle the coin/algorithm (Pearl/pearlhash in the current
+  catalogue), pool, wallet, worker, miner version and miner-specific options.
+  GPU settings are edited in Settings, so switching presets does not re-enter
+  everything.
+- **Miner catalogue** — short description, installed versions and a link to the
+  upstream release page. The developer fee is shown as a breakdown
+  (miner + pool = total) in the dashboard, editor and panel popup.
+- **Miner-dependent settings** — option descriptors come from the selected
+  miner in the catalogue: types, ranges, defaults and CLI flags. Values whose
+  keys no longer exist are dropped when the miner changes.
 - **One install, all presets** — a single install dialog owns the version
   list (catalogue plus your own imported builds), downloads over HTTPS and
   imports local binaries. Install a version once; every preset that references
-  it shows `Installed`, and missing versions block Start until resolved.
+  it sees it as installed, and missing versions block Start until resolved.
 - **Preset editor as a dialog** — rows open a modal editor with Save/Cancel,
   duplicate and a confirmation before deleting; no in-page Back navigation.
 - **Appearance** — System, Light or Dark colour scheme applied immediately and
   remembered across restarts. Trommel uses libadwaita's own styling and the
   system GTK theme, so it matches other GNOME apps on the same desktop.
 - **Stock snapshot** — before applying power/clocks, Trommel captures each
-  GPU's current power limit and restores it on stop. No hardcoded `-pl 350`.
+  GPU's current power limit and restores it on stop. No hardcoded power limit.
 - **Optional clock locks** — core/memory locks are off by default; enable them
   per card, copy to identical cards or all GPUs. A lower memory lock can save
   power on some coins and hurt others, so it is an advanced choice.
 - **Per-card tuning table** — **Settings → Detected GPUs** lists power, clock
-  locks, fan and temperature for every card; simple mode shows only power and
-  temperature, and **Advanced settings** reveals the rest.
+  locks, fan and temperature for every card; simple mode shows power,
+  temperature and load, and **Advanced settings** reveals the rest.
 - **Safe apply flow** — if the miner is running and you edit the profile, you
   choose **Apply and restart** or **Apply and stop**; failures roll back.
 - **GNOME Shell integration** — a panel indicator, live popup, Quick Settings
@@ -58,13 +68,13 @@ arguments are hidden until you turn them on.
   diff and approve.
 - **English and Russian UI**, the desktop GTK theme (Yaru, Adwaita), light and dark colour schemes, GNOME HIG-style widgets.
 
-## Requirements (v1)
+## Supported setup
 
 - Linux with GNOME Shell 50 (Ubuntu 26.04 is the tested target), Wayland.
 - NVIDIA GPU + working `nvidia-smi` and driver.
 - For development: Rust 1.80+, `libgtk-4-dev`, `libadwaita-1-dev`, `pkg-config`.
 
-AMD/Intel, X11-specific paths and non-GNOME desktops are out of scope for v1.
+AMD/Intel, X11-specific paths and non-GNOME desktops are not supported.
 
 ## Install
 
@@ -109,7 +119,7 @@ asks for `sudo` once for the helper and polkit rule.
 
 ### Other formats
 
-RPM, AppImage and Flatpak are **not released in v1**. Reasons and the current
+RPM, AppImage and Flatpak are **not released**. Reasons and the current
 status are documented in [docs/packaging.md](docs/packaging.md). Flatpak cannot
 provide the host `nvidia-smi`/polkit/systemd/extension integration this app
 needs without a broad sandbox; a GUI-only Flatpak would be a different product.
@@ -142,17 +152,17 @@ page, the editor and the wizard:
 The classic path still works:
 
 1. Open **Trommel** from the application menu.
-2. Open a preset row: the editor is a modal window with coin → pool →
-   miner/version (install or import a binary) → wallet/worker → GPU profile →
-   miner options.
+2. Open a preset row: the editor is a modal window with pool → miner/version
+   (install or import a binary) → wallet/worker → fees → miner options.
 3. Choose **Save** (it saves and applies). If the miner is stopped, it is saved immediately;
    if it is running, you get the restart/stop dialog.
 4. Press **Start**. Trommel snapshots the stock power limit and applies the
    selected profile before spawning the miner.
 5. Press **Stop** to terminate the miner and restore the snapshot.
 
-The app never ships a wallet or a miner binary. Existing Pearl Miner configs are
-imported automatically from `~/.config/pearl-miner/config.json` on first load.
+The app never ships a wallet or a miner binary. A pre-Trommel Pearl Miner
+configuration is imported once from `~/.config/pearl-miner/config.json`; the old
+file is left untouched.
 
 ## CLI
 
@@ -178,9 +188,10 @@ indicator and miner keep working.
 
 ## Fees and miner info
 
-Each miner page shows a short description, version, source, license, developer
-fee, supported coins/algorithms and installed versions. The preset editor shows
-the same data and a fee breakdown:
+Each miner page shows a short description and installed versions; the install
+dialog lists catalogue versions and links to the upstream release page. The
+preset editor shows the selected miner's description, install path and fee
+breakdown:
 
 ```
 miner 0.00% + pool 1.00% = total 1.00%
@@ -188,7 +199,7 @@ miner 0.00% + pool 1.00% = total 1.00%
 
 A miner fee is editable **only** when the catalogue marks it configurable; the
 UI never pretends a fixed fee can be changed. The pool fee is used for effective
-hashrate calculations and is editable for custom pools.
+hashrate calculation and is editable per preset.
 
 ## Stock restore and limitations
 
@@ -197,8 +208,8 @@ hashrate calculations and is editable for custom pools.
   lock cannot be read back through `nvidia-smi`; this is documented in the UI.
 - Fan control on consumer cards is not available through `nvidia-smi`; fan
   flags are passed to the miner when supported and disappear with the process.
-- On reboot the snapshot is considered stale and cleared; the driver resets
-  GPU settings anyway.
+- On reboot the snapshot is marked stale and is not used; Start captures a fresh
+  one, and the driver resets GPU settings anyway.
 
 ## GNOME extension
 
@@ -210,11 +221,16 @@ it, the app shows it as disabled. The daemon works without the extension.
 
 ## Documentation
 
+Start at the [documentation index](docs/README.md). The most used entry points:
+
 - [User guide](docs/user-guide.md) · [Русский](docs/user-guide.ru.md)
-- [Architecture](docs/architecture.md)
+- [Architecture](docs/architecture.md) · [Components](docs/components.md)
+- [Design](docs/design.md) · [Русский](docs/design.ru.md)
+- [Development and test harness](docs/development.md)
 - [Miner catalogue and options](docs/miners.md)
 - [Using Trommel from an external agent](docs/agents.md)
-- [Packaging status](docs/packaging.md)
+- [Packaging and releases](docs/packaging.md)
+- [Verification](docs/verification.md)
 - [GNOME extension](docs/extension.md)
 - [Security model](docs/security.md)
 - [Roadmap](docs/roadmap.md)

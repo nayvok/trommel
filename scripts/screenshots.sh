@@ -52,9 +52,14 @@ cfg = {
     "gpu_profile":"balanced","api_port":0,"expected_hashrate":125000000000000.0,
     "miner_options":{"fan_speed":70},"miner_fee_override_pct":None,"miner_fee_pct":0.0,
     "pool_fee_pct":1.0,"extra_args":"","env":{},"created_at":0,"updated_at":0}},
-  "gpu_profiles": {"balanced": {"name":"Balanced","default":{"enabled":True,"power_limit_w":300,
-    "core_clock_mhz":1620,"memory_clock_mhz":810,"fan_pct":None,"temp_limit_c":90,"temp_resume_c":65},
-    "per_gpu":{}}},
+  "gpu_profiles": {"balanced": {"name":"Balanced",
+    "default":{"enabled":True,"power_limit_w":None,"core_clock_mhz":None,
+               "memory_clock_mhz":None,"fan_pct":None,"temp_limit_c":90,"temp_resume_c":65},
+    "per_gpu":{
+      "GPU-11111111-1111-1111-1111-111111111111":{"enabled":True,"power_limit_w":300,
+        "core_clock_mhz":1620,"memory_clock_mhz":810,"fan_pct":None,"temp_limit_c":90,"temp_resume_c":65},
+      "GPU-22222222-2222-2222-2222-222222222222":{"enabled":True,"power_limit_w":130,
+        "core_clock_mhz":1500,"memory_clock_mhz":750,"fan_pct":None,"temp_limit_c":90,"temp_resume_c":65}}}},
   "miner_installs": {"wildrig@0.51.8": {"miner":"wildrig","version":"0.51.8",
     "path":str(work/"wildrig-multi"),"sha256":"","source_url":"","verified":False,"custom":True,"installed_at":0}},
   "custom_miners": {}, "pools": {},
@@ -122,9 +127,10 @@ PY
 }
 
 shot() {
-  local theme="$1" language="$2" page="$3" target="$4" simple="${5:-1}" scroll="${6:-}"
+  local theme="$1" language="$2" page="$3" target="$4" simple="${5:-1}" scroll="${6:-}" height="${7:-}"
   configure "$language" "$simple"
   if [ -n "$scroll" ]; then export TROMMEL_SCREENSHOT_SCROLL="$scroll"; else unset TROMMEL_SCREENSHOT_SCROLL; fi
+  if [ -n "$height" ]; then export TROMMEL_WINDOW_HEIGHT="$height"; else unset TROMMEL_WINDOW_HEIGHT; fi
   local attempt
   for attempt in 1 2; do
     rm -f "$target"
@@ -192,7 +198,7 @@ wizard_shot() {
   [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
 }
 
-shot dark en dashboard "$DOCS/dashboard-en-dark.png"
+shot dark en dashboard "$DOCS/dashboard-en-dark.png" 1 "" 900
 shot dark en presets "$DOCS/presets-en-dark.png"
 shot dark en miners "$DOCS/miners-en-dark.png"
 shot dark en settings "$DOCS/settings-en-dark.png"
@@ -202,7 +208,8 @@ install_shot dark en "$DOCS/miner-install-en-dark.png"
 tune_shot dark en "$DOCS/gpu-tune-en-dark.png"
 wizard_shot dark en "$DOCS/setup-en-dark.png"
 wizard_shot dark en "$DOCS/setup-wallet-en-dark.png" 2
-shot dark ru dashboard "$DOCS/dashboard-ru-dark.png"
+shot dark ru dashboard "$DOCS/dashboard-ru-dark.png" 1 "" 900
 shot dark ru settings "$DOCS/settings-ru-dark.png"
-shot light en dashboard "$DOCS/dashboard-en-light.png"
+shot light en dashboard "$DOCS/dashboard-en-light.png" 1 "" 900
+shot light ru dashboard "$DOCS/dashboard-ru-light.png" 1 "" 900
 echo "done"
