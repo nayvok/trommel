@@ -76,6 +76,11 @@ cat > "$WORK/requests-read.jsonl" <<'JSON'
 {"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"trommel_start","arguments":{}}}
 {"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"trommel_apply_config","arguments":{"config":{}}}}
 {"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"trommel_no_such_tool","arguments":{}}}
+{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"trommel_status","arguments":{}}}
+{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"trommel_diagnose","arguments":{}}}
+{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"trommel_gpus","arguments":{}}}
+{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"trommel_miners","arguments":{}}}
+{"jsonrpc":"2.0","id":15,"method":"ping"}
 not valid json
 JSON
 
@@ -177,6 +182,19 @@ check(
     "trommel_apply_config is refused without --allow-write",
 )
 check("unknown tool" in read[10]["error"]["message"], "unknown tool is a JSON-RPC error")
+# D-Bus/GPU tools may answer with data or an error (no daemon/nvidia-smi in a
+# sandbox), but they must never panic the stdio loop.
+for request_id, tool in ((11, "trommel_status"), (12, "trommel_diagnose"), (13, "trommel_gpus")):
+    response = read.get(request_id)
+    check(
+        response is not None and ("result" in response or "error" in response),
+        f"{tool} answers without crashing the server",
+    )
+check(
+    isinstance(text_of(read[14]), list),
+    "trommel_miners returns the catalogue",
+)
+check(read[15]["result"] == {}, "server survives an unavailable D-Bus")
 check(read[None]["error"]["code"] == -32700, "invalid JSON yields a parse error")
 
 write_tools = {tool["name"] for tool in write[2]["result"]["tools"]}
