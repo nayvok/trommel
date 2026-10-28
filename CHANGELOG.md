@@ -52,6 +52,8 @@ Changelog; versions use SemVer.
   include switch remain the controls. The duplicate *Detected GPUs* group left
   Settings; per-card edits live in **Tune**. The tune dialog's **Recommended** /
   **Profile default** actions moved into a **⋯** menu.
+- The dashboard hero is accent-tinted with a soft shadow, a small HASHRATE
+  caption, a larger value, a separator and a quieter uptime/restarts row.
 - New D-Bus `OCReport()` / `RestoreOC(mode)`, CLI `trommel oc report|restore`,
   MCP `trommel_oc` / `trommel_restore_oc`, and the under-load clock check.
 - Documentation was restructured by audience: a new index, an architecture and

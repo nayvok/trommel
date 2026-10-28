@@ -69,12 +69,12 @@ compact card per GPU precisely so Settings does not force a wide window.
 
 - Use the built-in `title-*`, `heading`, `body`, `caption`, `numeric` and
   `dim-label` classes. The only custom sizes are the hero hashrate
-  (`.trommel-hero-hashrate`, 2.4 em, weight 800), metric labels and chips; do not
-  add more.
+  (`.trommel-hero-hashrate`, 2.6 em, weight 800), the hero caption, metric labels
+  and chips; do not add more.
 - Numbers use tabular figures (`font-feature-settings: "tnum"`) so live values
   do not jitter.
-- Labels are sentence case. All-caps only for short status pill text if it is
-  already a translated noun.
+- Labels are sentence case. All-caps only for short status pill text and the
+  hero caption.
 
 ### Cards, pills and chips
 
@@ -82,8 +82,10 @@ Custom CSS lives in `install_css()`:
 
 | Class | Use |
 | --- | --- |
-| `.trommel-hero` | Dashboard hashrate hero card (translucent card background, 12 px radius) |
+| `.trommel-hero` | Dashboard hashrate hero card: accent tint, 1 px accent border, 16 px radius |
+| `.trommel-hero-caption` | Small letter-spaced HASHRATE caption |
 | `.trommel-hero-hashrate` | Large hashrate value |
+| `.trommel-hero-line`, `.trommel-hero-rule`, `.trommel-hero-meta` | Preset line, separator and uptime/restarts row |
 | `.trommel-gpu-card` | Dashboard GPU card: rounded 12 px, card background, soft shadow |
 | `.trommel-gpu-card-wide` | Single-GPU card: wider padding, fills the dashboard row |
 | `.trommel-gpu-stat` | Live-value bubble inside a dashboard GPU card: tinted, 10 px radius |
@@ -165,9 +167,11 @@ Every coloured value has a word next to it (“installed”, “not installed”
 
 ### Dashboard
 
-- Hero card: large hashrate, status pill (`mining` / `external` / `stopped` /
-  `offline`), a line with preset · miner · version · total fee, and a metadata
-  line with uptime, restarts and the miner data source.
+- Hero card: a small letter-spaced HASHRATE caption, the large value, status
+  pill (`mining` / `external` / `stopped` / `offline`), a line with preset ·
+  miner · version · total fee, a separator, and a metadata line with uptime,
+  restarts and the miner data source. The card is accent-tinted with a soft
+  shadow; the value uses the accent colour only while a hashrate is known.
 - GPU cards: title (name + index), a switch that includes the card in the
   active profile, six value bubbles (power, core, memory, temperature, fan,
   load; the configured target/lock is a small hint and turns hot when the live

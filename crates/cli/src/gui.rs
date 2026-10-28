@@ -302,15 +302,31 @@ fn install_css() {
             padding: 16px;
         }
         .trommel-hero {
-            background-color: alpha(@card_bg_color, 0.55);
-            border-radius: 12px;
-            padding: 12px 14px;
+            background-color: alpha(@accent_bg_color, 0.10);
+            border: 1px solid alpha(@accent_bg_color, 0.22);
+            border-radius: 16px;
+            padding: 18px 20px;
+            box-shadow: 0 10px 28px alpha(@accent_bg_color, 0.12);
+        }
+        .trommel-hero-caption {
+            font-size: 0.7em;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            opacity: 0.55;
         }
         .trommel-hero-hashrate {
-            font-size: 2.4em;
+            font-size: 2.6em;
             font-weight: 800;
-            letter-spacing: -0.02em;
+            letter-spacing: -0.03em;
         }
+        .trommel-hero-line { font-weight: 500; }
+        .trommel-hero-rule {
+            background-color: alpha(@card_fg_color, 0.12);
+            min-height: 1px;
+            margin-top: 6px;
+            margin-bottom: 2px;
+        }
+        .trommel-hero-meta { opacity: 0.72; }
         .trommel-gpu-title { font-weight: 700; }
         .trommel-gpu-stat {
             background-color: alpha(@card_fg_color, 0.06);
@@ -582,17 +598,34 @@ fn build_ui(app: &adw::Application) {
     hero.set_margin_start(6);
     hero.set_margin_end(6);
     let hero_top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let hero_left = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    hero_left.set_hexpand(true);
+    let hero_caption = label(
+        &tr("HASHRATE", "ХЕШРЕЙТ"),
+        &["caption", "trommel-hero-caption"],
+    );
     let hero_hashrate = label("—", &["trommel-hero-hashrate", "numeric", "dim-label"]);
-    hero_hashrate.set_hexpand(true);
+    hero_left.append(&hero_caption);
+    hero_left.append(&hero_hashrate);
     let pill = label(
         &tr("stopped", "остановлен"),
         &["caption", "trommel-pill", "trommel-pill-stopped"],
     );
     pill.set_valign(gtk::Align::Center);
-    hero_top.append(&hero_hashrate);
+    hero_top.append(&hero_left);
     hero_top.append(&pill);
-    let hero_line = label(&tr("No preset", "Нет пресета"), &["caption"]);
-    let hero_meta = label("", &["caption", "dim-label", "numeric"]);
+    let hero_line = label(
+        &tr("No preset", "Нет пресета"),
+        &["caption", "trommel-hero-line"],
+    );
+    let hero_rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+    hero_rule.add_css_class("trommel-hero-rule");
+    let hero_meta = label(
+        "",
+        &["caption", "dim-label", "numeric", "trommel-hero-meta"],
+    );
+    hero_line.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    hero_meta.set_ellipsize(gtk::pango::EllipsizeMode::End);
     let quick_button = gtk::Button::builder()
         .label(tr("Quick setup", "Быстрая настройка"))
         .css_classes(["suggested-action", "pill"])
@@ -601,6 +634,7 @@ fn build_ui(app: &adw::Application) {
     quick_button.set_visible(false);
     hero.append(&hero_top);
     hero.append(&hero_line);
+    hero.append(&hero_rule);
     hero.append(&hero_meta);
     hero.append(&quick_button);
     hero_group.add(&hero);
