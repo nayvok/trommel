@@ -236,11 +236,6 @@ struct SettingsWidgets {
     poll: adw::SpinRow,
     language: adw::ComboRow,
     appearance: adw::ComboRow,
-    power: adw::SpinRow,
-    core_lock: adw::SwitchRow,
-    core: adw::SpinRow,
-    memory_lock: adw::SwitchRow,
-    memory: adw::SpinRow,
     temp_limit: adw::SpinRow,
     temp_resume: adw::SpinRow,
     diagnostics: gtk::Button,
@@ -761,7 +756,6 @@ fn build_ui(app: &adw::Application) {
     refresh_preset_list(&app_state);
     refresh_miners(&app_state);
     load_settings(&app_state);
-    apply_simple_mode(&app_state);
     update_dirty(&app_state);
 
     {
@@ -975,6 +969,26 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             "Скрыть продвинутые настройки майнера и extra args",
         ),
     );
+    let temp_limit = spin_row(
+        &tr("Temperature limit", "Порог температуры"),
+        &tr(
+            "°C — overheat warning; passed to miners that support a temperature limit",
+            "°C — предупреждение о перегреве; передаётся майнерам с поддержкой лимита температуры",
+        ),
+        90.0,
+        60.0,
+        100.0,
+    );
+    let temp_resume = spin_row(
+        &tr("Resume temperature", "Температура возобновления"),
+        &tr(
+            "°C — resume below this temperature",
+            "°C — возобновление ниже этой температуры",
+        ),
+        65.0,
+        40.0,
+        95.0,
+    );
     let poll = spin_row(
         &tr("Poll interval", "Интервал опроса"),
         &tr("Seconds", "Секунды"),
@@ -999,6 +1013,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     ] {
         behavior.add(row);
     }
+    behavior.add(&temp_limit);
+    behavior.add(&temp_resume);
     let appearance = adw::ComboRow::builder()
         .title(tr("Appearance", "Оформление"))
         .subtitle(tr(
@@ -1015,83 +1031,6 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     behavior.add(&language);
     behavior.add(&appearance);
     page.add(&behavior);
-
-    let gpu = adw::PreferencesGroup::builder()
-        .title(tr("GPU defaults", "Настройки GPU по умолчанию"))
-        .description(tr(
-            "Cards without a custom override use these values. Tune on a card creates its own override.",
-            "Карты без собственной настройки используют эти значения. «Настроить» на карте создаёт отдельную настройку.",
-        ))
-        .build();
-    let power = spin_row(
-        &tr("Power limit", "Лимит питания"),
-        &tr("W — 0 = driver auto", "Вт — 0 = авто драйвера"),
-        300.0,
-        0.0,
-        1000.0,
-    );
-    let core_lock = switch_row(
-        &tr("Lock core clock", "Лочить частоту ядра"),
-        &tr(
-            "Optional; off = driver auto",
-            "Опционально; выкл. = авто драйвера",
-        ),
-    );
-    let core = spin_row(
-        &tr("Core clock", "Частота ядра"),
-        "MHz",
-        1620.0,
-        100.0,
-        4000.0,
-    );
-    core.set_sensitive(core_lock.is_active());
-    let memory_lock = switch_row(
-        &tr("Lock memory clock", "Лочить частоту памяти"),
-        &tr(
-            "Optional; a lower lock can save power on some coins",
-            "Опционально; низкий лок может экономить питание на некоторых монетах",
-        ),
-    );
-    let memory = spin_row(
-        &tr("Memory clock", "Частота памяти"),
-        "MHz",
-        810.0,
-        100.0,
-        12000.0,
-    );
-    memory.set_sensitive(memory_lock.is_active());
-    let temp_limit = spin_row(
-        &tr("Temperature limit", "Порог температуры"),
-        "°C",
-        90.0,
-        60.0,
-        100.0,
-    );
-    let temp_resume = spin_row(
-        &tr("Resume temperature", "Температура возобновления"),
-        "°C",
-        65.0,
-        40.0,
-        95.0,
-    );
-    gpu.add(&power);
-    gpu.add(&core_lock);
-    gpu.add(&core);
-    gpu.add(&memory_lock);
-    gpu.add(&memory);
-    gpu.add(&temp_limit);
-    gpu.add(&temp_resume);
-    {
-        let core_row = core.clone();
-        core_lock.connect_notify_local(Some("active"), move |row, _| {
-            core_row.set_sensitive(row.is_active());
-        });
-        let memory_row = memory.clone();
-        memory_lock.connect_notify_local(Some("active"), move |row, _| {
-            memory_row.set_sensitive(row.is_active());
-        });
-    }
-    page.add(&gpu);
 
     let actions = adw::PreferencesGroup::builder()
         .title(tr("Actions", "Действия"))
@@ -1149,11 +1088,6 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             poll,
             language,
             appearance,
-            power,
-            core_lock,
-            core,
-            memory_lock,
-            memory,
             temp_limit,
             temp_resume,
             diagnostics,
@@ -1372,8 +1306,9 @@ fn connect_signals(app: &Rc<App>) {
         button.connect_clicked(move |_| copy_diagnostics(&app));
     }
     {
-        // The simple-mode switch is part of the draft: apply it immediately so
-        // the advanced GPU table and the clock lock rows match the switch.
+        // The simple-mode switch is part of the draft. The tune dialog and the
+        // preset editor read the flag when they open, so nothing on this page
+        // has to be rebuilt.
         let app = app.clone();
         let simple_row = app.settings.simple_mode.clone();
         simple_row.connect_notify_local(Some("active"), move |row, _| {
@@ -1381,7 +1316,6 @@ fn connect_signals(app: &Rc<App>) {
                 return;
             }
             app.config.borrow_mut().behavior.simple_mode = row.is_active();
-            apply_simple_mode(&app);
             mark_dirty(&app);
         });
     }
@@ -1427,23 +1361,6 @@ fn connect_signals(app: &Rc<App>) {
         );
         let row = app.settings.language.clone();
         bind_language_draft(app, &row);
-    }
-    {
-        // The lock rows are only shown while their switch is on; without this
-        // the Settings page kept a disabled 1620/810 visible and looked as if
-        // the lock were configured.
-        let app = app.clone();
-        app.settings
-            .core_lock
-            .clone()
-            .connect_notify_local(Some("active"), move |_, _| apply_simple_mode(&app));
-    }
-    {
-        let app = app.clone();
-        app.settings
-            .memory_lock
-            .clone()
-            .connect_notify_local(Some("active"), move |_, _| apply_simple_mode(&app));
     }
     {
         // Appearance applies immediately; it is also part of the draft so it
@@ -2564,8 +2481,8 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     let profile_default = gtk::Button::builder()
         .label(tr("Profile default", "Профиль по умолчанию"))
         .tooltip_text(tr(
-            "Remove this card's override; it will follow Settings → GPU defaults",
-            "Убрать настройку этой карты; она будет следовать «GPU defaults»",
+            "Remove this card's override; it will follow the built-in profile (auto power, no clock locks)",
+            "Убрать настройку этой карты; останутся базовые значения профиля (авто-питание, без локов частот)",
         ))
         .css_classes(["flat"])
         .halign(gtk::Align::Fill)
@@ -2713,8 +2630,8 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     group.add(&source_hint);
     let global_hint = label(
         &tr(
-            "Temperature limit is global (Settings → GPU defaults); fan speed is a miner option in the preset editor.",
-            "Порог температуры — глобальный (Настройки → Настройки GPU); вентилятор — опция майнера в редакторе пресета.",
+            "Temperature limit is global (Settings → Behavior); fan speed is a miner option in the preset editor.",
+            "Порог температуры — глобальный (Настройки → Поведение); вентилятор — опция майнера в редакторе пресета.",
         ),
         &["caption", "dim-label"],
     );
@@ -3615,7 +3532,7 @@ fn finish_quick_setup(
                 tuning.enabled = card.row.enables_expansion();
                 tuning.power_limit_w = nonzero(card.power.value() as u32);
                 // Only an actual difference from the default is an override;
-                // otherwise the card keeps following Settings → GPU defaults.
+                // otherwise the card keeps following the profile defaults.
                 tuning.custom = was_custom
                     || tuning.power_limit_w != default_power
                     || tuning.enabled != default_enabled;
@@ -4174,27 +4091,6 @@ fn load_settings(app: &Rc<App>) {
         });
     if let Some(profile) = cfg.gpu_profile() {
         app.settings
-            .power
-            .set_value(profile.default.power_limit_w.unwrap_or(0) as f64);
-        app.settings
-            .core_lock
-            .set_active(profile.default.core_clock_mhz.is_some());
-        app.settings
-            .core
-            .set_value(profile.default.core_clock_mhz.unwrap_or(1620) as f64);
-        app.settings
-            .core
-            .set_sensitive(profile.default.core_clock_mhz.is_some());
-        app.settings
-            .memory_lock
-            .set_active(profile.default.memory_clock_mhz.is_some());
-        app.settings
-            .memory
-            .set_value(profile.default.memory_clock_mhz.unwrap_or(810) as f64);
-        app.settings
-            .memory
-            .set_sensitive(profile.default.memory_clock_mhz.is_some());
-        app.settings
             .temp_limit
             .set_value(profile.default.temp_limit_c as f64);
         app.settings
@@ -4209,14 +4105,6 @@ fn apply_appearance(appearance: Appearance) {
         Appearance::Light => adw::ColorScheme::ForceLight,
         Appearance::Dark => adw::ColorScheme::ForceDark,
     });
-}
-
-fn apply_simple_mode(app: &Rc<App>) {
-    let simple = app.config.borrow().behavior.simple_mode;
-    app.settings.core_lock.set_visible(!simple);
-    app.settings.memory_lock.set_visible(!simple);
-    sync_lock_row(&app.settings.core_lock, &app.settings.core, !simple);
-    sync_lock_row(&app.settings.memory_lock, &app.settings.memory, !simple);
 }
 
 fn save_settings(app: &Rc<App>) {
@@ -4238,17 +4126,6 @@ fn save_settings(app: &Rc<App>) {
         _ => Appearance::System,
     };
     let profile = cfg.gpu_profile_mut();
-    profile.default.power_limit_w = nonzero(app.settings.power.value() as u32);
-    profile.default.core_clock_mhz = if app.settings.core_lock.is_active() {
-        nonzero(app.settings.core.value() as u32)
-    } else {
-        None
-    };
-    profile.default.memory_clock_mhz = if app.settings.memory_lock.is_active() {
-        nonzero(app.settings.memory.value() as u32)
-    } else {
-        None
-    };
     profile.default.temp_limit_c = app.settings.temp_limit.value() as u32;
     profile.default.temp_resume_c = app.settings.temp_resume.value() as u32;
     set_autostart_unit(app.settings.start_login.is_active());
@@ -4367,7 +4244,6 @@ fn handle_event(app: &Rc<App>, event: Ev) {
                 if !app.dirty.get() {
                     *app.config.borrow_mut() = cfg;
                     load_settings(app);
-                    apply_simple_mode(app);
                     refresh_preset_list(app);
                     refresh_miners(app);
                 }

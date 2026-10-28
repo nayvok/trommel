@@ -77,8 +77,7 @@ the error is shown.
 
 A preset bundles coin/algorithm (Pearl/pearlhash in the current catalogue),
 pool, wallet, worker, miner version and miner options. GPU settings are edited
-on each card's **Tune** dialog (global defaults in **Settings → GPU defaults**),
-not in the preset editor. A preset references a miner **version**,
+on each card's **Tune** dialog, not in the preset editor. A preset references a miner **version**,
 not a path. Installing a version once makes every preset that references it see
 the version as installed. If a preset references a missing version, Start is
 blocked until you install it or switch to an installed version. There is no
@@ -120,11 +119,10 @@ before the catalogue was updated, type the version and paste the upstream URL.
 ![Settings](images/settings-en-dark.png)
 
 - **Behavior** — restart on crash, restore stock on stop (on by default),
-  notifications, start mining at login, simple mode, poll interval, language
-  (needs an app restart) and appearance.
-- **GPU defaults** — power limit (`0 = driver auto`), optional core/memory clock
-  locks, temperature limit and resume temperature. Cards without their own
-  override inherit these values.
+  notifications, temperature limit and resume temperature (global: they drive
+  the overheat warning and are passed to miners that support a limit), start
+  mining at login, simple mode, poll interval, language (needs an app restart)
+  and appearance.
 - **Actions** — **Save and apply**, **Copy diagnostics** (redacted), **Restore
   stock**.
 
@@ -134,10 +132,9 @@ single card's override; Settings no longer repeats the card list.
 ## Clock locks (advanced)
 
 Core and memory clock locks are opt-in and off in a fresh profile. Turn off
-**Simple mode** to see them in **Settings → GPU defaults** and in each card's
-**Tune** dialog.
+**Simple mode** to see them in each card's **Tune** dialog.
 
-![Advanced GPU settings](images/settings-advanced-en-dark.png)
+![Settings actions](images/settings-advanced-en-dark.png)
 
 The tuning dialog starts with a **Now** row so you can compare the target with
 the live state. A clock value row is visible only while its lock switch is on.
@@ -209,9 +206,9 @@ best-effort stock restore.
 - A profile with no power/clock values touches nothing: Start needs no snapshot,
   no helper and no password, so a pure stock profile can keep restore-on-stop
   enabled.
-- Per-card settings inherit the **GPU defaults** unless the card has a custom
-  override. The setup wizard and the enable switch do not create an override;
-  **Tune → Save** does. Each dashboard card shows “custom” or “profile default”.
+- Per-card settings inherit the profile defaults (driver-auto power, no clock
+  locks) unless the card has a custom override. The setup wizard and the enable
+  switch do not create an override; **Tune → Save** does. Each dashboard card shows “custom” or “profile default”.
 - Fan control on consumer cards is not available through `nvidia-smi`; fan flags
   are passed to the miner when supported and disappear with the process.
 - On reboot the snapshot is marked stale and is not used; Start captures a fresh

@@ -42,7 +42,7 @@ not a claim that CI covers it.
 | Presets | row, chevron, New preset, Use | Editor opens; chevron is a real button; Use applies the selection |
 | Preset editor | Save, Cancel, Duplicate, Delete…, Install… | Apply, confirmation, shared install dialog |
 | Miners | row, chevron, benchmark, install dialog | Installed state, cancel, sequential benchmark with a winner |
-| Settings | switches, power 0=auto, Save and apply, Copy diagnostics, Restore stock | Aligned pill buttons, live apply, redaction, restore dialog with snapshot/defaults targets, stop-first guard |
+| Settings | switches, temperature limit/resume, Save and apply, Copy diagnostics, Restore stock | Aligned pill buttons, live apply, redaction, restore dialog with snapshot/defaults targets, stop-first guard |
 | GPU tune | Now row, **⋯** menu (Recommended / Profile default), Save, locks on/off, Similar/All GPUs | Value rows hidden while off; Apply-to only with >1 GPU; restart/stop dialog |
 | Alerts | Apply and restart / Apply and stop / Cancel, delete confirmation | Explicit restart/stop; Cancel reverts optimistic changes |
 | Errors | force a long daemon error | Toast shows **Details**; the dialog text is selectable and **Copy** puts it on the clipboard |

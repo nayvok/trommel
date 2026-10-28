@@ -154,7 +154,7 @@ Every coloured value has a word next to it (“installed”, “not installed”
 | Dashboard | page | switcher | Hero hashrate, GPU cards, totals, shares, pool, warnings |
 | Presets | page | switcher | Preset list; rows open the editor |
 | Miners | page | switcher | Catalogue, installed versions, install dialog, benchmark |
-| Settings | page | switcher | Behaviour, appearance, GPU defaults, actions |
+| Settings | page | switcher | Behaviour, appearance, actions |
 | Preset editor | modal | preset row / New preset | One preset: miner, version, pool, wallet, fees, options |
 | Miner install | modal | Miners row, editor, wizard | Version pick, HTTPS download, local import |
 | GPU tuning | modal | Dashboard card | Per-card power/clocks; copy to similar/all |
@@ -243,14 +243,11 @@ The catalogue is a convenience, not a gate. Never add a second install UI.
 
 Groups, in order:
 
-1. **Behavior** — restart on crash, restore stock on stop, notifications, start
-   at login, simple mode, poll interval, language (restart required),
-   appearance (immediate).
-2. **GPU defaults** — power limit (`0 = driver auto`), optional core lock,
-   optional memory lock, temperature limit/resume. Lock value rows are visible
-   only while the corresponding switch is on. Cards without a custom override
-   inherit these values; the description says so.
-3. **Actions** — **Save and apply**, **Copy diagnostics**, **Restore stock**.
+1. **Behavior** — restart on crash, restore stock on stop, notifications,
+   temperature limit and resume temperature (global; one miner process gets one
+   temperature policy), start at login, simple mode, poll interval, language
+   (restart required), appearance (immediate).
+2. **Actions** — **Save and apply**, **Copy diagnostics**, **Restore stock**.
    Buttons stay vertically centred in their rows. **Restore stock** asks first:
    snapshot target, or the driver default when it differs; a pre-existing tuned
    limit and the last restore error are explained. **Restore stock** opens a

@@ -13,6 +13,15 @@ Changelog; versions use SemVer.
   extension was removed. The `Notification` D-Bus signal is still emitted for
   integrations that want to render their own alert.
 
+### Changed
+
+- **Settings no longer carries a separate “GPU defaults” group.** Power limits
+  and clock locks are GPU state, so they are edited per card in **Tune**; the
+  profile default is only the built-in base (driver-auto power, no clock locks)
+  that non-custom cards inherit. The global **Temperature limit** and
+  **Resume temperature** rows moved to **Behavior** — they drive the overheat
+  warning and are passed to miners that support a temperature limit.
+
 ### Removed
 
 - **The GNOME Shell extension and its shared GSettings schema.** The applet,
@@ -37,7 +46,7 @@ Changelog; versions use SemVer.
   loop keeps serving the last document while authorization is pending.
 - **A per-GPU entry no longer shadows the default profile.** Schema v3 adds
   `custom`: entries created by the setup wizard or the GPU enable switch inherit
-  power/clocks/temperature from *Settings → GPU defaults*; only the tuning
+  power/clocks/temperature from the profile default; only the tuning
   dialog creates a custom override. v2 configs are migrated automatically.
 - **Stop and Restore now tell the truth.** With `restore_stock_on_stop=false`
   Stop keeps the snapshot and reports `oc.needs_restore`; the dashboard shows a
