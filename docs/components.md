@@ -414,14 +414,14 @@ executes commands. It never blocks the GTK main loop.
 
 | Function | Surface |
 | --- | --- |
-| `build_ui` | Window, header, single `AdwViewSwitcherBar`, four pages, banner |
-| dashboard block in `build_ui` | Hero card, GPU flow, totals, shares, pool, warnings |
+| `build_ui` | Window, header view switcher, four pages, banners, `AdwDialog` host |
+| dashboard block in `build_ui` | Hero card, GPU `AdwWrapBox`, totals, shares, pool, warnings |
 | `build_presets_page` / `refresh_preset_list` | Preset list; rows open the editor |
 | `build_miners_page` / `refresh_miners` | Miner catalogue, install state, benchmark button |
 | `build_settings_page` / `load_settings` / `save_settings` | Behaviour (incl. the global temperature policy), appearance, actions |
-| `preset_editor_dialog` | Modal preset editor (save/cancel/duplicate/delete/install) |
+| `preset_editor_dialog` | Preset editor `AdwDialog` (save/cancel/duplicate/delete/install) |
 | `miner_install_dialog` | The only miner install UI (catalogue, custom version, download, import) |
-| `gpu_tune_dialog` | Per-card tuning, “Now” row, copy to similar/all GPUs |
+| `gpu_tune_dialog` | Per-card tuning `AdwDialog`, “Now” row, copy to similar/all GPUs |
 | `quick_setup_wizard` | Three-step first-run flow (cards → miner → wallet) |
 | `save_and_apply_with` | Diff + restart/stop alert; `on_cancel` restores optimistic changes |
 | `apply_status` | Renders a `Status` into every widget, including empty states |

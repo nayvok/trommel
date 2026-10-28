@@ -35,7 +35,7 @@ not a claim that CI covers it.
 | Surface | Action | Expected |
 | --- | --- | --- |
 | Dashboard | Refresh, Start/Stop, GPU include switch, Tune | Live status; Cancel in the alert restores the switch and the dirty banner; Start is disabled with every GPU off |
-| Dashboard layout | one GPU, then two GPUs | One card spans the row with a 3×2 bubble grid; two cards return to compact 240 px tiles |
+| Dashboard layout | one GPU, then two GPUs | One card spans the row with a 3×2 bubble grid; two cards split the row evenly; three or more wrap |
 | Dashboard | stopped state | `0 TH/s`, numeric pool balance, configured endpoint named, no lone dashes |
 | Quick setup | Cancel, Next, Back, Apply 80 %, Use auto, Start mining | Three steps, validation, per-card values, start only after confirmation |
 | First run | Start with no wallet/miner | Opens Quick setup; miner marked not installed; single-GPU tune has no “Apply to” |
@@ -47,7 +47,7 @@ not a claim that CI covers it.
 | Alerts | Apply and restart / Apply and stop / Cancel, delete confirmation | Explicit restart/stop; Cancel reverts optimistic changes |
 | Errors | force a long daemon error | Toast shows **Details**; the dialog text is selectable and **Copy** puts it on the clipboard |
 | Menu | Open log, About, Quit | Opens the log/about, quits with `Ctrl+Q` |
-| Window | resize to ~400 px | No clipping; GPU value bubbles and action buttons readable |
+| Window | resize to ~400 px | No clipping; GPU value bubbles and action buttons readable; the header switcher falls back to the title and the bar at the bottom |
 | Notifications | A crash/error or an overheat event with **Behavior → Notifications** on | A desktop notification appears from `trommeld`; no shell extension is installed |
 | Installer | `install.sh`, `.deb` postinst, release installer | Binaries, helper, rule, units, no password prompt for the installing user |
 | Real rig | polkit prompt-free, 300 W/1620/810, start/stop, restore dialog | OC applied, ~125 TH/s, power read back, stock restore; an ignored memory lock stops the miner with a named error |
@@ -70,8 +70,8 @@ not a claim that CI covers it.
 - `AdwSpinRow` spinners are not exposed as AT-SPI values, so the UI smoke forces
   a profile change through the core-lock switch instead of typing a number.
 - Native file choosers and the About dialog are manual.
-- A destroyed modal frame can linger in the AT-SPI tree after Cancel; the same
-  click closes the window in the manual check.
+- A closed dialog can linger in the AT-SPI tree after Cancel; the same click
+  dismisses it in the manual check.
 - The screenshot test needs a display; it fails with a clear error rather than
   writing a blank PNG.
 - There is no `/dev/nvidia*` in the sandbox used for development; e2e always uses

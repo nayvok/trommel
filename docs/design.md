@@ -20,7 +20,7 @@ It should feel like a quiet system utility:
 - **Progressive disclosure.** Simple mode shows power, temperature and Start.
   Advanced controls exist but do not compete with the first run.
 - **One place per job.** Miner installation has one dialog; a preset has one
-  editor; the one navigation surface is the bottom switcher.
+  editor; navigation is one view switcher in the header bar.
 - **No lies.** A disabled control says why; a failed restore is reported; a
   fee that cannot change is shown read-only; an unapplied draft is visible.
 
@@ -32,7 +32,8 @@ It should feel like a quiet system utility:
 - The UI is built from libadwaita preferences widgets (`AdwPreferencesPage`,
   `AdwPreferencesGroup`, `AdwActionRow`, `AdwSpinRow`, `AdwSwitchRow`,
   `AdwComboRow`, `AdwBanner`, `AdwToastOverlay`, `AdwAlertDialog`,
-  `AdwViewStack`, `AdwViewSwitcherBar`, `AdwClamp`, `AdwToolbarView`).
+  `AdwViewStack`, `AdwViewSwitcherTitle`, `AdwViewSwitcherBar`, `AdwClamp`,
+  `AdwToolbarView`, `AdwWrapBox`, `AdwDialog`).
 - No custom navigation model, no page-swapping main window, no web view.
 
 ## Visual system
@@ -54,11 +55,11 @@ overrides it for screenshots and tests.
 
 | Constant | Value |
 | --- | --- |
-| Default window | 680 × 760 |
+| Default window | 1080 × 760 |
 | Minimum window | 400 × 420 |
 | Dashboard content clamp | 900 px (cards widen beyond the reading column) |
 | Dashboard margins | 18 px top, 24 px bottom, 12 px sides |
-| GPU flow | 1–3 columns, 10 px gaps, homogeneous cells |
+| GPU cards | `AdwWrapBox` with fill justify, 10 px gaps, 240 px minimum |
 | Page transition | `AdwViewStack`, 220 ms |
 | Preferences reading width | libadwaita default (~600 px) |
 
@@ -132,33 +133,37 @@ Every coloured value has a word next to it (“installed”, “not installed”
 ## Navigation
 
 1. **The main window never swaps its content for a sub-screen.** Secondary
-   surfaces are modal windows that block the main window, like the Nautilus
-   preferences dialog. There are no “Back” buttons inside pages.
-2. **One navigation surface.** A single `AdwViewSwitcherBar` at the bottom.
-   The header keeps the app title and actions; the switcher is never duplicated
-   at the top and never disappears on a narrow window.
-3. **Wizards are the only Back/Next surfaces.** They are modal and keep
+   surfaces are modal `AdwDialog`s presented inside the main window, like the
+   Nautilus preferences dialog. There are no “Back” buttons inside pages.
+2. **One navigation surface.** An `AdwViewSwitcherTitle` in the header bar:
+   the four pages are the title widget while the window is wide enough to show
+   their icons and labels. When it is not, the title returns and the
+   `AdwViewSwitcherBar` reveals itself at the bottom, so the switcher is never
+   clipped and never duplicated. The default window is wide enough for the
+   header form.
+3. **Wizards are the only Back/Next surfaces.** They are modal dialogs and keep
    Cancel/close in the header on every step.
 4. **A page is a place you return to, not a step in a flow.** Drilling down
    always opens a dialog; closing it leaves the page as it was.
 5. **Destructive or restart-triggering actions ask first** with an
    `AdwAlertDialog`: apply/restart while mining, delete a preset, overwrite a
    profile.
-6. **Keyboard:** `Ctrl+Q` quits; `Esc` closes modal windows and dialogs.
+6. **Keyboard:** `Ctrl+Q` quits; `Esc` closes dialogs. Dialog headers drop the
+   automatic close button when they already carry an explicit Cancel/Close.
 
 ## Surface inventory
 
 | Surface | Kind | Opened from | Purpose |
 | --- | --- | --- | --- |
-| Main window | `AdwApplicationWindow` | app start | Header (refresh, Start/Stop, menu), four pages, unsaved-changes banner |
-| Dashboard | page | switcher | Hero hashrate, GPU cards, totals, shares, pool, warnings |
-| Presets | page | switcher | Preset list; rows open the editor |
-| Miners | page | switcher | Catalogue, installed versions, install dialog, benchmark |
-| Settings | page | switcher | Behaviour, appearance, actions |
-| Preset editor | modal | preset row / New preset | One preset: miner, version, pool, wallet, fees, options |
-| Miner install | modal | Miners row, editor, wizard | Version pick, HTTPS download, local import |
-| GPU tuning | modal | Dashboard card | Per-card power/clocks; copy to similar/all |
-| Quick setup | modal | Quick setup button / Start on a pristine install | Cards → miner → wallet → start |
+| Main window | `AdwApplicationWindow` | app start | Header (view switcher, refresh, Start/Stop, menu), four pages, banners |
+| Dashboard | page | view switcher | Hero hashrate, GPU cards, totals, shares, pool, warnings |
+| Presets | page | view switcher | Preset list; rows open the editor |
+| Miners | page | view switcher | Catalogue, installed versions, install dialog, benchmark |
+| Settings | page | view switcher | Behaviour, appearance, actions |
+| Preset editor | `AdwDialog` | preset row / New preset | One preset: miner, version, pool, wallet, fees, options |
+| Miner install | `AdwDialog` | Miners row, editor, wizard | Version pick, HTTPS download, local import |
+| GPU tuning | `AdwDialog` | Dashboard card | Per-card power/clocks; copy to similar/all |
+| Quick setup | `AdwDialog` | Quick setup button / Start on a pristine install | Cards → miner → wallet → start |
 | Apply alert | `AdwAlertDialog` | apply while mining | Apply and restart / apply and stop / cancel |
 | Delete-preset alert | `AdwAlertDialog` | preset editor | Destructive confirmation |
 | About / log / file chooser | platform | menu, installer | Standard surfaces |
@@ -176,9 +181,9 @@ Every coloured value has a word next to it (“installed”, “not installed”
   active profile, six value bubbles (power, core, memory, temperature, fan,
   load; the configured target/lock is a small hint and turns hot when the live
   value differs), a custom/default chip and a **Tune** button. A one-GPU rig
-  uses a single full-width card with a 3×2 bubble grid; 2+ cards keep the
-  compact 1–3 column flow of 240 px tiles. Core and memory clocks are labelled
-  separately.
+  uses a single full-width card with a 3×2 bubble grid; 2+ cards go into a wrap
+  box and split the row evenly (240 px minimum per card). Core and memory
+  clocks are labelled separately.
 - Aggregate rows: total power, max temperature, accepted/rejected shares, pool
   balance, the configured pool endpoint with its fee, and warnings.
 - When stopped, show **numeric placeholders** (`0 TH/s`, `0.000 PRL` or `0 PRL`
@@ -199,8 +204,8 @@ Every coloured value has a word next to it (“installed”, “not installed”
 
 ### Preset editor (modal)
 
-- Header: title, **Cancel**, **Save**. Body scrolls; footer holds **Duplicate**
-  and **Delete…**.
+- Header: title, **Cancel**, **Save** (no second close button). Body scrolls;
+  footer holds **Duplicate** and **Delete…**.
 - Sections: identity (name), miner/version + **Install…**, pool and address,
   wallet/worker, fees (miner read-only unless the catalogue allows an override;
   pool fee editable), miner options, extra arguments. The coin/algorithm and the
@@ -271,7 +276,7 @@ Rules:
 ### GPU tuning (modal)
 
 - Header: card name + **GPU tuning**; a **⋯** menu with **Recommended** and
-  **Profile default**, and **Save** (the window control closes without saving).
+  **Profile default**, and **Save** (the close button dismisses without saving).
 - A **Now** row shows live power/core/memory/temperature so the target can be
   compared with reality.
 - Power limit, core lock + value, memory lock + value. A clock row appears only
@@ -381,8 +386,11 @@ two-GPU rig with deterministic XDG directories. Conventions:
   Settings switches write into the draft as they are toggled, so the global
   unsaved-changes banner and the Settings **Save and apply** button behave the
   same.
-- New dialogs must be modal, close on `Esc`, and keep their actions in the
-  header (Cancel) plus a footer for destructive/secondary actions.
+- New dialogs are `AdwDialog`, never a separate `GtkWindow`: they inherit the
+  window style and use libadwaita's spring presentation instead of the
+  compositor's window-open animation. They must be modal, close on `Esc`, and
+  keep their actions in the header (Cancel) plus a footer for
+  destructive/secondary actions.
 - Shared UI primitives: `label()`, `spin_row()`, `switch_row()`, `sync_lock_row()`,
   `gpu_stat()`, `gpu_chip()`, `set_status_text()`, `string_list()`, `clear_box()`,
   `clear_flow()`. Reuse them rather than duplicating styling.

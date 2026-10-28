@@ -474,7 +474,10 @@ fn build_ui(app: &adw::Application) {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Trommel")
-        .default_width(680)
+        // Wide enough for the header view switcher (icon + label per page) in
+        // both shipped locales at the default size; narrower windows fall back
+        // to the switcher bar. Russian labels are the wider case.
+        .default_width(1080)
         .default_height(760)
         .build();
     window.set_size_request(400, 420);
@@ -496,17 +499,29 @@ fn build_ui(app: &adw::Application) {
     stack.set_transition_duration(220);
     toast.set_child(Some(&stack));
 
-    let title = adw::WindowTitle::new(
-        "Trommel",
-        &tr("NVIDIA mining rig manager", "Менеджер NVIDIA-рига"),
-    );
-    // One navigation surface, always available: the bottom switcher bar. The
-    // header keeps the window title, so the switcher can never be duplicated
-    // at the top and disappear at the bottom on narrow windows.
+    // Top-level navigation lives in the header bar: the four views are the
+    // primary destinations, so the switcher is the title widget. It falls back
+    // to the app title when the window is too narrow for the labels, and only
+    // then the switcher bar reveals itself at the bottom. That is the stock
+    // libadwaita adaptive pattern and keeps a single visible navigation
+    // surface at any width. (AdwViewSwitcherTitle is deprecated since 1.4 in
+    // favour of hand-wired AdwBreakpoint setters; it still is the concise
+    // implementation of exactly this behaviour.)
+    let title = adw::ViewSwitcherTitle::builder()
+        .stack(&stack)
+        .title("Trommel")
+        .subtitle(tr("NVIDIA mining rig manager", "Менеджер NVIDIA-рига"))
+        .build();
     let switcher_bar = adw::ViewSwitcherBar::builder().stack(&stack).build();
-    switcher_bar.set_reveal(true);
+    {
+        let switcher_bar = switcher_bar.clone();
+        title.connect_notify_local(Some("title-visible"), move |title, _| {
+            switcher_bar.set_reveal(title.is_title_visible());
+        });
+    }
 
     let header = adw::HeaderBar::new();
+    header.set_centering_policy(adw::CenteringPolicy::Strict);
     header.set_title_widget(Some(&title));
 
     let refresh = gtk::Button::builder()
@@ -1521,32 +1536,22 @@ fn show_error_toast(app: &Rc<App>, message: &str) {
 }
 
 fn show_error_details(app: &Rc<App>, message: &str) {
-    let window = adw::Window::builder()
+    // An AdwDialog, not a window: it lives inside the main window, inherits the
+    // app style and uses libadwaita's spring presentation (the same bounce as
+    // the alert dialogs) instead of the compositor's window-open scale.
+    let dialog = adw::Dialog::builder()
         .title(tr("Error details", "Подробности ошибки"))
-        .modal(true)
-        .transient_for(&app.window)
-        .default_width(560)
-        .default_height(320)
+        .content_width(560)
+        .content_height(320)
         .build();
     let header = adw::HeaderBar::new();
+    // The explicit Close button is the only dismiss control; the automatic
+    // dialog-title close would duplicate it.
+    header.set_show_end_title_buttons(false);
     let copy = gtk::Button::with_label(&tr("Copy", "Копировать"));
     let close = gtk::Button::with_label(&tr("Close", "Закрыть"));
     header.pack_end(&copy);
     header.pack_end(&close);
-    window.set_titlebar(Some(&header));
-    {
-        let window_for_key = window.clone();
-        let key = gtk::EventControllerKey::new();
-        key.connect_key_pressed(move |_, key, _, _| {
-            if key == gdk::Key::Escape {
-                window_for_key.close();
-                glib::Propagation::Stop
-            } else {
-                glib::Propagation::Proceed
-            }
-        });
-        window.add_controller(key);
-    }
     let view = gtk::TextView::builder()
         .editable(false)
         .cursor_visible(false)
@@ -1562,10 +1567,15 @@ fn show_error_details(app: &Rc<App>, message: &str) {
         .hexpand(true)
         .vexpand(true)
         .build();
-    window.set_content(Some(&scroll));
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&scroll));
+    dialog.set_child(Some(&toolbar));
     {
-        let window = window.clone();
-        close.connect_clicked(move |_| window.close());
+        let dialog = dialog.clone();
+        close.connect_clicked(move |_| {
+            dialog.close();
+        });
     }
     {
         let copy_button = copy.clone();
@@ -1577,7 +1587,7 @@ fn show_error_details(app: &Rc<App>, message: &str) {
             copy_button.set_label(&tr("Copied", "Скопировано"));
         });
     }
-    window.present();
+    dialog.present(Some(&app.window));
 }
 
 fn pool_names() -> Vec<String> {
@@ -1845,12 +1855,10 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     };
     let simple = app.config.borrow().behavior.simple_mode;
 
-    let window = gtk::Window::builder()
+    let dialog = adw::Dialog::builder()
         .title(tr("Preset", "Пресет"))
-        .modal(true)
-        .transient_for(&app.window)
-        .default_width(600)
-        .default_height(700)
+        .content_width(600)
+        .content_height(700)
         .build();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(
@@ -1859,12 +1867,12 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     )));
     let cancel = gtk::Button::with_label(&tr("Cancel", "Отмена"));
     header.pack_start(&cancel);
+    header.set_show_end_title_buttons(false);
     let save = gtk::Button::builder()
         .label(tr("Save", "Сохранить"))
         .css_classes(["suggested-action", "pill"])
         .build();
     header.pack_end(&save);
-    window.set_titlebar(Some(&header));
 
     let page = adw::PreferencesPage::new();
 
@@ -1996,7 +2004,10 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     actions.append(&delete);
     actions_group.add(&actions);
     page.add(&actions_group);
-    window.set_child(Some(&page));
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&page));
+    dialog.set_child(Some(&toolbar));
 
     let options: Rc<RefCell<Vec<OptionRow>>> = Rc::new(RefCell::new(Vec::new()));
     preset_editor_versions(app, &miner, &version, &base.miner_version);
@@ -2097,7 +2108,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     }
     {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
         let id = id.to_string();
         let name = name.clone();
         let pool = pool.clone();
@@ -2153,39 +2164,41 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
             mark_dirty(&app);
             refresh_preset_list(&app);
             refresh_miners(&app);
-            window.close();
+            dialog.close();
             save_and_apply(&app);
         });
     }
     {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
         let id = id.to_string();
         duplicate.connect_clicked(move |_| {
             if let Some(new_id) = duplicate_preset(&app, &id) {
-                window.close();
+                dialog.close();
                 preset_editor_dialog(&app, &new_id);
             }
         });
     }
     {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
         let id = id.to_string();
-        delete.connect_clicked(move |_| delete_preset(&app, &window, &id));
+        delete.connect_clicked(move |_| delete_preset(&app, &dialog, &id));
     }
     {
-        let window = window.clone();
-        cancel.connect_clicked(move |_| window.close());
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| {
+            dialog.close();
+        });
     }
-    window.present();
+    dialog.present(Some(&app.window));
     if let Some(path) = std::env::var_os("TROMMEL_PRESET_SCREENSHOT") {
         let path = path.to_string_lossy().into_owned();
-        let capture = window.clone();
+        let capture = app.window.clone();
         let application = app.window.application();
         glib::timeout_add_seconds_local(2, move || {
             if let Some(application) = application.clone() {
-                schedule_window_screenshot(capture.clone(), path.clone(), application, 0);
+                schedule_screenshot(capture.clone(), path.clone(), application, 0);
             }
             glib::ControlFlow::Break
         });
@@ -2242,15 +2255,25 @@ fn duplicate_preset(app: &Rc<App>, id: &str) -> Option<String> {
     Some(new_id)
 }
 
-fn delete_preset(app: &Rc<App>, window: &gtk::Window, id: &str) {
+fn delete_preset(app: &Rc<App>, editor: &adw::Dialog, id: &str) {
     let Some(preset) = app.config.borrow().presets.get(id).cloned() else {
         return;
     };
     if app.config.borrow().presets.len() <= 1 {
-        app.toast.add_toast(adw::Toast::new(&tr(
-            "At least one preset is required.",
-            "Нужен хотя бы один пресет.",
-        )));
+        // A toast would be painted behind the modal dialog, so say it in place.
+        let alert = adw::AlertDialog::builder()
+            .heading(tr(
+                "At least one preset is required",
+                "Нужен хотя бы один пресет",
+            ))
+            .body(tr(
+                "Create another preset first, then delete this one.",
+                "Сначала создайте другой пресет, потом удаляйте этот.",
+            ))
+            .build();
+        alert.add_response("close", &tr("Close", "Закрыть"));
+        alert.set_close_response("close");
+        alert.present(Some(&app.window));
         return;
     }
     let dialog = adw::AlertDialog::builder()
@@ -2270,8 +2293,8 @@ fn delete_preset(app: &Rc<App>, window: &gtk::Window, id: &str) {
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
     dialog.set_close_response("cancel");
     let app = app.clone();
-    let window = window.clone();
-    let parent = window.clone();
+    let editor = editor.clone();
+    let parent = app.window.clone();
     let id = id.to_string();
     dialog.choose(Some(&parent), None::<&gio::Cancellable>, move |response| {
         if response != "delete" {
@@ -2286,7 +2309,7 @@ fn delete_preset(app: &Rc<App>, window: &gtk::Window, id: &str) {
         }
         mark_dirty(&app);
         refresh_preset_list(&app);
-        window.close();
+        editor.close();
     });
 }
 
@@ -2453,11 +2476,9 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         }
     };
 
-    let window = gtk::Window::builder()
+    let dialog = adw::Dialog::builder()
         .title(format!("{name} · {}", tr("GPU tuning", "Настройка GPU")))
-        .modal(true)
-        .transient_for(&app.window)
-        .default_width(540)
+        .content_width(540)
         .build();
     let header = adw::HeaderBar::new();
     let title = label(&format!("GPU #{} · {name}", gpu.index), &["heading"]);
@@ -2507,7 +2528,6 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         .build();
     header.pack_end(&save);
     header.pack_end(&presets);
-    window.set_titlebar(Some(&header));
     let page = adw::PreferencesPage::new();
 
     let group = adw::PreferencesGroup::builder()
@@ -2685,7 +2705,10 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     }
     let apply_similar = apply_similar;
     let apply_all = apply_all;
-    window.set_child(Some(&page));
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&page));
+    dialog.set_child(Some(&toolbar));
 
     {
         let power_row = power.clone();
@@ -2738,7 +2761,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     }
     {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
         let uuid = uuid.clone();
         profile_default.connect_clicked(move |_| {
             {
@@ -2747,7 +2770,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
                 profile.per_gpu.remove(&uuid);
             }
             mark_dirty(&app);
-            window.close();
+            dialog.close();
             app.toast.add_toast(adw::Toast::new(&tr(
                 "Card follows the profile default again",
                 "Карта снова использует профиль по умолчанию",
@@ -2757,7 +2780,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     }
     {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
         let uuid = uuid.clone();
         let same_uuids = same_uuids.clone();
         let all_uuids = all_uuids.clone();
@@ -2805,7 +2828,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
                 }
             }
             mark_dirty(&app);
-            window.close();
+            dialog.close();
             app.toast.add_toast(adw::Toast::new(&format!(
                 "{}: {}",
                 tr(
@@ -2817,14 +2840,14 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
             save_and_apply(&app);
         });
     }
-    window.present();
+    dialog.present(Some(&app.window));
     if let Some(path) = std::env::var_os("TROMMEL_TUNE_SCREENSHOT") {
         let path = path.to_string_lossy().into_owned();
-        let capture = window.clone();
+        let capture = app.window.clone();
         let application = app.window.application();
         glib::timeout_add_seconds_local(2, move || {
             if let Some(application) = application.clone() {
-                schedule_window_screenshot(capture.clone(), path.clone(), application, 0);
+                schedule_screenshot(capture.clone(), path.clone(), application, 0);
             }
             glib::ControlFlow::Break
         });
@@ -2970,16 +2993,10 @@ fn quick_setup_wizard(app: &Rc<App>) {
         )
     };
 
-    let mut builder = gtk::Window::builder()
+    let dialog = adw::Dialog::builder()
         .title(tr("Quick setup", "Быстрая настройка"))
-        .modal(true)
-        .transient_for(&app.window)
-        .default_width(620)
-        .default_height(680);
-    if let Some(application) = app.window.application() {
-        builder = builder.application(&application);
-    }
-    let window = builder.build();
+        .content_width(620)
+        .build();
     let header = adw::HeaderBar::new();
     let step_label = label(&tr("Step 1 of 3", "Шаг 1 из 3"), &["caption", "dim-label"]);
     step_label.set_halign(gtk::Align::Center);
@@ -2994,7 +3011,6 @@ fn quick_setup_wizard(app: &Rc<App>) {
     header.set_title_widget(Some(&step_label));
     header.pack_start(&back);
     header.pack_end(&next);
-    window.set_titlebar(Some(&header));
 
     let stack = gtk::Stack::new();
     stack.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
@@ -3304,11 +3320,14 @@ fn quick_setup_wizard(app: &Rc<App>) {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&stack);
     content.append(&status);
-    window.set_child(Some(&content));
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&content));
+    dialog.set_child(Some(&toolbar));
 
     let step = Rc::new(Cell::new(0u32));
     {
-        let window = window.clone();
+        let dialog = dialog.clone();
         let step = step.clone();
         let stack = stack.clone();
         let step_label = step_label.clone();
@@ -3317,7 +3336,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
         let status = status.clone();
         back.connect_clicked(move |_| {
             if step.get() == 0 {
-                window.close();
+                dialog.close();
                 return;
             }
             step.set(step.get() - 1);
@@ -3333,7 +3352,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
     }
     {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
         let step = step.clone();
         let stack = stack.clone();
         let step_label = step_label.clone();
@@ -3378,7 +3397,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
             _ => {
                 finish_quick_setup(
                     &app,
-                    &window,
+                    &dialog,
                     &cards,
                     &miner_row,
                     &version_row,
@@ -3404,14 +3423,14 @@ fn quick_setup_wizard(app: &Rc<App>) {
             show_setup_step(initial, &stack, &step_label, &back, &next, &status);
         }
     }
-    window.present();
+    dialog.present(Some(&app.window));
     if let Some(path) = std::env::var_os("TROMMEL_WIZARD_SCREENSHOT") {
         let path = path.to_string_lossy().into_owned();
-        let capture = window.clone();
+        let capture = app.window.clone();
         let application = app.window.application();
         glib::timeout_add_seconds_local(3, move || {
             if let Some(application) = application.clone() {
-                schedule_window_screenshot(capture.clone(), path.clone(), application, 0);
+                schedule_screenshot(capture.clone(), path.clone(), application, 0);
             }
             glib::ControlFlow::Break
         });
@@ -3422,7 +3441,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
 #[allow(clippy::too_many_arguments)]
 fn finish_quick_setup(
     app: &Rc<App>,
-    window: &gtk::Window,
+    dialog: &adw::Dialog,
     cards: &Rc<RefCell<Vec<SetupCard>>>,
     miner_row: &adw::ComboRow,
     version_row: &adw::ComboRow,
@@ -3542,7 +3561,7 @@ fn finish_quick_setup(
     }
     mark_dirty(app);
     refresh_preset_list(app);
-    window.close();
+    dialog.close();
     app.stack.set_visible_child_name("dashboard");
     if running {
         app.toast.add_toast(adw::Toast::new(&tr(
@@ -3618,11 +3637,9 @@ fn miner_install_dialog(
         }
     }
 
-    let window = gtk::Window::builder()
+    let dialog = adw::Dialog::builder()
         .title(tr("Install miner", "Установка майнера"))
-        .modal(true)
-        .transient_for(&app.window)
-        .default_width(580)
+        .content_width(580)
         .build();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(
@@ -3631,6 +3648,7 @@ fn miner_install_dialog(
     )));
     let cancel = gtk::Button::with_label(&tr("Cancel", "Отмена"));
     header.pack_start(&cancel);
+    header.set_show_end_title_buttons(false);
     if !def.source_url.is_empty() {
         let release = gtk::Button::builder()
             .icon_name("web-browser-symbolic")
@@ -3644,7 +3662,6 @@ fn miner_install_dialog(
         });
         header.pack_end(&release);
     }
-    window.set_titlebar(Some(&header));
 
     let page = adw::PreferencesPage::new();
 
@@ -3760,7 +3777,10 @@ fn miner_install_dialog(
     page.set_vexpand(true);
     content.append(&page);
     content.append(&footer);
-    window.set_child(Some(&content));
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&content));
+    dialog.set_child(Some(&toolbar));
 
     let update_state: Rc<dyn Fn()> = {
         let app = app.clone();
@@ -3792,7 +3812,7 @@ fn miner_install_dialog(
 
     let finish_install: Rc<dyn Fn(MinerInstall)> = {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
         let on_done = on_done.clone();
         Rc::new(move |install: MinerInstall| {
             {
@@ -3823,7 +3843,7 @@ fn miner_install_dialog(
                 "Miner installed. It is available in every preset.",
                 "Майнер установлен. Он доступен во всех пресетах.",
             )));
-            window.close();
+            dialog.close();
         })
     };
 
@@ -3858,11 +3878,13 @@ fn miner_install_dialog(
         version_entry.connect_notify_local(Some("text"), move |_, _| update_state());
     }
     {
-        let window = window.clone();
-        cancel.connect_clicked(move |_| window.close());
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| {
+            dialog.close();
+        });
     }
     {
-        let window = window.clone();
+        let parent = app.window.clone();
         let miner_id = miner_id.to_string();
         let version_entry = version_entry.clone();
         let finish_install = finish_install.clone();
@@ -3872,7 +3894,7 @@ fn miner_install_dialog(
                 .title(tr("Select miner binary", "Выберите бинарник майнера"))
                 .action(gtk::FileChooserAction::Open)
                 .build();
-            dialog.set_transient_for(Some(&window));
+            dialog.set_transient_for(Some(&parent));
             let miner_id = miner_id.clone();
             let version_entry = version_entry.clone();
             let finish_install = finish_install.clone();
@@ -4038,14 +4060,14 @@ fn miner_install_dialog(
             });
         });
     }
-    window.present();
+    dialog.present(Some(&app.window));
     if let Some(path) = std::env::var_os("TROMMEL_INSTALL_SCREENSHOT") {
         let path = path.to_string_lossy().into_owned();
-        let capture = window.clone();
+        let capture = app.window.clone();
         let application = app.window.application();
         glib::timeout_add_seconds_local(2, move || {
             if let Some(application) = application.clone() {
-                schedule_window_screenshot(capture.clone(), path.clone(), application, 0);
+                schedule_screenshot(capture.clone(), path.clone(), application, 0);
             }
             glib::ControlFlow::Break
         });
@@ -4345,6 +4367,7 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool) -> gtk::Widget {
         card.set_hexpand(true);
         card.set_halign(gtk::Align::Fill);
     } else {
+        card.set_hexpand(true);
         card.set_size_request(240, -1);
     }
     card.set_tooltip_text(Some(&gpu.uuid));
@@ -4619,20 +4642,17 @@ fn refresh_gpu_cards(app: &Rc<App>, gpus: &[GpuStats]) {
         app.gpu_host.append(&make_gpu_card(app, &gpus[0], true));
         return;
     }
-    let flow = gtk::FlowBox::new();
-    flow.set_selection_mode(gtk::SelectionMode::None);
-    flow.set_max_children_per_line(3);
-    flow.set_min_children_per_line(1);
-    flow.set_homogeneous(true);
-    flow.set_column_spacing(10);
-    flow.set_row_spacing(10);
-    flow.set_hexpand(true);
+    // WrapBox rather than FlowBox: on a wide window the cards share the row
+    // instead of hugging the left edge, and on a narrow one they wrap.
+    let wrap = adw::WrapBox::builder()
+        .child_spacing(10)
+        .line_spacing(10)
+        .justify(adw::JustifyMode::Fill)
+        .build();
     for gpu in gpus {
-        let child = gtk::FlowBoxChild::new();
-        child.set_child(Some(&make_gpu_card(app, gpu, false)));
-        flow.insert(&child, -1);
+        wrap.append(&make_gpu_card(app, gpu, false));
     }
-    app.gpu_host.append(&flow);
+    app.gpu_host.append(&wrap);
 }
 
 fn gpu_chip(text: &str, class: &str) -> gtk::Label {
@@ -4950,16 +4970,6 @@ where
             application.quit();
         }
     }
-}
-
-/// Screenshot helper for a transient window (the quick-setup wizard).
-fn schedule_window_screenshot(
-    window: gtk::Window,
-    path: String,
-    application: gtk::Application,
-    attempt: u32,
-) {
-    schedule_screenshot(window, path, application, attempt);
 }
 
 fn save_widget_png<W>(window: &W, path: &str) -> anyhow::Result<()>

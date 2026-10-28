@@ -9,7 +9,7 @@ desktop into a pile of shell scripts.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-en-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/images/dashboard-en-light.png">
-  <img src="docs/images/dashboard-en-dark.png" alt="Trommel dashboard with two NVIDIA GPUs mining at 125.8 TH/s" width="680">
+  <img src="docs/images/dashboard-en-dark.png" alt="Trommel dashboard with two NVIDIA GPUs mining at 125.8 TH/s" width="960">
 </picture>
 
 <sub>Dashboard with two GPUs. The image follows your system colour scheme; the dark

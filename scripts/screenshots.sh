@@ -149,7 +149,7 @@ tune_shot() {
   for attempt in 1 2; do
     rm -f "$target"
     TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_TUNE=1 TROMMEL_TUNE_SCREENSHOT="$target" \
-      timeout 50 "$BIN/trommel" > "$WORK/gui-tune-$theme-$language.log" 2>&1 || true
+      TROMMEL_WINDOW_HEIGHT=820 timeout 50 "$BIN/trommel" > "$WORK/gui-tune-$theme-$language.log" 2>&1 || true
     [ -f "$target" ] && break
     echo "  … retrying $(basename "$target")" >&2
   done
@@ -163,7 +163,7 @@ preset_shot() {
   for attempt in 1 2; do
     rm -f "$target"
     TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_PRESET=1 TROMMEL_PRESET_SCREENSHOT="$target" \
-      timeout 50 "$BIN/trommel" > "$WORK/gui-preset-$theme-$language.log" 2>&1 || true
+      TROMMEL_WINDOW_HEIGHT=820 timeout 50 "$BIN/trommel" > "$WORK/gui-preset-$theme-$language.log" 2>&1 || true
     [ -f "$target" ] && break
     echo "  … retrying $(basename "$target")" >&2
   done
@@ -177,7 +177,7 @@ install_shot() {
   for attempt in 1 2; do
     rm -f "$target"
     TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_INSTALL=1 TROMMEL_INSTALL_SCREENSHOT="$target" \
-      timeout 50 "$BIN/trommel" > "$WORK/gui-install-$theme-$language.log" 2>&1 || true
+      TROMMEL_WINDOW_HEIGHT=820 timeout 50 "$BIN/trommel" > "$WORK/gui-install-$theme-$language.log" 2>&1 || true
     [ -f "$target" ] && break
     echo "  … retrying $(basename "$target")" >&2
   done
@@ -191,6 +191,7 @@ wizard_shot() {
   for attempt in 1 2; do
     rm -f "$target"
     TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_WIZARD=1 TROMMEL_WIZARD_SCREENSHOT="$target" \
+      TROMMEL_WINDOW_HEIGHT=820 \
       TROMMEL_WIZARD_STEP="$step" timeout 50 "$BIN/trommel" > "$WORK/gui-wizard-$theme-$language-$step.log" 2>&1 || true
     [ -f "$target" ] && break
     echo "  … retrying $(basename "$target")" >&2

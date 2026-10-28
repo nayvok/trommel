@@ -118,13 +118,16 @@ class UI:
 
     def frame_visible(self, name: str, contains: bool = True):
         app = self.app()
-        for frame in self.find_all(app, "frame", name, contains):
-            try:
-                states = {state.value_nick for state in frame.get_state_set().get_states()}
-                if "showing" in states or "visible" in states:
-                    return frame
-            except Exception:
-                pass
+        # AdwDialog surfaces live inside the main window, so they are exposed
+        # as dialogs in the accessibility tree rather than as frames.
+        for role in ("frame", "dialog", "alert dialog"):
+            for frame in self.find_all(app, role, name, contains):
+                try:
+                    states = {state.value_nick for state in frame.get_state_set().get_states()}
+                    if "showing" in states or "visible" in states:
+                        return frame
+                except Exception:
+                    pass
         return None
 
     def find_frame(self, name: str, contains: bool = True, timeout: float = 15.0):
@@ -132,7 +135,14 @@ class UI:
             app = self.app()
             if app is None:
                 return None
-            return self.find(app, "frame", name, contains)
+            found = self.find(app, "frame", name, contains)
+            if found is not None:
+                return found
+            for role in ("dialog", "alert dialog"):
+                found = self.find(app, role, name, contains)
+                if found is not None:
+                    return found
+            return None
 
         return self.wait(lookup, timeout, f"frame {name!r}")
 

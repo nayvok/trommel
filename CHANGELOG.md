@@ -15,6 +15,19 @@ Changelog; versions use SemVer.
 
 ### Changed
 
+- **Navigation moved into the header bar.** The four sections are an
+  `AdwViewSwitcherTitle`, so the switcher sits next to the window actions
+  instead of in a separate bar at the bottom. When the window is too narrow for
+  labels, libadwaita swaps the switcher back to the title and reveals the
+  `AdwViewSwitcherBar` — one navigation surface at a time. The default window
+  grew to 1080 × 760 so the header form fits at the default size, and the GPU
+  cards now share the row (`AdwWrapBox`, fill) instead of hugging the left edge.
+- **Modal windows became `AdwDialog`s.** The preset editor, miner install, GPU
+  tuning, quick setup and error details are presented inside the main window.
+  They inherit its style and use libadwaita's spring presentation (the same
+  subtle bounce as the alert dialogs) instead of the compositor's window-open
+  scale. Dialog headers drop the automatic close button when they already carry
+  an explicit Cancel/Close.
 - **Settings no longer carries a separate “GPU defaults” group.** Power limits
   and clock locks are GPU state, so they are edited per card in **Tune**; the
   profile default is only the built-in base (driver-auto power, no clock locks)

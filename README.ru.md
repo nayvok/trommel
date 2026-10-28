@@ -9,7 +9,7 @@ Trommel — пульт управления NVIDIA-ригом на GTK4/libadwai
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-ru-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/images/dashboard-ru-light.png">
-  <img src="docs/images/dashboard-ru-dark.png" alt="Дашборд Trommel: две видеокарты NVIDIA, 125.8 TH/s" width="680">
+  <img src="docs/images/dashboard-ru-dark.png" alt="Дашборд Trommel: две видеокарты NVIDIA, 125.8 TH/s" width="960">
 </picture>
 
 <sub>Дашборд с двумя картами. Картинка следует цветовой схеме системы; по умолчанию
