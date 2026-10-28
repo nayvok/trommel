@@ -1,9 +1,16 @@
 # Trommel — план следующей goal-сессии
 
 **Статус:** v0.2 собран и закоммичен; рабочее дерево чистое.
-**Цель следующей сессии:** сделать локи частот (особенно памяти) по-настоящему
-опциональными и безопасными для обычного пользователя, не сломав текущий
-рабочий сценарий.
+**Цель следующей сессии:** довести UX обычного пользователя до конца
+(quick-setup wizard, advanced-настройки, документация/скриншоты, smoke-тесты
+MCP), не сломав уже сделанные опциональные локи и текущий e2e.
+
+> **Обновление после UX-итерации:** основная часть раздела 2 уже сделана:
+> карточки GPU, per-GPU список в настройках, опциональные core/memory locks,
+> safe defaults без локов, copy-to-similar/all, simple mode скрывает локи,
+> e2e проверяет `--lmc`, тесты 66. Следующий goal должен начинать с
+> оставшихся пунктов: quick-setup wizard, advanced-скриншот, MCP smoke test,
+> финальная упаковка/документация.
 
 ---
 
@@ -26,12 +33,12 @@ CARGO_HOME=$PWD/.cargo-home ./scripts/e2e.sh
 ### Goal prompt (можно вставить в goal-режим)
 
 > Работай над проектом Trommel в `/home/nayvok/pearl`. Сначала прочитай
-> `AGENTS.md` и `PLAN.md`. Реализуй опциональные локи core/memory clock:
-> по умолчанию новые профили без локов, старые конфиги сохраняют свои локи,
-> в UI явные переключатели с пояснениями, helper применяет `--lgc/--lmc`
-> только при включённом локе, stop восстанавливает сток. Добавь тесты,
-> обнови docs/CHANGELOG/скриншоты и сделай коммиты по фичам. Не ломай
-> существующие e2e/тесты и не применяй настройки без подтверждения.
+> `AGENTS.md` и `PLAN.md` — опциональные локи, карточки GPU и safe defaults
+> уже сделаны. Доведи UX: quick-setup wizard для 1–3 карт, advanced-режим
+> с локами/таблицей настроек, копирование профиля на одинаковые/все карты,
+> понятные пустые состояния и документацию. Добавь MCP smoke test, обнови
+> скриншоты/docs/CHANGELOG, пересобери `.deb`, прогони unit/e2e/clippy/fmt.
+> Не ломай существующие e2e/тесты и не применяй настройки без подтверждения.
 
 ---
 
@@ -66,7 +73,7 @@ f32f933 feat(config): add simple-mode preference
 
 ---
 
-## 2. Главная задача: опциональные локи частот
+## 2. Опциональные локи частот (выполнено, оставлено как спецификация)
 
 ### 2.1 Текущее состояние
 
@@ -126,7 +133,7 @@ f32f933 feat(config): add simple-mode preference
 - `docs/user-guide.md/.ru.md`, `README.md/.ru.md`, `CHANGELOG.md`.
 - `docs/images/*` — обновить скриншоты, если UI изменился.
 
-### 2.4 Тесты и приёмка
+### 2.4 Тесты и приёмка (выполнено)
 
 - Unit: default без локов; `Some` добавляет `--lgc/--lmc`; `None`/0 не
   добавляет; миграция v1 сохраняет 1620/810; ranges.
@@ -189,16 +196,17 @@ f32f933 feat(config): add simple-mode preference
 - Старый `pearl-minerd`/extension могут остаться в системе; новый install не
   удаляет их автоматически (миграция/cleanup — отдельно).
 
-## 7. Порядок работ (рекомендуемый)
+## 7. Порядок работ (обновлён)
 
-1. `feat(config): make GPU clock locks opt-in` — defaults/migration/tests.
-2. `feat(ui): add explicit core/memory lock switches` — per-GPU + settings +
-   simple/advanced.
-3. `test(e2e): cover optional locks and reset`.
-4. `docs: explain memory lock trade-offs and coin-specific profiles`.
-5. `feat(ui): finish quick setup wizard` (если останется время).
-6. `test(agents): add MCP smoke test` + docs.
-7. Rebuild deb, screenshots, final checks, tag `v0.2.1` (или `v0.3.0`).
+1. ~~`feat(config): make GPU clock locks opt-in`~~ — сделано.
+2. ~~`feat(ui): add explicit core/memory lock switches`~~ — сделано.
+3. ~~`test(e2e): cover optional locks and reset`~~ — сделано.
+4. ~~`docs: explain memory lock trade-offs`~~ — базово сделано, расширить.
+5. `feat(ui): finish quick-setup wizard` — 3 шага, 1–3 карты.
+6. `feat(ui): add advanced GPU table / advanced screenshot` — таблица карт,
+   locks, копирование на similar/all уже есть в диалоге.
+7. `test(agents): add MCP smoke test` + docs.
+8. Rebuild deb, screenshots, final checks, tag `v0.2.1` (или `v0.3.0`).
 
 ## 8. Definition of Done
 

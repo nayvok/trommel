@@ -17,6 +17,8 @@ Changelog; versions use SemVer.
   toggle.
 - Debian packaging, developer installer, bilingual docs.
 - Simple mode, quick setup entry point and a safe "recommended" GPU profile.
+- Multi-GPU cards on the dashboard, per-card settings, optional core/memory
+  clock locks (off by default) and copy-to-similar/all.
 - Agent surface: `diagnose`, config diff/validate/apply, preset export/import
   and a read-only-by-default MCP server (`trommel mcp`).
 

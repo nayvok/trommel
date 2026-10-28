@@ -44,6 +44,15 @@ come from the selected version; changing miner keeps compatible values, warns
 about incompatible ones and offers a reset. Extra arguments are appended
 verbatim as an argument vector (no shell).
 
+## Clock locks (advanced)
+
+Core and memory clock locks are opt-in and off in a fresh profile. Turn off
+**Simple mode** to see them in **Settings → GPU defaults** and in each card's
+**Tune** dialog. A lower memory clock can reduce power/heat and sometimes raise
+hashrate on PearlHash-like coins, but it can hurt other algorithms; test with
+the A/B benchmark. `Stop` resets `-lgc/-lmc` via the helper. Use **Similar
+GPUs** or **All GPUs** in the dialog to copy one card's tuning.
+
 ## Apply while mining
 
 If the miner is running and you change a GPU/profile setting, the Apply button

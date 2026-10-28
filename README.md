@@ -34,6 +34,9 @@ arguments are hidden until you turn them on.
   action and block Start until resolved.
 - **Stock snapshot** — before applying power/clocks, Trommel captures each
   GPU's current power limit and restores it on stop. No hardcoded `-pl 350`.
+- **Optional clock locks** — core/memory locks are off by default; enable them
+  per card, copy to identical cards or all GPUs. A lower memory lock can save
+  power on some coins and hurt others, so it is an advanced choice.
 - **Safe apply flow** — if the miner is running and you edit the profile, you
   choose **Apply and restart** or **Apply and stop**; failures roll back.
 - **GNOME Shell integration** — a panel indicator, live popup, Quick Settings
