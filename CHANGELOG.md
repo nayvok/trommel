@@ -13,6 +13,12 @@ Changelog; versions use SemVer.
   extension was removed. The `Notification` D-Bus signal is still emitted for
   integrations that want to render their own alert.
 
+- **Sparklines in the GPU cards.** Every metric bubble — power, core and memory
+  clock, temperature, fan and load — ends with a five-minute sparkline on the
+  bubble floor: a thin accent line over a soft wash, tinted like the value when
+  it runs warm or hot. The history is GUI-side (it starts empty and fills at the
+  poll rate), so the daemon status contract and the CLI/MCP JSON are unchanged.
+
 ### Changed
 
 - **Navigation moved into the header bar.** The four sections are an

@@ -424,7 +424,8 @@ executes commands. It never blocks the GTK main loop.
 | `gpu_tune_dialog` | Per-card tuning `AdwDialog`, “Now” row, copy to similar/all GPUs |
 | `quick_setup_wizard` | Three-step first-run flow (cards → miner → wallet) |
 | `save_and_apply_with` | Diff + restart/stop alert; `on_cancel` restores optimistic changes |
-| `apply_status` | Renders a `Status` into every widget, including empty states |
+| `apply_status` | Renders a `Status` into every widget, including empty states; records sparkline samples |
+| `History` / `sparkline` / `update_sparklines` | Per-GPU five-minute ring buffer and the Cairo sparklines drawn on the GPU bubble floor |
 | `copy_diagnostics` | Redacted bundle to the clipboard |
 
 Rules that are easy to break:

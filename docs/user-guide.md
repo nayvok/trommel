@@ -59,7 +59,9 @@ the error is shown.
 - Every GPU is a card with live power, core/memory clocks, temperature, fan and
   utilisation in value bubbles, plus a switch that includes the card in the
   active profile. A single-GPU rig uses one full-width card; with two or more
-  cards each keeps the compact tile. Click **Tune** to edit its power limit and
+  cards each keeps the compact tile. Each bubble ends with a sparkline of the
+  last five minutes; it fills while the window is open (hover it for the
+  observed minimum and maximum). Click **Tune** to edit its power limit and
   clock locks.
 - Below the cards: total power, maximum temperature, accepted/rejected shares,
   pool balance, the configured pool endpoint with its fee, and warnings.

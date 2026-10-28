@@ -124,7 +124,8 @@ Every coloured value has a word next to it (“installed”, “not installed”
   background action surfaces a toast with a **Details** button. The details
   window keeps the full text selectable and copyable.
 - The dashboard GPU card is not clickable: only **Tune** and its include switch
-  are interactive, so the card has no hover treatment.
+  are actionable, and a sparkline only adds a tooltip, so the card itself has no
+  hover treatment.
 - Dashboard **Start** is disabled while every detected GPU is off; the
   warnings row and the button tooltip explain it.
 - No spinners for work that completes in under a frame; the Start button changes
@@ -186,10 +187,14 @@ Every coloured value has a word next to it (“installed”, “not installed”
 - GPU cards: title (name + index), a switch that includes the card in the
   active profile, six value bubbles (power, core, memory, temperature, fan,
   load; the configured target/lock is a small hint and turns hot when the live
-  value differs), a custom/default chip and a **Tune** button. A one-GPU rig
-  uses a single full-width card with a 3×2 bubble grid; 2+ cards go into a wrap
-  box and split the row evenly (240 px minimum per card). Core and memory
-  clocks are labelled separately.
+  value differs), a custom/default chip and a **Tune** button. Each bubble ends
+  with a **sparkline** on the bubble floor: the metric's last five minutes as a
+  thin accent line over a soft accent wash, rounded with the bubble. The line
+  follows the value colour, so a warm or hot bubble also draws warm or hot.
+  History lives in the GUI (it starts empty and fills at the poll rate), not in
+  the daemon status. A one-GPU rig uses a single full-width card with a 3×2
+  bubble grid; 2+ cards go into a wrap box and split the row evenly (240 px
+  minimum per card). Core and memory clocks are labelled separately.
 - Aggregate rows: total power, max temperature, accepted/rejected shares, pool
   balance, the configured pool endpoint with its fee, and warnings.
 - When stopped, show **numeric placeholders** (`0 TH/s`, `0.000 PRL` or `0 PRL`
@@ -389,7 +394,12 @@ two-GPU rig with deterministic XDG directories. Conventions:
 - Keep all custom CSS in `install_css()`; do not scatter `set_margin` magic
   where a libadwaita widget already implements the pattern.
 - Rebuild GPU cards only when the status or GPU-profile signature changes
-  (`gpu_sig`) to avoid flicker and lost focus.
+  (`gpu_sig`) to avoid flicker and lost focus. The signature covers every value
+  shown in a bubble, so a clock or fan change is never left stale.
+- Sparkline history is a GUI-side ring buffer (`History`: five minutes per GPU
+  UUID, keyed by metric). `apply_status` appends one sample per status and
+  `update_sparklines` redraws the registered areas, so a redraw never rebuilds
+  a card.
 - Widget callbacks mutate the draft only; they never talk to D-Bus directly.
   Settings switches write into the draft as they are toggled, so the global
   unsaved-changes banner and the Settings **Save and apply** button behave the

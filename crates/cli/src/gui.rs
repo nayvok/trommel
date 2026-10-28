@@ -5,7 +5,7 @@
 //! privileged work (GPU tuning, miner process) happens in `trommeld`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -264,6 +264,9 @@ struct App {
     total_temp: adw::ActionRow,
     gpu_host: gtk::Box,
     gpu_sig: RefCell<String>,
+    /// Rolling GPU metrics behind the sparklines in the cards.
+    history: Rc<RefCell<History>>,
+    sparklines: RefCell<Vec<SparkEntry>>,
     shares_ok: gtk::Label,
     shares_bad: gtk::Label,
     pool_balance_value: gtk::Label,
@@ -326,8 +329,9 @@ fn install_css() {
         .trommel-gpu-stat {
             background-color: alpha(@card_fg_color, 0.06);
             border-radius: 10px;
-            padding: 6px 9px;
+            padding: 0;
         }
+        .trommel-gpu-stat-body { padding: 6px 9px 0; }
         .trommel-gpu-stat-value {
             font-weight: 700;
             font-size: 1.05em;
@@ -779,6 +783,8 @@ fn build_ui(app: &adw::Application) {
         total_temp,
         gpu_host,
         gpu_sig: RefCell::new(String::new()),
+        history: Rc::new(RefCell::new(History::default())),
+        sparklines: RefCell::new(Vec::new()),
         shares_ok,
         shares_bad,
         pool_balance_value,
@@ -4372,21 +4378,367 @@ fn handle_event(app: &Rc<App>, event: Ev) {
     }
 }
 
-fn gpu_stat(label_text: &str, value_text: &str, hint: Option<&str>, value_class: &str) -> gtk::Box {
+/// Metrics that get a sparkline in the GPU cards. The order is the sample
+/// layout in [`History`]; `index()` must stay in sync with it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Metric {
+    Power,
+    Core,
+    Memory,
+    Temp,
+    Fan,
+    Load,
+}
+
+impl Metric {
+    fn index(self) -> usize {
+        match self {
+            Self::Power => 0,
+            Self::Core => 1,
+            Self::Memory => 2,
+            Self::Temp => 3,
+            Self::Fan => 4,
+            Self::Load => 5,
+        }
+    }
+
+    fn unit(self) -> &'static str {
+        match self {
+            Self::Power => "W",
+            Self::Core | Self::Memory => "MHz",
+            Self::Temp => "°C",
+            Self::Fan | Self::Load => "%",
+        }
+    }
+
+    /// CSS colour name used for the line: hot tiles keep their red tint.
+    fn color_key(self, value_class: &str) -> &'static str {
+        match value_class {
+            "trommel-hot" => "error_color",
+            "trommel-warm" => "warning_color",
+            _ => "accent_bg_color",
+        }
+    }
+}
+
+const METRIC_COUNT: usize = 6;
+/// How much history a sparkline shows and how many samples it keeps at most
+/// (a 1 s GUI poll over 5 minutes is 300 samples).
+const HISTORY_SECS: u64 = 300;
+const HISTORY_MAX: usize = 360;
+const SPARK_HEIGHT: i32 = 22;
+
+type GpuSample = (u64, [Option<f64>; METRIC_COUNT]);
+
+#[derive(Default)]
+struct History {
+    gpus: BTreeMap<String, VecDeque<GpuSample>>,
+}
+
+impl History {
+    /// Store one status snapshot per GPU. The daemon reports the same `ts`
+    /// while its own poll has not advanced, so repeated timestamps replace the
+    /// last sample instead of widening the graph with duplicates.
+    fn record(&mut self, gpus: &[GpuStats], ts: u64) {
+        for gpu in gpus {
+            let samples = self.gpus.entry(gpu.uuid.clone()).or_default();
+            let values = [
+                gpu.power_w,
+                gpu.core_mhz.map(f64::from),
+                gpu.mem_mhz.map(f64::from),
+                gpu.temp_c.map(f64::from),
+                gpu.fan_pct.map(f64::from),
+                gpu.util_pct.map(f64::from),
+            ];
+            match samples.back_mut() {
+                Some((last_ts, last)) if *last_ts == ts => *last = values,
+                _ => samples.push_back((ts, values)),
+            }
+            while let Some((old, _)) = samples.front() {
+                if ts.saturating_sub(*old) <= HISTORY_SECS {
+                    break;
+                }
+                samples.pop_front();
+            }
+            while samples.len() > HISTORY_MAX {
+                samples.pop_front();
+            }
+        }
+    }
+
+    fn series(&self, uuid: &str, metric: Metric) -> Vec<(u64, f64)> {
+        let Some(samples) = self.gpus.get(uuid) else {
+            return Vec::new();
+        };
+        samples
+            .iter()
+            .filter_map(|(ts, values)| values[metric.index()].map(|value| (*ts, value)))
+            .collect()
+    }
+}
+
+/// A live sparkline; `apply_status` redraws every registered area once per
+/// poll, so the graph keeps moving without rebuilding the whole card.
+struct SparkEntry {
+    area: glib::WeakRef<gtk::DrawingArea>,
+    uuid: String,
+    metric: Metric,
+    label: String,
+}
+
+fn spark_color(area: &gtk::DrawingArea, key: &str) -> gdk::RGBA {
+    let context = area.style_context();
+    if let Some(color) = context.lookup_color(key) {
+        return color;
+    }
+    match key {
+        "error_color" => context
+            .lookup_color("error_bg_color")
+            .unwrap_or(gdk::RGBA::new(0.88, 0.11, 0.14, 1.0)),
+        "warning_color" => context
+            .lookup_color("warning_bg_color")
+            .unwrap_or(gdk::RGBA::new(0.90, 0.42, 0.0, 1.0)),
+        _ => gdk::RGBA::new(0.21, 0.52, 0.89, 1.0),
+    }
+}
+
+/// Draw a smooth area sparkline: a faint wash under a thin accent line.
+///
+/// The x axis is wall-clock time, so a stalled daemon leaves a visible gap
+/// instead of stretching the old samples over the whole width.
+fn draw_sparkline(
+    area: &gtk::DrawingArea,
+    ctx: &gtk::cairo::Context,
+    width: i32,
+    height: i32,
+    series: &[(u64, f64)],
+    color_key: &str,
+) {
+    if series.len() < 2 || width <= 4 || height <= 4 {
+        return;
+    }
+    let (first_ts, _) = series[0];
+    let (last_ts, _) = series[series.len() - 1];
+    if last_ts <= first_ts {
+        return;
+    }
+    let (mut lo, mut hi) = series.iter().fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(lo, hi), (_, value)| (lo.min(*value), hi.max(*value)),
+    );
+    // A flat series would divide by zero; give it a unit window so the line
+    // sits in the middle of the tile instead of jumping between edges.
+    if hi - lo < 1.0 {
+        let mid = (hi + lo) / 2.0;
+        lo = mid - 1.0;
+        hi = mid + 1.0;
+    }
+    let w = width as f64;
+    let h = height as f64;
+    let top = 3.0;
+    let bottom = 1.0;
+    let usable = (h - top - bottom).max(1.0);
+    let x_of = |ts: u64| (ts.saturating_sub(first_ts) as f64) * w / (last_ts - first_ts) as f64;
+    let y_of = |value: f64| top + (1.0 - (value - lo) / (hi - lo)) * usable;
+    let color = spark_color(area, color_key);
+    let (red, green, blue) = (
+        f64::from(color.red()),
+        f64::from(color.green()),
+        f64::from(color.blue()),
+    );
+
+    let points: Vec<(f64, f64)> = series
+        .iter()
+        .map(|(ts, value)| (x_of(*ts), y_of(*value)))
+        .collect();
+    let (start_x, start_y) = points[0];
+    let (end_x, _) = points[points.len() - 1];
+
+    let _ = ctx.save();
+    // The chart is the floor of the tile: square at the top, rounded at the
+    // bottom so the wash follows the card's 10 px corner radius.
+    let radius = 10.0_f64.min(h / 2.0).min(w / 2.0);
+    ctx.move_to(0.0, 0.0);
+    ctx.line_to(w, 0.0);
+    ctx.line_to(w, h - radius);
+    ctx.arc(
+        w - radius,
+        h - radius,
+        radius,
+        0.0,
+        std::f64::consts::FRAC_PI_2,
+    );
+    ctx.line_to(radius, h);
+    ctx.arc(
+        radius,
+        h - radius,
+        radius,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+    );
+    ctx.close_path();
+    ctx.clip();
+
+    // Soft wash under the line: strongest at the baseline, gone at the top.
+    let gradient = gtk::cairo::LinearGradient::new(0.0, top, 0.0, h);
+    gradient.add_color_stop_rgba(0.0, red, green, blue, 0.0);
+    gradient.add_color_stop_rgba(1.0, red, green, blue, 0.12);
+    ctx.move_to(start_x, h);
+    ctx.line_to(start_x, start_y);
+    spark_curve(ctx, &points);
+    ctx.line_to(end_x, h);
+    ctx.close_path();
+    let _ = ctx.set_source(&gradient);
+    let _ = ctx.fill();
+
+    ctx.set_line_join(gtk::cairo::LineJoin::Round);
+    ctx.set_line_cap(gtk::cairo::LineCap::Round);
+    // A wider, almost transparent pass gives the line a faint glow instead of
+    // a hard 1 px stroke that disappears on light backgrounds.
+    for (width, alpha) in [(4.0, 0.10), (1.4, 0.85)] {
+        ctx.move_to(start_x, start_y);
+        spark_curve(ctx, &points);
+        ctx.set_line_width(width);
+        ctx.set_source_rgba(red, green, blue, alpha);
+        let _ = ctx.stroke();
+    }
+    let _ = ctx.restore();
+}
+
+/// Trace a Catmull-Rom spline through the samples so a handful of points still
+/// reads as a curve rather than a zigzag. The caller owns the initial
+/// `move_to`.
+fn spark_curve(ctx: &gtk::cairo::Context, points: &[(f64, f64)]) {
+    let count = points.len();
+    if count < 3 {
+        for (x, y) in points {
+            ctx.line_to(*x, *y);
+        }
+        return;
+    }
+    for index in 0..count - 1 {
+        let p0 = points[index.saturating_sub(1)];
+        let p1 = points[index];
+        let p2 = points[index + 1];
+        let p3 = points[(index + 2).min(count - 1)];
+        ctx.curve_to(
+            p1.0 + (p2.0 - p0.0) / 6.0,
+            p1.1 + (p2.1 - p0.1) / 6.0,
+            p2.0 - (p3.0 - p1.0) / 6.0,
+            p2.1 - (p3.1 - p1.1) / 6.0,
+            p2.0,
+            p2.1,
+        );
+    }
+}
+
+fn sparkline(
+    app: &Rc<App>,
+    uuid: &str,
+    metric: Metric,
+    value_class: &str,
+    label_text: &str,
+) -> gtk::DrawingArea {
+    let history = app.history.clone();
+    let uuid_owned = uuid.to_string();
+    let color_key = metric.color_key(value_class).to_string();
+    let area = gtk::DrawingArea::builder()
+        .height_request(SPARK_HEIGHT)
+        .hexpand(true)
+        .valign(gtk::Align::End)
+        .build();
+    area.add_css_class("trommel-spark");
+    // The chart is decorative for pointer users (it has a tooltip) but still
+    // needs a name for screen readers and the UI smoke test.
+    area.set_accessible_role(gtk::AccessibleRole::Img);
+    let accessible = tr(
+        &format!("{label_text} chart"),
+        &format!("График: {label_text}"),
+    );
+    area.update_property(&[gtk::accessible::Property::Label(&accessible)]);
+    area.set_draw_func(move |area, ctx, width, height| {
+        let series = history.borrow().series(&uuid_owned, metric);
+        draw_sparkline(area, ctx, width, height, &series, &color_key);
+    });
+    app.sparklines.borrow_mut().push(SparkEntry {
+        area: area.downgrade(),
+        uuid: uuid.to_string(),
+        metric,
+        label: label_text.to_string(),
+    });
+    area
+}
+
+/// Redraw the graphs and refresh their "last N min: low–high" tooltips.
+fn update_sparklines(app: &Rc<App>) {
+    let history = app.history.borrow();
+    let mut entries = app.sparklines.borrow_mut();
+    entries.retain(|entry| entry.area.upgrade().is_some());
+    for entry in entries.iter() {
+        let Some(area) = entry.area.upgrade() else {
+            continue;
+        };
+        let series = history.series(&entry.uuid, entry.metric);
+        area.set_tooltip_text(spark_tooltip(&series, &entry.label, entry.metric).as_deref());
+        area.queue_draw();
+    }
+}
+
+fn spark_tooltip(series: &[(u64, f64)], label: &str, metric: Metric) -> Option<String> {
+    let first = series.first()?.0;
+    let last = series.last()?.0;
+    if series.len() < 2 || last <= first {
+        return None;
+    }
+    let lo = series
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(f64::INFINITY, f64::min);
+    let hi = series
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let minutes = (last - first).div_ceil(60).max(1);
+    let window = tr(&format!("last {minutes} min"), &format!("за {minutes} мин"));
+    Some(format!(
+        "{label} · {window}: {lo:.0}–{hi:.0} {}",
+        metric.unit()
+    ))
+}
+
+fn gpu_stat(
+    spark: Option<gtk::DrawingArea>,
+    label_text: &str,
+    value_text: &str,
+    hint: Option<&str>,
+    value_class: &str,
+) -> gtk::Box {
     let box_ = gtk::Box::new(gtk::Orientation::Vertical, 0);
     box_.add_css_class("trommel-gpu-stat");
     box_.set_hexpand(true);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    body.add_css_class("trommel-gpu-stat-body");
     let mut classes = vec!["trommel-gpu-stat-value"];
     if !value_class.is_empty() {
         classes.push(value_class);
     }
-    box_.append(&label(value_text, &classes));
-    box_.append(&label(label_text, &["trommel-gpu-stat-label"]));
+    body.append(&label(value_text, &classes));
+    body.append(&label(label_text, &["trommel-gpu-stat-label"]));
     if let Some(hint) = hint {
         let hint_label = label(hint, &["trommel-gpu-stat-hint"]);
         hint_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         hint_label.set_tooltip_text(Some(hint));
-        box_.append(&hint_label);
+        body.append(&hint_label);
+    }
+    box_.append(&body);
+    if let Some(spark) = spark {
+        // The holder absorbs the leftover height of the grid row, so every
+        // graph sits on the bottom edge even when a tile has no hint line.
+        let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        holder.set_vexpand(true);
+        holder.set_margin_top(4);
+        holder.append(&spark);
+        box_.append(&holder);
     }
     box_
 }
@@ -4608,30 +4960,34 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool) -> gtk::Widget {
     let columns: i32 = if wide { 3 } else { 2 };
     let stats_data = [
         (
+            Metric::Power,
             tr("Power", "Питание"),
             power,
             power_hint.as_deref(),
             power_class,
         ),
         (
+            Metric::Core,
             tr("Core", "Ядро"),
             core_text,
             core_hint.as_deref(),
             core_class,
         ),
         (
+            Metric::Memory,
             tr("Memory", "Память"),
             memory_text,
             memory_hint.as_deref(),
             memory_class,
         ),
-        (tr("Temp", "Темп."), temp, None, temp_class),
-        (tr("Fan", "Кулер"), fan, None, ""),
-        (tr("Load", "Загрузка"), utilization, None, ""),
+        (Metric::Temp, tr("Temp", "Темп."), temp, None, temp_class),
+        (Metric::Fan, tr("Fan", "Кулер"), fan, None, ""),
+        (Metric::Load, tr("Load", "Загрузка"), utilization, None, ""),
     ];
-    for (index, (label_text, value_text, hint, class)) in stats_data.iter().enumerate() {
+    for (index, (metric, label_text, value_text, hint, class)) in stats_data.iter().enumerate() {
+        let spark = sparkline(app, &gpu.uuid, *metric, class, label_text);
         stats.attach(
-            &gpu_stat(label_text, value_text, *hint, class),
+            &gpu_stat(Some(spark), label_text, value_text, *hint, class),
             index as i32 % columns,
             index as i32 / columns,
             1,
@@ -4660,6 +5016,9 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool) -> gtk::Widget {
 }
 
 fn refresh_gpu_cards(app: &Rc<App>, gpus: &[GpuStats]) {
+    // The registry only holds weak refs, but the old areas are about to be
+    // destroyed, so drop their entries now instead of on the next tick.
+    app.sparklines.borrow_mut().clear();
     clear_box(&app.gpu_host);
     if gpus.is_empty() {
         let empty = label(
@@ -4739,6 +5098,9 @@ fn update_start_sensitivity(app: &Rc<App>, blocked: bool) {
 
 fn apply_status(app: &Rc<App>, status: Status) {
     let running = status.state.running;
+    // The sparklines read this rolling window; a fresh status may repeat the
+    // previous timestamp, in which case `record` replaces the last sample.
+    app.history.borrow_mut().record(&status.gpus, status.ts);
     let blocked = !running && !has_enabled_gpu(app, &status.gpus);
     update_start_sensitivity(app, blocked);
     let action_text = if running {
@@ -4957,8 +5319,14 @@ fn apply_status(app: &Rc<App>, status: Status) {
             .iter()
             .map(|gpu| {
                 format!(
-                    "{}:{:?}:{:?}:{:?}",
-                    gpu.uuid, gpu.temp_c, gpu.power_w, gpu.util_pct
+                    "{}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
+                    gpu.uuid,
+                    gpu.temp_c,
+                    gpu.power_w,
+                    gpu.core_mhz,
+                    gpu.mem_mhz,
+                    gpu.util_pct,
+                    gpu.fan_pct
                 )
             })
             .collect::<Vec<_>>()
@@ -4968,6 +5336,7 @@ fn apply_status(app: &Rc<App>, status: Status) {
         *app.gpu_sig.borrow_mut() = signature;
         refresh_gpu_cards(app, &status.gpus);
     }
+    update_sparklines(app);
     *app.status.borrow_mut() = Some(status);
 }
 
