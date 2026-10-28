@@ -21,6 +21,14 @@ when a screen is added, removed or moved.
 | Delete-preset alert | `AdwAlertDialog` | Preset editor | Destructive confirmation |
 | About / log / file chooser | GNOME dialogs | menu, install dialog | Standard platform surfaces |
 
+## Responsive layout
+
+The window opens at 680×760 with a 380 px minimum. Above the breakpoint the
+navigation switcher sits in the header; below it the header title is hidden and
+the bottom `AdwViewSwitcherBar` appears. GPU cards use `AdwBreakpoint`
+conditions for one to three columns. Dialogs have their own scroll area and a
+size that fits small screens. Page changes animate through `AdwViewStack`.
+
 ## Navigation rules
 
 1. **The main window never swaps its content for a sub-screen.** Secondary
@@ -51,6 +59,14 @@ suggested version and a refresh callback. The dialog owns:
 
 The catalogue is a convenience, not a gate: miners release often, so the user
 can always type a version and paste a URL from the upstream release page.
+
+## Theme
+
+Trommel is a libadwaita app: it uses libadwaita's widget styling and inherits
+the desktop GTK theme (Yaru on Ubuntu, Adwaita on stock GNOME). There is no
+per-app theme switch on purpose - forcing `GTK_THEME` makes libadwaita skip its
+stylesheet and breaks padding. **Settings → Behavior → Appearance** only picks
+System/Light/Dark and applies immediately.
 
 ## Colour and emphasis
 

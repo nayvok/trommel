@@ -11,7 +11,7 @@
 
 ```bash
 ./scripts/package-deb.sh
-sudo apt install ./dist/trommel_0.3.0_amd64.deb
+sudo apt install ./dist/trommel_0.4.0_amd64.deb
 ```
 
 Layout: `/usr/bin/{trommel,trommeld}`, `/usr/libexec/trommel/trommel-oc`,

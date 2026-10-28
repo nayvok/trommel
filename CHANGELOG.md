@@ -3,6 +3,46 @@
 All notable changes to Trommel are documented here. Format follows Keep a
 Changelog; versions use SemVer.
 
+## [0.4.0] - 2026-10-28
+
+### Added
+
+- Presets are edited in a modal window instead of an in-page stack with a Back
+  button: the list opens an editor with Save/Cancel, duplicate, and a
+  confirmation before deleting.
+- One miner install dialog for the Miners page, the preset editor and the
+  quick-setup wizard. It lists catalogue versions plus imported builds, accepts
+  a version name that is newer than the catalogue, downloads over HTTPS with an
+  optional SHA-256 and imports local binaries.
+- Appearance setting (System, Light, Dark) applied immediately.
+- Colour for informational values: hashrate, mining/stopped/offline pill,
+  accepted/rejected shares, pool balance, install state and warnings. Rounded
+  16 px GPU cards and a hero card for the hashrate.
+- UX map in `docs/ux.md` / `docs/ux.ru.md` describing every window and rule.
+- Adaptive layout: the window opens at 680×760 and can shrink to 380 px; the
+  header view switcher is replaced by the bottom bar on narrow windows, GPU
+  cards ask for one to three columns through AdwBreakpoint, and page switches
+  animate.
+
+### Changed
+
+- The Miners page uses compact activatable rows with an installed-versions
+  label and a chevron instead of two large pill buttons per row.
+- Quick setup starts each card from its own override (or driver auto) instead
+  of the default profile, so a 300 W default is not silently applied to a
+  165 W card.
+- "Fill" is now **Apply 80 %**: it fills ticked cards, expands them and writes
+  the applied watts into each row, so the action has a visible result.
+- The rounded action buttons were made compact and consistent, and the old
+  paired pill buttons are gone.
+
+### Fixed
+
+- Deleting a preset asks for confirmation and reports which preset the daemon
+  keeps using.
+- Config schema gains optional `appearance` and `theme` fields; older configs
+  load with safe defaults.
+
 ## [0.3.0] - 2026-10-28
 
 ### Added

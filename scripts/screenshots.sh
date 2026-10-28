@@ -71,8 +71,30 @@ PY
 cleanup() {
   [ -n "${DAEMON_PID:-}" ] && kill "$DAEMON_PID" 2>/dev/null || true
   [ -n "${MINER_PID:-}" ] && kill "$MINER_PID" 2>/dev/null || true
+  [ -n "${BUS_PID:-}" ] && kill "$BUS_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# A private session bus keeps an already running Trommel (or a stale test
+# daemon) from answering our D-Bus calls and polluting the screenshots.
+cat > "$WORK/bus.conf" <<XML
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:dir=$WORK</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+  <apparmor mode="disabled"/>
+</busconfig>
+XML
+BUS_OUT="$(dbus-daemon --config-file="$WORK/bus.conf" --fork --print-address=1 --print-pid=1)"
+export DBUS_SESSION_BUS_ADDRESS="$(printf '%s\n' "$BUS_OUT" | sed -n 1p)"
+BUS_PID="$(printf '%s\n' "$BUS_OUT" | sed -n 2p)" 
 
 export PATH="$WORK/bin:$PATH"
 export XDG_CONFIG_HOME="$WORK/config"
@@ -128,6 +150,34 @@ tune_shot() {
   [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
 }
 
+preset_shot() {
+  local theme="$1" language="$2" target="$3"
+  configure "$language" 1
+  local attempt
+  for attempt in 1 2; do
+    rm -f "$target"
+    TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_PRESET=1 TROMMEL_PRESET_SCREENSHOT="$target" \
+      timeout 50 "$BIN/trommel" > "$WORK/gui-preset-$theme-$language.log" 2>&1 || true
+    [ -f "$target" ] && break
+    echo "  … retrying $(basename "$target")" >&2
+  done
+  [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
+}
+
+install_shot() {
+  local theme="$1" language="$2" target="$3"
+  configure "$language" 1
+  local attempt
+  for attempt in 1 2; do
+    rm -f "$target"
+    TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_INSTALL=1 TROMMEL_INSTALL_SCREENSHOT="$target" \
+      timeout 50 "$BIN/trommel" > "$WORK/gui-install-$theme-$language.log" 2>&1 || true
+    [ -f "$target" ] && break
+    echo "  … retrying $(basename "$target")" >&2
+  done
+  [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
+}
+
 wizard_shot() {
   local theme="$1" language="$2" target="$3" step="${4:-0}"
   configure "$language" 1
@@ -143,9 +193,12 @@ wizard_shot() {
 }
 
 shot dark en dashboard "$DOCS/dashboard-en-dark.png"
+shot dark en presets "$DOCS/presets-en-dark.png"
 shot dark en miners "$DOCS/miners-en-dark.png"
 shot dark en settings "$DOCS/settings-en-dark.png"
 shot dark en settings "$DOCS/settings-advanced-en-dark.png" 0 bottom
+preset_shot dark en "$DOCS/preset-editor-en-dark.png"
+install_shot dark en "$DOCS/miner-install-en-dark.png"
 tune_shot dark en "$DOCS/gpu-tune-en-dark.png"
 wizard_shot dark en "$DOCS/setup-en-dark.png"
 wizard_shot dark en "$DOCS/setup-wallet-en-dark.png" 2
