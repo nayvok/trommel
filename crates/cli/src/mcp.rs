@@ -173,7 +173,7 @@ fn call_tool(params: &Value, allow_write: bool) -> Result<Value, String> {
         }
         "trommel_preset_get" => {
             let id = args.get("id").and_then(Value::as_str).unwrap_or("");
-            let cfg = Config::load_or_default();
+            let cfg = Config::load_or_default().redacted();
             let preset = cfg
                 .presets
                 .get(id)
@@ -181,12 +181,7 @@ fn call_tool(params: &Value, allow_write: bool) -> Result<Value, String> {
             Ok(text_result(json!(preset)))
         }
         "trommel_config" => {
-            let mut cfg = Config::load_or_default();
-            if let Some(preset) = cfg.preset_mut() {
-                if !preset.wallet.is_empty() {
-                    preset.wallet = "<redacted>".into();
-                }
-            }
+            let cfg = Config::load_or_default().redacted();
             Ok(text_result(json!(cfg)))
         }
         "trommel_config_validate" => {

@@ -408,6 +408,20 @@ impl Config {
         self.preset().map(Preset::total_fee_pct).unwrap_or(0.0)
     }
 
+    /// Copy of the config with every preset wallet replaced by a placeholder.
+    ///
+    /// `trommel diagnose` and the MCP server hand configs to external agents;
+    /// those must never see a wallet, not even in a preset that is not active.
+    pub fn redacted(&self) -> Config {
+        let mut copy = self.clone();
+        for preset in copy.presets.values_mut() {
+            if !preset.wallet.trim().is_empty() {
+                preset.wallet = "<redacted>".into();
+            }
+        }
+        copy
+    }
+
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
         let Some(preset) = self.preset() else {
@@ -762,5 +776,24 @@ mod tests {
         let mut next = cfg.clone();
         next.preset_mut().unwrap().wallet = "prl1testwallet".into();
         assert_eq!(cfg.diff(&next).class, ChangeClass::RestartRequired);
+    }
+
+    #[test]
+    fn redaction_hides_every_preset_wallet() {
+        let mut cfg = Config::default();
+        cfg.preset_mut().unwrap().wallet = "prl1testactive".into();
+        let mut other = Preset::new_pearl();
+        other.id = "backup".into();
+        other.wallet = "prl1testbackup".into();
+        cfg.presets.insert(other.id.clone(), other);
+        let redacted = cfg.redacted();
+        for preset in redacted.presets.values() {
+            assert_eq!(preset.wallet, "<redacted>");
+        }
+        // The original draft is untouched.
+        assert_eq!(cfg.preset().unwrap().wallet, "prl1testactive");
+        // Empty wallets stay empty instead of growing a placeholder.
+        let empty = Config::default().redacted();
+        assert!(empty.preset().unwrap().wallet.is_empty());
     }
 }
