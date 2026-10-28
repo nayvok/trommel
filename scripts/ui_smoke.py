@@ -373,15 +373,15 @@ def phase_main(ui: UI) -> None:
                 ui.check(checked, "Cancel restores the GPU switch")
             else:
                 ui.fail("GPU disable did not ask for confirmation")
-        ui.click(stopped, "header Stop")
+        ui.click(stopped, "hero Stop")
         start = ui.wait(lambda: ui.find(frame, "button", "Start"), 15.0, "stopped")
         ui.check(start is not None, "Stop returns to Start")
         if start is not None:
-            ui.click(start, "header Start")
+            ui.click(start, "hero Start")
             stop = ui.wait(lambda: ui.find(frame, "button", "Stop"), 15.0, "started")
             ui.check(stop is not None, "Start returns to Stop")
             if stop is not None:
-                ui.click(stop, "header Stop (final)")
+                ui.click(stop, "hero Stop (final)")
                 ui.wait(lambda: ui.find(frame, "button", "Start"), 15.0, "stopped")
 
     # Pages and a Settings toggle.

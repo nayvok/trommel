@@ -254,6 +254,7 @@ struct App {
     dirty: Cell<bool>,
     action_button: gtk::Button,
     action_label: gtk::Label,
+    action_icon: gtk::Image,
     quick_button: gtk::Button,
     hero_hashrate: gtk::Label,
     hero_line: gtk::Label,
@@ -316,6 +317,11 @@ fn install_css() {
             margin-bottom: 2px;
         }
         .trommel-hero-meta { opacity: 0.72; }
+        .trommel-hero-action {
+            font-weight: 600;
+            min-height: 38px;
+            padding: 2px 22px;
+        }
         .trommel-gpu-title { font-weight: 700; }
         .trommel-gpu-stat {
             background-color: alpha(@card_fg_color, 0.06);
@@ -474,10 +480,10 @@ fn build_ui(app: &adw::Application) {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Trommel")
-        // Wide enough for the header view switcher (icon + label per page) in
-        // both shipped locales at the default size; narrower windows fall back
-        // to the switcher bar. Russian labels are the wider case.
-        .default_width(1080)
+        // The header carries navigation only (refresh, switcher, menu), so the
+        // one-line view switcher fits from about 880 px in Russian, the wider
+        // locale. 960 keeps a margin for longer translated page names.
+        .default_width(960)
         .default_height(760)
         .build();
     window.set_size_request(400, 420);
@@ -540,13 +546,6 @@ fn build_ui(app: &adw::Application) {
         .build();
     header.pack_end(&menu);
 
-    let action_label = gtk::Label::new(Some(&tr("Start", "Запустить")));
-    let action_button = gtk::Button::builder()
-        .css_classes(["suggested-action", "pill"])
-        .child(&action_label)
-        .build();
-    header.pack_end(&action_button);
-
     let banner = adw::Banner::builder()
         .title(tr(
             "You have unsaved changes",
@@ -601,7 +600,7 @@ fn build_ui(app: &adw::Application) {
     hero.set_margin_bottom(12);
     hero.set_margin_start(6);
     hero.set_margin_end(6);
-    let hero_top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let hero_top = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let hero_left = gtk::Box::new(gtk::Orientation::Vertical, 0);
     hero_left.set_hexpand(true);
     let hero_caption = label(
@@ -630,16 +629,43 @@ fn build_ui(app: &adw::Application) {
     );
     hero_line.set_ellipsize(gtk::pango::EllipsizeMode::End);
     hero_meta.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    // Start/Stop is the action of this page, not of the app chrome: it sits in
+    // the hero footer so the card's brightest control is anchored to its
+    // bottom edge and the header keeps navigation only (refresh, switcher,
+    // menu), which stays single-line at narrower widths.
+    let action_label = gtk::Label::new(Some(&tr("Start", "Запустить")));
+    let action_icon = gtk::Image::from_icon_name("media-playback-start-symbolic");
+    let action_content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    action_content.set_halign(gtk::Align::Center);
+    action_content.append(&action_icon);
+    action_content.append(&action_label);
+    let action_button = gtk::Button::builder()
+        .css_classes(["suggested-action", "pill", "trommel-hero-action"])
+        .child(&action_content)
+        .valign(gtk::Align::Center)
+        .build();
+    // The button has a custom child (icon + label), so GTK cannot derive its
+    // accessible name from a plain label property; set it explicitly and keep
+    // it in sync with the visible text.
+    set_action_text(&action_button, &action_label, &tr("Start", "Запустить"));
+    let hero_footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    hero_footer.set_margin_top(2);
+    hero_meta.set_hexpand(true);
+    hero_meta.set_valign(gtk::Align::Center);
+    hero_footer.append(&hero_meta);
+    hero_footer.append(&action_button);
+    // Secondary affordance: the hero already carries the primary Start, and
+    // both paths open the same wizard on an unfinished install.
     let quick_button = gtk::Button::builder()
         .label(tr("Quick setup", "Быстрая настройка"))
-        .css_classes(["suggested-action", "pill"])
+        .css_classes(["flat", "pill"])
         .halign(gtk::Align::Start)
         .build();
     quick_button.set_visible(false);
     hero.append(&hero_top);
     hero.append(&hero_line);
     hero.append(&hero_rule);
-    hero.append(&hero_meta);
+    hero.append(&hero_footer);
     hero.append(&quick_button);
     hero_group.add(&hero);
     dashboard_box.append(&hero_group);
@@ -743,6 +769,7 @@ fn build_ui(app: &adw::Application) {
         dirty: Cell::new(false),
         action_button: action_button.clone(),
         action_label: action_label.clone(),
+        action_icon: action_icon.clone(),
         quick_button: quick_button.clone(),
         hero_hashrate,
         hero_line,
@@ -4300,8 +4327,11 @@ fn handle_event(app: &Rc<App>, event: Ev) {
             app.action_button
                 .set_sensitive(!busy && !start_blocked(app));
             if busy {
-                app.action_label
-                    .set_text(&tr("Waiting for authorization…", "Жду подтверждения…"));
+                set_action_text(
+                    &app.action_button,
+                    &app.action_label,
+                    &tr("Waiting for authorization…", "Жду подтверждения…"),
+                );
             } else {
                 let running = app
                     .status
@@ -4309,14 +4339,18 @@ fn handle_event(app: &Rc<App>, event: Ev) {
                     .as_ref()
                     .map(|status| status.state.running)
                     .unwrap_or(false);
-                app.action_label.set_text(&tr(
-                    if running { "Stop" } else { "Start" },
-                    if running {
-                        "Остановить"
-                    } else {
-                        "Запустить"
-                    },
-                ));
+                set_action_text(
+                    &app.action_button,
+                    &app.action_label,
+                    &tr(
+                        if running { "Stop" } else { "Start" },
+                        if running {
+                            "Остановить"
+                        } else {
+                            "Запустить"
+                        },
+                    ),
+                );
             }
         }
         Ev::Bench(json) => {
@@ -4684,6 +4718,14 @@ fn start_blocked(app: &Rc<App>) -> bool {
     }
 }
 
+/// Keep the hero action's visible text and its accessible name in sync: the
+/// button wraps an icon and a label, so there is no `label` property to derive
+/// the name from.
+fn set_action_text(button: &gtk::Button, label: &gtk::Label, text: &str) {
+    label.set_text(text);
+    button.update_property(&[gtk::accessible::Property::Label(text)]);
+}
+
 fn update_start_sensitivity(app: &Rc<App>, blocked: bool) {
     app.action_button.set_sensitive(!blocked);
     let tooltip = blocked.then(|| {
@@ -4704,7 +4746,12 @@ fn apply_status(app: &Rc<App>, status: Status) {
     } else {
         tr("Start", "Запустить")
     };
-    app.action_label.set_text(&action_text);
+    set_action_text(&app.action_button, &app.action_label, &action_text);
+    app.action_icon.set_icon_name(Some(if running {
+        "media-playback-stop-symbolic"
+    } else {
+        "media-playback-start-symbolic"
+    }));
     app.action_button.set_css_classes(&[if running {
         "destructive-action"
     } else {

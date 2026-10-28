@@ -65,10 +65,10 @@ the error is shown.
   pool balance, the configured pool endpoint with its fee, and warnings.
 - When the miner is stopped, hashrate and balance show numeric placeholders and
   the pool row still names the configured endpoint.
-- The header **Start** applies your edited draft before starting. If the wallet
-  or miner is missing, it opens Quick setup instead of failing with a toast. It
-  is disabled while every detected GPU is switched off; the warning row explains
-  why.
+- **Start** in the dashboard hero card applies your edited draft before
+  starting. If the wallet or miner is missing, it opens Quick setup instead of
+  failing with a toast. It is disabled while every detected GPU is switched off;
+  the warning row explains why. While mining, the same button reads **Stop**.
 - Action errors show a **Details** button. The dialog keeps the full message
   selectable and offers **Copy**, so a long daemon error does not disappear in a
   truncated toast.

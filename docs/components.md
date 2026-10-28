@@ -414,7 +414,7 @@ executes commands. It never blocks the GTK main loop.
 
 | Function | Surface |
 | --- | --- |
-| `build_ui` | Window, header view switcher, four pages, banners, `AdwDialog` host |
+| `build_ui` | Window, header view switcher, dashboard hero action, four pages, banners, `AdwDialog` host |
 | dashboard block in `build_ui` | Hero card, GPU `AdwWrapBox`, totals, shares, pool, warnings |
 | `build_presets_page` / `refresh_preset_list` | Preset list; rows open the editor |
 | `build_miners_page` / `refresh_miners` | Miner catalogue, install state, benchmark button |
@@ -429,8 +429,10 @@ executes commands. It never blocks the GTK main loop.
 
 Rules that are easy to break:
 
-- Header **Start** applies the draft first (`Cmd::ApplyStart`), then starts.
-  Starting with the daemon's old config silently ignored GPU edits.
+- The dashboard hero **Start** applies the draft first (`Cmd::ApplyStart`),
+  then starts. Starting with the daemon's old config silently ignored GPU edits;
+  the button lives in the hero card, not in the header, so the header switcher
+  stays single-line at narrower widths.
 - A dirty draft survives `Refresh`; only an explicit apply clears it.
 - Toggling a GPU or editing an appearance/simple-mode switch updates the draft
   immediately, and **Cancel** in the restart/stop alert must undo it.

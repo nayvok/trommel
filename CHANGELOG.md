@@ -19,9 +19,14 @@ Changelog; versions use SemVer.
   `AdwViewSwitcherTitle`, so the switcher sits next to the window actions
   instead of in a separate bar at the bottom. When the window is too narrow for
   labels, libadwaita swaps the switcher back to the title and reveals the
-  `AdwViewSwitcherBar` — one navigation surface at a time. The default window
-  grew to 1080 × 760 so the header form fits at the default size, and the GPU
-  cards now share the row (`AdwWrapBox`, fill) instead of hugging the left edge.
+  `AdwViewSwitcherBar` — one navigation surface at a time. The GPU cards now
+  share the row (`AdwWrapBox`, fill) instead of hugging the left edge.
+- **Start/Stop moved from the header into the dashboard hero.** The header now
+  holds navigation and window chrome only (refresh, switcher, menu), so the
+  one-line switcher fits down to roughly 880 px and the default window shrank
+  back to 960 × 760. The primary action sits in the hero footer with a
+  play/stop icon, right aligned with the uptime line, and keeps its
+  suggested/destructive colouring.
 - **Modal windows became `AdwDialog`s.** The preset editor, miner install, GPU
   tuning, quick setup and error details are presented inside the main window.
   They inherit its style and use libadwaita's spring presentation (the same

@@ -55,7 +55,7 @@ overrides it for screenshots and tests.
 
 | Constant | Value |
 | --- | --- |
-| Default window | 1080 × 760 |
+| Default window | 960 × 760 |
 | Minimum window | 400 × 420 |
 | Dashboard content clamp | 900 px (cards widen beyond the reading column) |
 | Dashboard margins | 18 px top, 24 px bottom, 12 px sides |
@@ -125,8 +125,8 @@ Every coloured value has a word next to it (“installed”, “not installed”
   window keeps the full text selectable and copyable.
 - The dashboard GPU card is not clickable: only **Tune** and its include switch
   are interactive, so the card has no hover treatment.
-- Header **Start** is disabled while every detected GPU is off; the warnings row
-  and the button tooltip explain it.
+- Dashboard **Start** is disabled while every detected GPU is off; the
+  warnings row and the button tooltip explain it.
 - No spinners for work that completes in under a frame; the Start button changes
   its label to “Starting…” and disables while the daemon works.
 
@@ -139,8 +139,10 @@ Every coloured value has a word next to it (“installed”, “not installed”
    the four pages are the title widget while the window is wide enough to show
    their icons and labels. When it is not, the title returns and the
    `AdwViewSwitcherBar` reveals itself at the bottom, so the switcher is never
-   clipped and never duplicated. The default window is wide enough for the
-   header form.
+   clipped and never duplicated. The header bar carries navigation and window
+   chrome only (refresh, switcher, menu): the primary Start/Stop action lives on
+   the dashboard, which keeps the one-line switcher usable down to roughly
+   880 px, and the 960×760 default leaves a margin for longer translations.
 3. **Wizards are the only Back/Next surfaces.** They are modal dialogs and keep
    Cancel/close in the header on every step.
 4. **A page is a place you return to, not a step in a flow.** Drilling down
@@ -155,7 +157,7 @@ Every coloured value has a word next to it (“installed”, “not installed”
 
 | Surface | Kind | Opened from | Purpose |
 | --- | --- | --- | --- |
-| Main window | `AdwApplicationWindow` | app start | Header (view switcher, refresh, Start/Stop, menu), four pages, banners |
+| Main window | `AdwApplicationWindow` | app start | Header (view switcher, refresh, menu), four pages, banners |
 | Dashboard | page | view switcher | Hero hashrate, GPU cards, totals, shares, pool, warnings |
 | Presets | page | view switcher | Preset list; rows open the editor |
 | Miners | page | view switcher | Catalogue, installed versions, install dialog, benchmark |
@@ -177,6 +179,10 @@ Every coloured value has a word next to it (“installed”, “not installed”
   miner · version · total fee, a separator, and a metadata line with uptime,
   restarts and the miner data source. The card is accent-tinted with a soft
   shadow; the value uses the accent colour only while a hashrate is known.
+  The card closes with the primary **Start/Stop** button (play/stop icon, pill,
+  suggested while stopped and destructive while mining) in its footer, right
+  aligned with the metadata line: the brightest control of the app is anchored
+  to the card it acts on instead of floating in the header.
 - GPU cards: title (name + index), a switch that includes the card in the
   active profile, six value bubbles (power, core, memory, temperature, fan,
   load; the configured target/lock is a small hint and turns hot when the live
@@ -191,7 +197,9 @@ Every coloured value has a word next to it (“installed”, “not installed”
   as placeholders.
 - Warnings are one row with the joined warning text and a warning badge; the
   same list is in the status document.
-- The Quick setup button appears until a wallet and an installed miner exist.
+- The secondary **Quick setup** button (flat pill, below the footer) appears
+  until a wallet and an installed miner exist and opens the same wizard as
+  Start does on an unfinished setup.
 
 ### Presets
 
