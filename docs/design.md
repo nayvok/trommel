@@ -85,16 +85,17 @@ Custom CSS lives in `install_css()`:
 | `.trommel-hero` | Dashboard hashrate hero card (translucent card background, 12 px radius) |
 | `.trommel-hero-hashrate` | Large hashrate value |
 | `.trommel-gpu-card` | Dashboard GPU card: rounded 12 px, card background, soft shadow |
-| `.trommel-gpu-settings-card` | Settings per-card row: subtle tinted card, 12 px radius |
-| `.trommel-gpu-title`, `.trommel-gpu-settings-name` | Card title weight |
-| `.trommel-metric-label`, `.trommel-metric-value` | Small key / bold tabular value pairs |
-| `.trommel-gpu-chip` | Live temperature/fan/load chip (pill, tabular) |
+| `.trommel-gpu-stat` | Live-value bubble inside a dashboard GPU card: tinted, 10 px radius |
+| `.trommel-gpu-stat-value`, `-label`, `-hint` | Big tabular value, small label, muted target/lock hint |
+| `.trommel-gpu-title` | Card title weight |
+| `.trommel-gpu-chip` | Custom/default badge and compact live chip (pill, tabular) |
 | `.trommel-pill` + `-running`, `-external`, `-stopped`, `-offline` | Status pill |
 | `.trommel-hot`, `.trommel-warm`, `.trommel-muted` | Temperature and mute emphasis |
 | `button.pill` | Compact rounded action button (26 px min height) |
 
 Rounded corners are 12 px for cards and 999 px for pills. Shadows are reserved
-for the dashboard GPU cards; settings cards use a 1 px border instead.
+for the dashboard GPU cards; Settings uses libadwaita's standard preference
+groups and rows.
 
 ### Colour
 
@@ -145,10 +146,10 @@ Every coloured value has a word next to it (“installed”, “not installed”
 | Dashboard | page | switcher | Hero hashrate, GPU cards, totals, shares, pool, warnings |
 | Presets | page | switcher | Preset list; rows open the editor |
 | Miners | page | switcher | Catalogue, installed versions, install dialog, benchmark |
-| Settings | page | switcher | Behaviour, appearance, GPU defaults, detected GPUs, GNOME integration, actions |
+| Settings | page | switcher | Behaviour, appearance, GPU defaults, GNOME integration, actions |
 | Preset editor | modal | preset row / New preset | One preset: miner, version, pool, wallet, fees, options |
 | Miner install | modal | Miners row, editor, wizard | Version pick, HTTPS download, local import |
-| GPU tuning | modal | Dashboard card, Settings card | Per-card power/clocks; copy to similar/all |
+| GPU tuning | modal | Dashboard card | Per-card power/clocks; copy to similar/all |
 | Quick setup | modal | Quick setup button / Start on a pristine install | Cards → miner → wallet → start |
 | Apply alert | `AdwAlertDialog` | apply while mining | Apply and restart / apply and stop / cancel |
 | Delete-preset alert | `AdwAlertDialog` | preset editor | Destructive confirmation |
@@ -162,8 +163,10 @@ Every coloured value has a word next to it (“installed”, “not installed”
   `offline`), a line with preset · miner · version · total fee, and a metadata
   line with uptime, restarts and the miner data source.
 - GPU cards in a 1–3 column flow: title (name + index), a switch that
-  includes the card in the active profile, live values and a **Tune** button;
-  core and memory clocks are labelled separately.
+  includes the card in the active profile, six value bubbles (power, core,
+  memory, temperature, fan, load; the configured target/lock is a small hint
+  and turns hot when the live value differs), a custom/default chip and a
+  **Tune** button. Core and memory clocks are labelled separately.
 - Aggregate rows: total power, max temperature, accepted/rejected shares, pool
   balance, the configured pool endpoint with its fee, and warnings.
 - When stopped, show **numeric placeholders** (`0 TH/s`, `0.000 PRL` or `0 PRL`
@@ -235,14 +238,9 @@ Groups, in order:
    optional memory lock, temperature limit/resume. Lock value rows are visible
    only while the corresponding switch is on. Cards without a custom override
    inherit these values; the description says so.
-3. **Detected GPUs** — one rounded card per card: icon, name, three configured
-   metrics (power/core/memory), live temperature/fan/load chips, a **now** chip
-   with the actual power limit and clocks (hot when it differs from the target)
-   and a **Tune** button. Simple mode shows power, temperature and load; advanced settings
-   reveal locks. The include switch lives on the dashboard GPU card.
-4. **GNOME integration** — panel mode, Quick Settings toggle, live activity,
+3. **GNOME integration** — panel mode, Quick Settings toggle, live activity,
    extension state and **Enable** / **Extension Manager**.
-5. **Actions** — **Save and apply**, **Copy diagnostics**, **Restore stock**.
+4. **Actions** — **Save and apply**, **Copy diagnostics**, **Restore stock**.
    Buttons stay vertically centred in their rows. **Restore stock** asks first:
    snapshot target, or the driver default when it differs; a pre-existing tuned
    limit and the last restore error are explained. **Restore stock** opens a
@@ -265,15 +263,16 @@ Rules:
 
 ### GPU tuning (modal)
 
-- Header: card name + **GPU tuning**; **Recommended** and **Save** (the window
-  control closes without saving).
+- Header: card name + **GPU tuning**; a **⋯** menu with **Recommended** and
+  **Profile default**, and **Save** (the window control closes without saving).
 - A **Now** row shows live power/core/memory/temperature so the target can be
   compared with reality.
 - Power limit, core lock + value, memory lock + value. A clock row appears only
   while its lock is on; with the lock off the subtitle names the current driver
   value.
 - **Recommended** = 80 % of the stock power limit, both locks off; the tooltip
-  says exactly that. It is a safe starting point, not an optimum.
+  says exactly that. It is a safe starting point, not an optimum. **Profile
+  default** removes the per-card override and is shown only when one exists.
 - **Apply to** appears only with more than one card: similar GPUs or all GPUs.
 - Save goes through the normal apply flow; a single-GPU dialog has no empty
   “apply to” section.
@@ -369,11 +368,14 @@ two-GPU rig with deterministic XDG directories. Conventions:
 
 - Keep all custom CSS in `install_css()`; do not scatter `set_margin` magic
   where a libadwaita widget already implements the pattern.
-- Rebuild GPU cards only when the status signature changes
-  (`gpu_sig`/`gpu_settings_sig`) to avoid flicker and lost focus.
+- Rebuild GPU cards only when the status or GPU-profile signature changes
+  (`gpu_sig`) to avoid flicker and lost focus.
 - Widget callbacks mutate the draft only; they never talk to D-Bus directly.
+  Settings switches write into the draft as they are toggled, so the global
+  unsaved-changes banner and the Settings **Save and apply** button behave the
+  same.
 - New dialogs must be modal, close on `Esc`, and keep their actions in the
   header (Cancel) plus a footer for destructive/secondary actions.
 - Shared UI primitives: `label()`, `spin_row()`, `switch_row()`, `sync_lock_row()`,
-  `metric()`, `gpu_chip()`, `set_status_text()`, `string_list()`, `clear_box()`,
+  `gpu_stat()`, `gpu_chip()`, `set_status_text()`, `string_list()`, `clear_box()`,
   `clear_flow()`. Reuse them rather than duplicating styling.

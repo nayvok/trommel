@@ -57,9 +57,9 @@ the error is shown.
 - The hero card shows total hashrate, the state pill (`mining`, `external`, `stopped`,
   `offline`), the active preset/miner/version and the fee
   breakdown.
-- Every GPU is a card with live temperature, fan, power, utilisation and clocks,
-  plus a switch that includes the card in the active profile. Click the card to
-  tune it.
+- Every GPU is a card with live power, core/memory clocks, temperature, fan and
+  utilisation in value bubbles, plus a switch that includes the card in the
+  active profile. Click **Tune** to edit its power limit and clock locks.
 - Below the cards: total power, maximum temperature, accepted/rejected shares,
   pool balance, the configured pool endpoint with its fee, and warnings.
 - When the miner is stopped, hashrate and balance show numeric placeholders and
@@ -112,31 +112,33 @@ before the catalogue was updated, type the version and paste the upstream URL.
 
 ![Settings](images/settings-en-dark.png)
 
-- **Behavior** — restart on crash, restore stock on stop, notifications, start
-  mining at login, simple mode, poll interval, language (needs an app restart)
-  and appearance.
+- **Behavior** — restart on crash, restore stock on stop (on by default),
+  notifications, start mining at login, simple mode, poll interval, language
+  (needs an app restart) and appearance.
 - **GPU defaults** — power limit (`0 = driver auto`), optional core/memory clock
-  locks, temperature limit and resume temperature.
-- **Detected GPUs** — one card per GPU with configured power/core/memory, live
-  temperature/fan/load and **Tune**. In simple mode power,
-  temperature and load are shown; advanced settings reveal the locks.
+  locks, temperature limit and resume temperature. Cards without their own
+  override inherit these values.
 - **GNOME integration** — panel label, Quick Settings toggle, live activity,
   extension state and an **Enable** button.
 - **Actions** — **Save and apply**, **Copy diagnostics** (redacted), **Restore
   stock**.
 
+The per-card **Tune** dialog on the dashboard is the only place that edits a
+single card's override; Settings no longer repeats the card list.
+
 ## Clock locks (advanced)
 
 Core and memory clock locks are opt-in and off in a fresh profile. Turn off
-**Simple mode** (or press **Advanced settings** under the card table) to see
-them in **Settings → GPU defaults** and in each card's **Tune** dialog.
+**Simple mode** to see them in **Settings → GPU defaults** and in each card's
+**Tune** dialog.
 
 ![Advanced GPU settings](images/settings-advanced-en-dark.png)
 
 The tuning dialog starts with a **Now** row so you can compare the target with
 the live state. A clock value row is visible only while its lock switch is on.
-**Recommended** means 80 % of the stock power limit with both locks off — a safe
-start, not an optimum. On a multi-GPU machine **Apply to** copies the values to
+The **⋯** menu holds **Recommended** (80 % of the stock power limit with both
+locks off — a safe start, not an optimum) and **Profile default** (remove this
+card's override). On a multi-GPU machine **Apply to** copies the values to
 similar cards or all cards.
 
 ![GPU tuning dialog](images/gpu-tune-en-dark.png)
@@ -205,7 +207,7 @@ best-effort stock restore.
   enabled.
 - Per-card settings inherit the **GPU defaults** unless the card has a custom
   override. The setup wizard and the enable switch do not create an override;
-  **Tune → Save** does. The card list shows “custom” or “profile default”.
+  **Tune → Save** does. Each dashboard card shows “custom” or “profile default”.
 - Fan control on consumer cards is not available through `nvidia-smi`; fan flags
   are passed to the miner when supported and disappear with the process.
 - On reboot the snapshot is marked stale and is not used; Start captures a fresh

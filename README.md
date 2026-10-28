@@ -49,13 +49,14 @@ arguments are hidden until you turn them on.
   remembered across restarts. Trommel uses libadwaita's own styling and the
   system GTK theme, so it matches other GNOME apps on the same desktop.
 - **Stock snapshot** — before applying power/clocks, Trommel captures each
-  GPU's current power limit and restores it on stop. No hardcoded power limit.
+  GPU's current power limit and restores it on stop (on by default). No
+  hardcoded power limit.
 - **Optional clock locks** — core/memory locks are off by default; enable them
   per card, copy to identical cards or all GPUs. A lower memory lock can save
   power on some coins and hurt others, so it is an advanced choice.
-- **Per-card tuning table** — **Settings → Detected GPUs** lists power, clock
-  locks, fan and temperature for every card; simple mode shows power,
-  temperature and load, and **Advanced settings** reveals the rest.
+- **Per-card tuning** — each dashboard card shows live power, clocks,
+  temperature, fan and load in value bubbles and opens **Tune** for power and
+  clock locks; simple mode hides the clock rows.
 - **Safe apply flow** — if the miner is running and you edit the profile, you
   choose **Apply and restart** or **Apply and stop**; failures roll back.
 - **GNOME Shell integration** — a panel indicator, live popup, Quick Settings

@@ -27,6 +27,10 @@ Changelog; versions use SemVer.
 - **Snapshot hygiene:** a snapshot from another boot is deleted at daemon start
   and never used; a profile with no tuning creates no snapshot and needs no
   root; a stock Start restores any lingering applied snapshot first.
+- **Settings switches now stick without the Save button.** Toggling *Restore
+  stock on stop* updated only the widget; pressing the global Apply banner saved
+  the old value and the dashboard warning stayed. Behaviour switches and the
+  poll interval now write into the draft as they change.
 - The Dashboard navigation icon used `utilities-system-monitor-symbolic`, which
   is missing from the Adwaita icon theme, so some themes showed a broken-image
   placeholder. It now uses `view-grid-symbolic`, available in Adwaita and Yaru.
@@ -37,6 +41,10 @@ Changelog; versions use SemVer.
 
 - The status contract is now **3**: `oc` gains `needs_restore`,
   `restore_on_stop`, `last_error`, snapshot metadata and target summaries.
+- Dashboard GPU cards show live power, clocks, temperature, fan and load in
+  value bubbles with the configured target/lock as a hint. The duplicate
+  *Detected GPUs* group left Settings; per-card edits live in **Tune**. The tune
+  dialog's **Recommended** / **Profile default** actions moved into a **⋯** menu.
 - New D-Bus `OCReport()` / `RestoreOC(mode)`, CLI `trommel oc report|restore`,
   MCP `trommel_oc` / `trommel_restore_oc`, and the under-load clock check.
 - Documentation was restructured by audience: a new index, an architecture and

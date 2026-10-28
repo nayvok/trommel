@@ -848,6 +848,15 @@ mod tests {
     }
 
     #[test]
+    fn restore_stock_is_on_by_default() {
+        // Restoring the captured power limit is the safe default; turning it
+        // off must be an explicit choice, not an accident of a missing key.
+        let cfg: Config = serde_json::from_str(r#"{"schema_version":3}"#).unwrap();
+        assert!(cfg.behavior.restore_stock_on_stop);
+        assert!(Behavior::default().restore_stock_on_stop);
+    }
+
+    #[test]
     fn round_trip() {
         let cfg = Config::default();
         let json = serde_json::to_string(&cfg).unwrap();

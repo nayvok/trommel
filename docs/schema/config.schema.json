@@ -281,7 +281,8 @@
           "maximum": 60
         },
         "restore_stock_on_stop": {
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "start_mining_on_login": {
           "type": "boolean"

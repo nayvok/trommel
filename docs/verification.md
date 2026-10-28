@@ -42,10 +42,10 @@ not a claim that CI covers it.
 | Preset editor | Save, Cancel, Duplicate, Delete…, Install… | Apply, confirmation, shared install dialog |
 | Miners | row, chevron, benchmark, install dialog | Installed state, cancel, sequential benchmark with a winner |
 | Settings | switches, power 0=auto, Save and apply, Copy diagnostics, Restore stock | Aligned pill buttons, live apply, redaction, restore dialog with snapshot/defaults targets, stop-first guard |
-| GPU tune | Now row, Recommended, Save, locks on/off, Similar/All GPUs | Value rows hidden while off; Apply-to only with >1 GPU; restart/stop dialog |
+| GPU tune | Now row, **⋯** menu (Recommended / Profile default), Save, locks on/off, Similar/All GPUs | Value rows hidden while off; Apply-to only with >1 GPU; restart/stop dialog |
 | Alerts | Apply and restart / Apply and stop / Cancel, delete confirmation | Explicit restart/stop; Cancel reverts optimistic changes |
 | Menu | Open log, About, Quit | Opens the log/about, quits with `Ctrl+Q` |
-| Window | resize to ~400 px | No clipping; per-card rows and action buttons readable |
+| Window | resize to ~400 px | No clipping; GPU value bubbles and action buttons readable |
 | GNOME extension | panel icon, popup, Start/Stop, Quick Settings, panel modes, notifications | Mirrors the daemon; menu comes from the panel button; no prefs window; works after re-login |
 | Installer | `install.sh`, `.deb` postinst, release installer | Binaries, helper, rule, units, extension, no password prompt for the installing user |
 | Real rig | polkit prompt-free, 300 W/1620/810, start/stop, restore dialog | OC applied, ~125 TH/s, power read back, stock restore; an ignored memory lock stops the miner with a named error |

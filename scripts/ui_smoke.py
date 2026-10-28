@@ -629,13 +629,13 @@ def phase_first_run(ui: UI) -> None:
         is not None,
         "clean install has the default Pearl preset",
     )
-    ui.tab("Settings")
+    ui.tab("Dashboard")
     ui.check(
         ui.wait(
-            lambda: ui.find(ui.app(), "button", "Tune"), 8.0, "GPU row"
+            lambda: ui.find(ui.app(), "button", "Tune"), 8.0, "GPU card"
         )
         is not None,
-        "clean install shows the detected GPU row",
+        "clean install shows the dashboard GPU card",
     )
     ui.click_button("Tune", ui.app(), "Tune on clean install")
     tune = ui.wait(lambda: ui.find_frame("GPU tuning", timeout=1.0), 8.0, "tune")

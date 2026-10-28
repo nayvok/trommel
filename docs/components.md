@@ -418,7 +418,7 @@ executes commands. It never blocks the GTK main loop.
 | dashboard block in `build_ui` | Hero card, GPU flow, totals, shares, pool, warnings |
 | `build_presets_page` / `refresh_preset_list` | Preset list; rows open the editor |
 | `build_miners_page` / `refresh_miners` | Miner catalogue, install state, benchmark button |
-| `build_settings_page` / `load_settings` / `save_settings` | Behaviour, appearance, GPU defaults, detected GPUs, GNOME integration, actions |
+| `build_settings_page` / `load_settings` / `save_settings` | Behaviour, appearance, GPU defaults, GNOME integration, actions |
 | `preset_editor_dialog` | Modal preset editor (save/cancel/duplicate/delete/install) |
 | `miner_install_dialog` | The only miner install UI (catalogue, custom version, download, import) |
 | `gpu_tune_dialog` | Per-card tuning, “Now” row, copy to similar/all GPUs |
