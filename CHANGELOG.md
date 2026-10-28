@@ -27,6 +27,9 @@ Changelog; versions use SemVer.
 
 - Quick-setup and GPU-tuning dialogs no longer show a duplicated window title
   bar; their header bars act as the window decoration.
+- `trommel mcp` no longer panicked with "cannot start a runtime from within a
+  runtime" when a tool needed D-Bus (`trommel_status`, `trommel_diagnose`,
+  start/stop); the stdio loop now runs outside the tokio runtime.
 
 ## [0.2.0] - 2026-10-28
 
