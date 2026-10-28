@@ -298,9 +298,6 @@ fn install_css() {
             padding: 12px;
             box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22), 0 6px 18px rgba(0, 0, 0, 0.12);
         }
-        .trommel-gpu-card:hover {
-            background-color: alpha(@card_fg_color, 0.05);
-        }
         .trommel-gpu-card-wide {
             padding: 16px;
         }
@@ -1633,6 +1630,80 @@ fn bind_language_draft(app: &Rc<App>, row: &adw::ComboRow) {
         app.config.borrow_mut().behavior.language = value;
         mark_dirty(&app);
     });
+}
+
+/// Errors are usually longer than one toast line. Show the short form with a
+/// Details button; the dialog keeps the full text selectable and copyable.
+fn show_error_toast(app: &Rc<App>, message: &str) {
+    let toast = adw::Toast::builder()
+        .title(message)
+        .button_label(tr("Details", "Подробнее"))
+        .timeout(10)
+        .build();
+    let app_for_details = app.clone();
+    let message = message.to_string();
+    toast.connect_button_clicked(move |_| show_error_details(&app_for_details, &message));
+    app.toast.add_toast(toast);
+}
+
+fn show_error_details(app: &Rc<App>, message: &str) {
+    let window = adw::Window::builder()
+        .title(tr("Error details", "Подробности ошибки"))
+        .modal(true)
+        .transient_for(&app.window)
+        .default_width(560)
+        .default_height(320)
+        .build();
+    let header = adw::HeaderBar::new();
+    let copy = gtk::Button::with_label(&tr("Copy", "Копировать"));
+    let close = gtk::Button::with_label(&tr("Close", "Закрыть"));
+    header.pack_end(&copy);
+    header.pack_end(&close);
+    window.set_titlebar(Some(&header));
+    {
+        let window_for_key = window.clone();
+        let key = gtk::EventControllerKey::new();
+        key.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk::Key::Escape {
+                window_for_key.close();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        window.add_controller(key);
+    }
+    let view = gtk::TextView::builder()
+        .editable(false)
+        .cursor_visible(false)
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .left_margin(16)
+        .right_margin(16)
+        .top_margin(12)
+        .bottom_margin(12)
+        .build();
+    view.buffer().set_text(message);
+    let scroll = gtk::ScrolledWindow::builder()
+        .child(&view)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    window.set_content(Some(&scroll));
+    {
+        let window = window.clone();
+        close.connect_clicked(move |_| window.close());
+    }
+    {
+        let copy_button = copy.clone();
+        let message = message.to_string();
+        copy.connect_clicked(move |_| {
+            if let Some(display) = gdk::Display::default() {
+                display.clipboard().set_text(&message);
+            }
+            copy_button.set_label(&tr("Copied", "Скопировано"));
+        });
+    }
+    window.present();
 }
 
 fn pool_names() -> Vec<String> {
@@ -4476,7 +4547,7 @@ fn handle_event(app: &Rc<App>, event: Ev) {
                 .set_css_classes(&["caption", "trommel-pill", "trommel-pill-offline"]);
         }
         Ev::Error(message) => {
-            app.toast.add_toast(adw::Toast::new(&message));
+            show_error_toast(app, &message);
         }
         Ev::Applied { message, quiet } => {
             if !quiet {
@@ -4492,7 +4563,8 @@ fn handle_event(app: &Rc<App>, event: Ev) {
             let _ = app.tx.send(Cmd::Refresh);
         }
         Ev::Busy(busy) => {
-            app.action_button.set_sensitive(!busy);
+            app.action_button
+                .set_sensitive(!busy && !start_blocked(app));
             if busy {
                 app.action_label
                     .set_text(&tr("Waiting for authorization…", "Жду подтверждения…"));
@@ -4859,9 +4931,42 @@ fn gpu_chip(text: &str, class: &str) -> gtk::Label {
     chip
 }
 
+fn has_enabled_gpu(app: &Rc<App>, gpus: &[GpuStats]) -> bool {
+    if gpus.is_empty() {
+        return true;
+    }
+    let profile = app
+        .config
+        .borrow()
+        .gpu_profile()
+        .cloned()
+        .unwrap_or_default();
+    gpus.iter().any(|gpu| profile.tuning_for(&gpu.uuid).enabled)
+}
+
+fn start_blocked(app: &Rc<App>) -> bool {
+    let status = app.status.borrow();
+    match status.as_ref() {
+        Some(status) if !status.state.running => !has_enabled_gpu(app, &status.gpus),
+        _ => false,
+    }
+}
+
+fn update_start_sensitivity(app: &Rc<App>, blocked: bool) {
+    app.action_button.set_sensitive(!blocked);
+    let tooltip = blocked.then(|| {
+        tr(
+            "All GPUs are disabled; enable one on the dashboard before starting",
+            "Все карты выключены — включите хотя бы одну на дашборде перед запуском",
+        )
+    });
+    app.action_button.set_tooltip_text(tooltip.as_deref());
+}
+
 fn apply_status(app: &Rc<App>, status: Status) {
     let running = status.state.running;
-    app.action_button.set_sensitive(true);
+    let blocked = !running && !has_enabled_gpu(app, &status.gpus);
+    update_start_sensitivity(app, blocked);
     let action_text = if running {
         tr("Stop", "Остановить")
     } else {

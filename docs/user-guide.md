@@ -67,13 +67,19 @@ the error is shown.
 - When the miner is stopped, hashrate and balance show numeric placeholders and
   the pool row still names the configured endpoint.
 - The header **Start** applies your edited draft before starting. If the wallet
-  or miner is missing, it opens Quick setup instead of failing with a toast.
+  or miner is missing, it opens Quick setup instead of failing with a toast. It
+  is disabled while every detected GPU is switched off; the warning row explains
+  why.
+- Action errors show a **Details** button. The dialog keeps the full message
+  selectable and offers **Copy**, so a long daemon error does not disappear in a
+  truncated toast.
 
 ## Presets and installed miners
 
 A preset bundles coin/algorithm (Pearl/pearlhash in the current catalogue),
-pool, wallet, worker, miner version and miner options. GPU settings are edited in **Settings → GPU defaults** and **Detected
-GPUs**, not in the preset editor. A preset references a miner **version**,
+pool, wallet, worker, miner version and miner options. GPU settings are edited
+on each card's **Tune** dialog (global defaults in **Settings → GPU defaults**),
+not in the preset editor. A preset references a miner **version**,
 not a path. Installing a version once makes every preset that references it see
 the version as installed. If a preset references a missing version, Start is
 blocked until you install it or switch to an installed version. There is no

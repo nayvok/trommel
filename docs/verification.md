@@ -34,7 +34,7 @@ not a claim that CI covers it.
 
 | Surface | Action | Expected |
 | --- | --- | --- |
-| Dashboard | Refresh, Start/Stop, GPU include switch, Tune | Live status; Cancel in the alert restores the switch and the dirty banner |
+| Dashboard | Refresh, Start/Stop, GPU include switch, Tune | Live status; Cancel in the alert restores the switch and the dirty banner; Start is disabled with every GPU off |
 | Dashboard layout | one GPU, then two GPUs | One card spans the row with a 3×2 bubble grid; two cards return to compact 240 px tiles |
 | Dashboard | stopped state | `0 TH/s`, numeric pool balance, configured endpoint named, no lone dashes |
 | Quick setup | Cancel, Next, Back, Apply 80 %, Use auto, Start mining | Three steps, validation, per-card values, start only after confirmation |
@@ -45,6 +45,7 @@ not a claim that CI covers it.
 | Settings | switches, power 0=auto, Save and apply, Copy diagnostics, Restore stock | Aligned pill buttons, live apply, redaction, restore dialog with snapshot/defaults targets, stop-first guard |
 | GPU tune | Now row, **⋯** menu (Recommended / Profile default), Save, locks on/off, Similar/All GPUs | Value rows hidden while off; Apply-to only with >1 GPU; restart/stop dialog |
 | Alerts | Apply and restart / Apply and stop / Cancel, delete confirmation | Explicit restart/stop; Cancel reverts optimistic changes |
+| Errors | force a long daemon error | Toast shows **Details**; the dialog text is selectable and **Copy** puts it on the clipboard |
 | Menu | Open log, About, Quit | Opens the log/about, quits with `Ctrl+Q` |
 | Window | resize to ~400 px | No clipping; GPU value bubbles and action buttons readable |
 | GNOME extension | panel icon, popup, Start/Stop, Quick Settings, panel modes, notifications | Mirrors the daemon; menu comes from the panel button; no prefs window; works after re-login |

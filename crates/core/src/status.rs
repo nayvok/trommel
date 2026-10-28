@@ -153,6 +153,23 @@ fn lock_warnings(cfg: &Config, gpus: &[GpuStats], running: bool, uptime_s: u64) 
     warnings
 }
 
+/// Warn when the detected cards are all switched off, even if the profile
+/// default would enable a card that is no longer present. `Config::warnings`
+/// cannot know the detected UUIDs, so the status document adds this one.
+fn enabled_gpu_warning(cfg: &Config, gpus: &[GpuStats]) -> Option<String> {
+    if gpus.is_empty() {
+        return None;
+    }
+    let profile = cfg.gpu_profile()?;
+    if gpus.iter().any(|gpu| profile.tuning_for(&gpu.uuid).enabled) {
+        return None;
+    }
+    Some(tr(
+        "No GPU is enabled in the active profile",
+        "В активном профиле не включено ни одной видеокарты",
+    ))
+}
+
 impl Status {
     /// Build a status snapshot. Blocking: calls `nvidia-smi` and HTTP APIs.
     pub fn collect(cfg: &Config, state: &State) -> Self {
@@ -275,6 +292,11 @@ impl Status {
 
         let ts = util::now_unix();
         let mut warnings = cfg.warnings();
+        if let Some(warning) = enabled_gpu_warning(cfg, &gpus) {
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
         warnings.extend(lock_warnings(
             cfg,
             &gpus,
@@ -518,5 +540,28 @@ mod tests {
         let mut gpu = tuned_gpu(uuid);
         gpu.mem_mhz = Some(9501);
         assert!(lock_warnings(&cfg, &[gpu], true, 60).is_empty());
+    }
+
+    #[test]
+    fn all_gpus_disabled_warns_even_with_an_enabled_default() {
+        let uuid = "GPU-test";
+        let mut cfg = tuned_config(uuid);
+        cfg.gpu_profiles
+            .get_mut("balanced")
+            .unwrap()
+            .per_gpu
+            .get_mut(uuid)
+            .unwrap()
+            .enabled = false;
+        let warning = enabled_gpu_warning(&cfg, &[tuned_gpu(uuid)]).expect("warning");
+        assert!(!warning.is_empty());
+        assert!(enabled_gpu_warning(&cfg, &[]).is_none());
+    }
+
+    #[test]
+    fn an_enabled_gpu_does_not_warn() {
+        let uuid = "GPU-test";
+        let cfg = tuned_config(uuid);
+        assert!(enabled_gpu_warning(&cfg, &[tuned_gpu(uuid)]).is_none());
     }
 }

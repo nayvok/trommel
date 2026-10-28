@@ -118,7 +118,12 @@ Every coloured value has a word next to it (“installed”, “not installed”
 - Toasts confirm background work: applied, installed, restored, copied
   diagnostics, benchmark winner.
 - Dialogs own errors they caused (installer, editor, tuning); a failed
-  background action also surfaces a toast.
+  background action surfaces a toast with a **Details** button. The details
+  window keeps the full text selectable and copyable.
+- The dashboard GPU card is not clickable: only **Tune** and its include switch
+  are interactive, so the card has no hover treatment.
+- Header **Start** is disabled while every detected GPU is off; the warnings row
+  and the button tooltip explain it.
 - No spinners for work that completes in under a frame; the Start button changes
   its label to “Starting…” and disables while the daemon works.
 

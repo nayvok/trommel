@@ -36,6 +36,10 @@ Changelog; versions use SemVer.
   placeholder. It now uses `view-grid-symbolic`, available in Adwaita and Yaru.
 - The Rust `--lmc` validator accepted only up to 4000 MHz while the schema, GUI
   and helper allow real memory clocks up to 12000 MHz.
+- **All cards off no longer produces a clipped Start error.** Header **Start**
+  is disabled while every detected GPU is off, the status warning covers that
+  case even when the profile default would enable a missing card, and action
+  errors now open a selectable, copyable **Details** dialog.
 
 ### Changed
 
@@ -44,9 +48,10 @@ Changelog; versions use SemVer.
 - Dashboard GPU cards show live power, clocks, temperature, fan and load in
   value bubbles with the configured target/lock as a hint. A single-GPU rig
   uses one full-width card (3×2 bubbles); 2+ cards keep the compact grid. The
-  duplicate *Detected GPUs* group left Settings; per-card edits live in
-  **Tune**. The tune dialog's **Recommended** / **Profile default** actions
-  moved into a **⋯** menu.
+  card itself is not clickable, so its hover tint is gone; **Tune** and the
+  include switch remain the controls. The duplicate *Detected GPUs* group left
+  Settings; per-card edits live in **Tune**. The tune dialog's **Recommended** /
+  **Profile default** actions moved into a **⋯** menu.
 - New D-Bus `OCReport()` / `RestoreOC(mode)`, CLI `trommel oc report|restore`,
   MCP `trommel_oc` / `trommel_restore_oc`, and the under-load clock check.
 - Documentation was restructured by audience: a new index, an architecture and
