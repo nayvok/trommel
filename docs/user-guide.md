@@ -68,6 +68,8 @@ power and temperature; in advanced mode it adds the core and memory locks and
 the fan value, so you can compare every card at a glance. Each row has **Tune**;
 the row tooltip repeats the full profile summary.
 
+![Advanced GPU settings](images/settings-advanced-en-dark.png)
+
 ![GPU tuning dialog](images/gpu-tune-en-dark.png)
 
 A lower memory clock can reduce power/heat and sometimes raise hashrate on
