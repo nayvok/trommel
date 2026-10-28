@@ -42,9 +42,11 @@ Changelog; versions use SemVer.
 - The status contract is now **3**: `oc` gains `needs_restore`,
   `restore_on_stop`, `last_error`, snapshot metadata and target summaries.
 - Dashboard GPU cards show live power, clocks, temperature, fan and load in
-  value bubbles with the configured target/lock as a hint. The duplicate
-  *Detected GPUs* group left Settings; per-card edits live in **Tune**. The tune
-  dialog's **Recommended** / **Profile default** actions moved into a **⋯** menu.
+  value bubbles with the configured target/lock as a hint. A single-GPU rig
+  uses one full-width card (3×2 bubbles); 2+ cards keep the compact grid. The
+  duplicate *Detected GPUs* group left Settings; per-card edits live in
+  **Tune**. The tune dialog's **Recommended** / **Profile default** actions
+  moved into a **⋯** menu.
 - New D-Bus `OCReport()` / `RestoreOC(mode)`, CLI `trommel oc report|restore`,
   MCP `trommel_oc` / `trommel_restore_oc`, and the under-load clock check.
 - Documentation was restructured by audience: a new index, an architecture and

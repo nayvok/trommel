@@ -272,7 +272,7 @@ struct App {
     pill: gtk::Label,
     total_power: adw::ActionRow,
     total_temp: adw::ActionRow,
-    gpu_flow: gtk::FlowBox,
+    gpu_host: gtk::Box,
     gpu_sig: RefCell<String>,
     shares_ok: gtk::Label,
     shares_bad: gtk::Label,
@@ -300,6 +300,9 @@ fn install_css() {
         }
         .trommel-gpu-card:hover {
             background-color: alpha(@card_fg_color, 0.05);
+        }
+        .trommel-gpu-card-wide {
+            padding: 16px;
         }
         .trommel-hero {
             background-color: alpha(@card_bg_color, 0.55);
@@ -405,12 +408,6 @@ fn sync_lock_row(lock: &adw::SwitchRow, row: &adw::SpinRow, visible: bool) {
 fn clear_box(container: &gtk::Box) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
-    }
-}
-
-fn clear_flow(flow: &gtk::FlowBox) {
-    while let Some(child) = flow.first_child() {
-        flow.remove(&child);
     }
 }
 
@@ -616,16 +613,11 @@ fn build_ui(app: &adw::Application) {
         .title(tr("Rig", "Риг"))
         .description(tr("Per-GPU live state", "Живое состояние каждой карты"))
         .build();
-    let gpu_flow = gtk::FlowBox::new();
-    gpu_flow.set_selection_mode(gtk::SelectionMode::None);
-    gpu_flow.set_max_children_per_line(3);
-    gpu_flow.set_min_children_per_line(1);
-    gpu_flow.set_homogeneous(true);
-    gpu_flow.set_column_spacing(10);
-    gpu_flow.set_row_spacing(10);
-    gpu_flow.set_margin_top(6);
-    gpu_flow.set_margin_bottom(6);
-    rig_group.add(&gpu_flow);
+    let gpu_host = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    gpu_host.set_hexpand(true);
+    gpu_host.set_margin_top(6);
+    gpu_host.set_margin_bottom(6);
+    rig_group.add(&gpu_host);
     dashboard_box.append(&rig_group);
 
     let totals_group = adw::PreferencesGroup::builder()
@@ -723,7 +715,7 @@ fn build_ui(app: &adw::Application) {
         pill,
         total_power,
         total_temp,
-        gpu_flow,
+        gpu_host,
         gpu_sig: RefCell::new(String::new()),
         shares_ok,
         shares_bad,
@@ -4559,10 +4551,18 @@ fn gpu_stat(label_text: &str, value_text: &str, hint: Option<&str>, value_class:
     box_
 }
 
-fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
+fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool) -> gtk::Widget {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
     card.add_css_class("trommel-gpu-card");
-    card.set_size_request(240, -1);
+    if wide {
+        // A one-card rig should use the whole row instead of a lonely 240 px
+        // tile with empty space to the right.
+        card.add_css_class("trommel-gpu-card-wide");
+        card.set_hexpand(true);
+        card.set_halign(gtk::Align::Fill);
+    } else {
+        card.set_size_request(240, -1);
+    }
     card.set_tooltip_text(Some(&gpu.uuid));
 
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -4571,7 +4571,7 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
     let title = label(&format!("GPU #{}", gpu.index), &["trommel-gpu-title"]);
     let name = label(&gpu.name, &["caption", "dim-label"]);
     name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    name.set_max_width_chars(14);
+    name.set_max_width_chars(if wide { 48 } else { 14 });
     titles.append(&title);
     titles.append(&name);
     header.append(&titles);
@@ -4759,60 +4759,44 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
         tr("profile default", "профиль")
     };
     let stats = gtk::Grid::new();
-    stats.set_column_spacing(8);
-    stats.set_row_spacing(8);
+    stats.set_column_spacing(if wide { 10 } else { 8 });
+    stats.set_row_spacing(if wide { 10 } else { 8 });
     stats.set_column_homogeneous(true);
-    stats.attach(
-        &gpu_stat(
-            &tr("Power", "Питание"),
-            &power,
+    // One card gets three columns (two rows); a rig of several cards keeps
+    // the compact 2 x 3 block.
+    let columns: i32 = if wide { 3 } else { 2 };
+    let stats_data = [
+        (
+            tr("Power", "Питание"),
+            power,
             power_hint.as_deref(),
             power_class,
         ),
-        0,
-        0,
-        1,
-        1,
-    );
-    stats.attach(
-        &gpu_stat(
-            &tr("Core", "Ядро"),
-            &core_text,
+        (
+            tr("Core", "Ядро"),
+            core_text,
             core_hint.as_deref(),
             core_class,
         ),
-        1,
-        0,
-        1,
-        1,
-    );
-    stats.attach(
-        &gpu_stat(
-            &tr("Memory", "Память"),
-            &memory_text,
+        (
+            tr("Memory", "Память"),
+            memory_text,
             memory_hint.as_deref(),
             memory_class,
         ),
-        0,
-        1,
-        1,
-        1,
-    );
-    stats.attach(
-        &gpu_stat(&tr("Temp", "Темп."), &temp, None, temp_class),
-        1,
-        1,
-        1,
-        1,
-    );
-    stats.attach(&gpu_stat(&tr("Fan", "Кулер"), &fan, None, ""), 0, 2, 1, 1);
-    stats.attach(
-        &gpu_stat(&tr("Load", "Загрузка"), &utilization, None, ""),
-        1,
-        2,
-        1,
-        1,
-    );
+        (tr("Temp", "Темп."), temp, None, temp_class),
+        (tr("Fan", "Кулер"), fan, None, ""),
+        (tr("Load", "Загрузка"), utilization, None, ""),
+    ];
+    for (index, (label_text, value_text, hint, class)) in stats_data.iter().enumerate() {
+        stats.attach(
+            &gpu_stat(label_text, value_text, *hint, class),
+            index as i32 % columns,
+            index as i32 / columns,
+            1,
+            1,
+        );
+    }
     card.append(&stats);
 
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -4835,24 +4819,36 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
 }
 
 fn refresh_gpu_cards(app: &Rc<App>, gpus: &[GpuStats]) {
-    clear_flow(&app.gpu_flow);
+    clear_box(&app.gpu_host);
     if gpus.is_empty() {
         let empty = label(
             &tr("No NVIDIA GPU detected", "NVIDIA GPU не обнаружен"),
             &["dim-label"],
         );
+        empty.set_halign(gtk::Align::Center);
         empty.set_margin_top(8);
         empty.set_margin_bottom(8);
-        let child = gtk::FlowBoxChild::new();
-        child.set_child(Some(&empty));
-        app.gpu_flow.insert(&child, -1);
+        app.gpu_host.append(&empty);
         return;
     }
+    if gpus.len() == 1 {
+        app.gpu_host.append(&make_gpu_card(app, &gpus[0], true));
+        return;
+    }
+    let flow = gtk::FlowBox::new();
+    flow.set_selection_mode(gtk::SelectionMode::None);
+    flow.set_max_children_per_line(3);
+    flow.set_min_children_per_line(1);
+    flow.set_homogeneous(true);
+    flow.set_column_spacing(10);
+    flow.set_row_spacing(10);
+    flow.set_hexpand(true);
     for gpu in gpus {
         let child = gtk::FlowBoxChild::new();
-        child.set_child(Some(&make_gpu_card(app, gpu)));
-        app.gpu_flow.insert(&child, -1);
+        child.set_child(Some(&make_gpu_card(app, gpu, false)));
+        flow.insert(&child, -1);
     }
+    app.gpu_host.append(&flow);
 }
 
 fn gpu_chip(text: &str, class: &str) -> gtk::Label {

@@ -35,6 +35,7 @@ not a claim that CI covers it.
 | Surface | Action | Expected |
 | --- | --- | --- |
 | Dashboard | Refresh, Start/Stop, GPU include switch, Tune | Live status; Cancel in the alert restores the switch and the dirty banner |
+| Dashboard layout | one GPU, then two GPUs | One card spans the row with a 3×2 bubble grid; two cards return to compact 240 px tiles |
 | Dashboard | stopped state | `0 TH/s`, numeric pool balance, configured endpoint named, no lone dashes |
 | Quick setup | Cancel, Next, Back, Apply 80 %, Use auto, Start mining | Three steps, validation, per-card values, start only after confirmation |
 | First run | Start with no wallet/miner | Opens Quick setup; miner marked not installed; single-GPU tune has no “Apply to” |

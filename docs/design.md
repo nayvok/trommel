@@ -85,6 +85,7 @@ Custom CSS lives in `install_css()`:
 | `.trommel-hero` | Dashboard hashrate hero card (translucent card background, 12 px radius) |
 | `.trommel-hero-hashrate` | Large hashrate value |
 | `.trommel-gpu-card` | Dashboard GPU card: rounded 12 px, card background, soft shadow |
+| `.trommel-gpu-card-wide` | Single-GPU card: wider padding, fills the dashboard row |
 | `.trommel-gpu-stat` | Live-value bubble inside a dashboard GPU card: tinted, 10 px radius |
 | `.trommel-gpu-stat-value`, `-label`, `-hint` | Big tabular value, small label, muted target/lock hint |
 | `.trommel-gpu-title` | Card title weight |
@@ -162,11 +163,13 @@ Every coloured value has a word next to it (“installed”, “not installed”
 - Hero card: large hashrate, status pill (`mining` / `external` / `stopped` /
   `offline`), a line with preset · miner · version · total fee, and a metadata
   line with uptime, restarts and the miner data source.
-- GPU cards in a 1–3 column flow: title (name + index), a switch that
-  includes the card in the active profile, six value bubbles (power, core,
-  memory, temperature, fan, load; the configured target/lock is a small hint
-  and turns hot when the live value differs), a custom/default chip and a
-  **Tune** button. Core and memory clocks are labelled separately.
+- GPU cards: title (name + index), a switch that includes the card in the
+  active profile, six value bubbles (power, core, memory, temperature, fan,
+  load; the configured target/lock is a small hint and turns hot when the live
+  value differs), a custom/default chip and a **Tune** button. A one-GPU rig
+  uses a single full-width card with a 3×2 bubble grid; 2+ cards keep the
+  compact 1–3 column flow of 240 px tiles. Core and memory clocks are labelled
+  separately.
 - Aggregate rows: total power, max temperature, accepted/rejected shares, pool
   balance, the configured pool endpoint with its fee, and warnings.
 - When stopped, show **numeric placeholders** (`0 TH/s`, `0.000 PRL` or `0 PRL`
