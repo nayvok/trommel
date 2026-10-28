@@ -140,14 +140,8 @@ miner are ready. It opens a three-step wizard for a 1–3 card rig:
    miner gets the usual Apply and restart / Apply and stop dialog instead of a
    silent restart.
 
-![Quick setup](docs/images/setup-en-dark.png)
-
 Presets open in a modal editor, and the same install dialog serves the Miners
-page, the editor and the wizard:
-
-![Preset editor](docs/images/preset-editor-en-dark.png)
-
-![Miner installation](docs/images/miner-install-en-dark.png)
+page, the editor and the wizard.
 
 The classic path still works:
 
