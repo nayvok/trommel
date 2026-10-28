@@ -25,9 +25,18 @@ use trommel_core::util;
 enum Cmd {
     Refresh,
     Toggle,
-    Apply { json: String, mode: String },
+    Apply {
+        json: String,
+        mode: String,
+    },
+    /// Apply a draft and start the miner in one step (quick setup).
+    ApplyStart {
+        json: String,
+    },
     ResetOc,
-    Bench { minutes: u64 },
+    Bench {
+        minutes: u64,
+    },
 }
 
 #[derive(Debug)]
@@ -100,6 +109,20 @@ fn spawn_worker(emit: Arc<dyn Fn(Ev) + Send + Sync>) -> tokio::sync::mpsc::Unbou
                                 Cmd::Apply { json, mode } => {
                                     match client.apply_config(&json, &mode).await {
                                         Ok(result) => emit(Ev::Applied(result)),
+                                        Err(err) => emit(Ev::Error(err.to_string())),
+                                    }
+                                }
+                                Cmd::ApplyStart { json } => {
+                                    match client.apply_config(&json, "live").await {
+                                        Ok(_) => match client.start().await {
+                                            Ok(_) => {
+                                                emit(Ev::Applied("Applied and started".into()));
+                                                if let Ok(json) = client.refresh().await {
+                                                    emit(Ev::Status(json));
+                                                }
+                                            }
+                                            Err(err) => emit(Ev::Error(err.to_string())),
+                                        },
                                         Err(err) => emit(Ev::Error(err.to_string())),
                                     }
                                 }
@@ -315,7 +338,11 @@ fn set_page_icon(stack: &adw::ViewStack, child: &impl IsA<gtk::Widget>, icon: &s
 // ------------------------------------------------------------------- run
 
 pub fn run() -> anyhow::Result<()> {
-    let screenshot = std::env::var_os("TROMMEL_SCREENSHOT").is_some();
+    // Both screenshot modes run a private instance so they can capture a window
+    // even when a normal Trommel instance is open.
+    let screenshot = std::env::var_os("TROMMEL_SCREENSHOT").is_some()
+        || std::env::var_os("TROMMEL_WIZARD_SCREENSHOT").is_some()
+        || std::env::var_os("TROMMEL_TUNE_SCREENSHOT").is_some();
     let app_id = if screenshot {
         format!("io.github.nayvok.Trommel.Screenshot{}", std::process::id())
     } else {
@@ -596,8 +623,45 @@ fn build_ui(app: &adw::Application) {
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(4);
+        let scroll = std::env::var("TROMMEL_SCREENSHOT_SCROLL").ok();
+        let application: gtk::Application = application.upcast();
         glib::timeout_add_seconds_local(delay, move || {
-            schedule_screenshot(window.clone(), path.clone(), application.clone(), 0);
+            if scroll.as_deref() == Some("bottom") {
+                // Give the scroll one frame to take effect before the snapshot.
+                if let Some(page) = stack.visible_child() {
+                    scroll_to_bottom(&page);
+                }
+                let window = window.clone();
+                let path = path.clone();
+                let application = application.clone();
+                glib::timeout_add_local(Duration::from_millis(700), move || {
+                    schedule_screenshot(window.clone(), path.clone(), application.clone(), 0);
+                    glib::ControlFlow::Break
+                });
+            } else {
+                schedule_screenshot(window.clone(), path.clone(), application.clone(), 0);
+            }
+            glib::ControlFlow::Break
+        });
+    }
+    if std::env::var_os("TROMMEL_OPEN_WIZARD").is_some() {
+        let app_state = app_state.clone();
+        glib::timeout_add_seconds_local(3, move || {
+            quick_setup_wizard(&app_state);
+            glib::ControlFlow::Break
+        });
+    }
+    if std::env::var_os("TROMMEL_OPEN_TUNE").is_some() {
+        let app_state = app_state.clone();
+        glib::timeout_add_seconds_local(4, move || {
+            let gpu = app_state
+                .status
+                .borrow()
+                .as_ref()
+                .and_then(|status| status.gpus.first().cloned());
+            if let Some(gpu) = gpu {
+                gpu_tune_dialog(&app_state, &gpu);
+            }
             glib::ControlFlow::Break
         });
     }
@@ -1156,9 +1220,7 @@ fn connect_signals(app: &Rc<App>) {
         let app = app.clone();
         let button = app.quick_button.clone();
         button.connect_clicked(move |_| {
-            app.stack.set_visible_child_name("presets");
-            app.editor.stack.set_visible_child_name("editor");
-            refresh_preset_editor(&app);
+            quick_setup_wizard(&app);
         });
     }
     if let Some(button) = NEW_PRESET_BUTTON.with(|slot| slot.borrow().clone()) {
@@ -1237,6 +1299,27 @@ fn connect_signals(app: &Rc<App>) {
         let app = app.clone();
         let button = app.settings.diagnostics.clone();
         button.connect_clicked(move |_| copy_diagnostics(&app));
+    }
+    {
+        // The simple-mode switch is part of the draft: apply it immediately so
+        // the advanced GPU table and the clock lock rows match the switch.
+        let app = app.clone();
+        let simple_row = app.settings.simple_mode.clone();
+        simple_row.connect_notify_local(Some("active"), move |row, _| {
+            if app.config.borrow().behavior.simple_mode == row.is_active() {
+                return;
+            }
+            app.config.borrow_mut().behavior.simple_mode = row.is_active();
+            apply_simple_mode(&app);
+            mark_dirty(&app);
+            let gpus = app
+                .status
+                .borrow()
+                .as_ref()
+                .map(|status| status.gpus.clone())
+                .unwrap_or_default();
+            refresh_gpu_settings(&app, &gpus);
+        });
     }
     if let Some(button) = BENCH_BUTTON.with(|slot| slot.borrow().clone()) {
         let tx = app.tx.clone();
@@ -1894,8 +1977,10 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         .transient_for(&app.window)
         .default_width(540)
         .build();
-    let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    let title = label(&format!("GPU #{} · {name}", gpu.index), &["heading"]);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    header.set_title_widget(Some(&title));
     let recommended = gtk::Button::builder()
         .label(tr("Recommended", "Рекомендуемый"))
         .css_classes(["flat"])
@@ -1906,7 +1991,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         .build();
     header.pack_end(&save);
     header.pack_start(&recommended);
-    toolbar.add_top_bar(&header);
+    window.set_titlebar(Some(&header));
     let page = adw::PreferencesPage::new();
 
     let group = adw::PreferencesGroup::builder()
@@ -2020,8 +2105,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     target_group.add(&target_hint);
     page.add(&group);
     page.add(&target_group);
-    toolbar.set_content(Some(&page));
-    window.set_child(Some(&toolbar));
+    window.set_child(Some(&page));
 
     {
         let power_row = power.clone();
@@ -2107,6 +2191,682 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         });
     }
     window.present();
+    if let Some(path) = std::env::var_os("TROMMEL_TUNE_SCREENSHOT") {
+        let path = path.to_string_lossy().into_owned();
+        let capture = window.clone();
+        let application = app.window.application();
+        glib::timeout_add_seconds_local(2, move || {
+            if let Some(application) = application.clone() {
+                schedule_window_screenshot(capture.clone(), path.clone(), application, 0);
+            }
+            glib::ControlFlow::Break
+        });
+    }
+}
+
+// ------------------------------------------------------------ quick setup
+
+/// One card row of the quick-setup wizard: the enable switch, its power limit
+/// and the stock limit used by the "80%" helper.
+struct SetupCard {
+    uuid: String,
+    row: adw::ExpanderRow,
+    power: adw::SpinRow,
+    stock_w: Option<f64>,
+}
+
+fn string_list(values: &[String]) -> gtk::StringList {
+    let refs: Vec<&str> = values.iter().map(String::as_str).collect();
+    gtk::StringList::new(&refs)
+}
+
+fn setup_miner_versions(miner_row: &adw::ComboRow, version_row: &adw::ComboRow) {
+    let previous = version_row.selected() as usize;
+    let versions: Vec<String> = catalog::miners()
+        .get(miner_row.selected() as usize)
+        .map(|def| def.versions.iter().map(|v| v.version.clone()).collect())
+        .unwrap_or_default();
+    version_row.set_model(Some(&string_list(&versions)));
+    if !versions.is_empty() {
+        version_row.set_selected(previous.min(versions.len() - 1) as u32);
+    }
+}
+
+fn setup_miner_state(
+    app: &Rc<App>,
+    miner_row: &adw::ComboRow,
+    version_row: &adw::ComboRow,
+    install_row: &adw::ActionRow,
+    fee_row: &adw::ActionRow,
+) {
+    let Some(def) = catalog::miners().get(miner_row.selected() as usize) else {
+        install_row.set_subtitle(&tr("Choose a miner", "Выберите майнера"));
+        fee_row.set_subtitle("—");
+        return;
+    };
+    let version = def
+        .versions
+        .get(version_row.selected() as usize)
+        .map(|v| v.version.clone())
+        .unwrap_or_default();
+    let installed = app.config.borrow().install(&def.id, &version).is_some();
+    let state = if installed {
+        tr("Installed", "Установлен")
+    } else {
+        tr("Not installed", "Не установлен")
+    };
+    install_row.set_subtitle(&format!("{state} · {} {version}", def.id));
+    fee_row.set_subtitle(&format!(
+        "{:.2}% · {}",
+        def.fee_pct,
+        if def.fee_configurable {
+            tr("editable per preset", "меняется в пресете")
+        } else {
+            tr("fixed by the miner", "фиксирована майнером")
+        }
+    ));
+}
+
+fn show_setup_step(
+    step: u32,
+    stack: &gtk::Stack,
+    step_label: &gtk::Label,
+    back: &gtk::Button,
+    next: &gtk::Button,
+    status: &gtk::Label,
+) {
+    let pages = ["cards", "miner", "wallet"];
+    let titles = [
+        tr("Step 1 of 3 · Cards", "Шаг 1 из 3 · Карты"),
+        tr("Step 2 of 3 · Miner", "Шаг 2 из 3 · Майнер"),
+        tr("Step 3 of 3 · Wallet", "Шаг 3 из 3 · Кошелёк"),
+    ];
+    let index = (step as usize).min(pages.len() - 1);
+    stack.set_visible_child_name(pages[index]);
+    step_label.set_text(&titles[index]);
+    let back_text = if index == 0 {
+        tr("Cancel", "Отмена")
+    } else {
+        tr("Back", "Назад")
+    };
+    back.set_label(&back_text);
+    let next_text = if index == pages.len() - 1 {
+        tr("Start mining", "Запустить майнинг")
+    } else {
+        tr("Next", "Далее")
+    };
+    next.set_label(&next_text);
+    status.set_text("");
+}
+
+/// Three-step wizard for a first start: cards → miner → wallet → Start.
+fn quick_setup_wizard(app: &Rc<App>) {
+    let gpus: Vec<GpuStats> = app
+        .status
+        .borrow()
+        .as_ref()
+        .map(|status| status.gpus.clone())
+        .unwrap_or_default();
+    let (preset, profile) = {
+        let cfg = app.config.borrow();
+        (
+            cfg.preset().cloned().unwrap_or_else(Preset::new_pearl),
+            cfg.gpu_profile().cloned().unwrap_or_default(),
+        )
+    };
+
+    let mut builder = gtk::Window::builder()
+        .title(tr("Quick setup", "Быстрая настройка"))
+        .modal(true)
+        .transient_for(&app.window)
+        .default_width(620)
+        .default_height(680);
+    if let Some(application) = app.window.application() {
+        builder = builder.application(&application);
+    }
+    let window = builder.build();
+    let header = adw::HeaderBar::new();
+    let step_label = label(&tr("Step 1 of 3", "Шаг 1 из 3"), &["caption", "dim-label"]);
+    step_label.set_halign(gtk::Align::Center);
+    let back = gtk::Button::builder()
+        .label(tr("Cancel", "Отмена"))
+        .css_classes(["flat"])
+        .build();
+    let next = gtk::Button::builder()
+        .label(tr("Next", "Далее"))
+        .css_classes(["suggested-action"])
+        .build();
+    header.set_title_widget(Some(&step_label));
+    header.pack_start(&back);
+    header.pack_end(&next);
+    window.set_titlebar(Some(&header));
+
+    let stack = gtk::Stack::new();
+    stack.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
+    stack.set_transition_duration(180);
+    stack.set_vexpand(true);
+
+    // Step 1 — cards and power limits.
+    let cards: Rc<RefCell<Vec<SetupCard>>> = Rc::new(RefCell::new(Vec::new()));
+    let cards_page = adw::PreferencesPage::new();
+    let cards_group = adw::PreferencesGroup::builder()
+        .title(tr("Cards to mine on", "Карты для майнинга"))
+        .description(tr(
+            "Each card keeps its own power limit. Untick a card to leave it untouched.",
+            "У каждой карты свой лимит питания. Снимите галочку, чтобы не трогать карту.",
+        ))
+        .build();
+    for gpu in &gpus {
+        let tuning = profile.tuning_for(&gpu.uuid);
+        let stock = gpu.power_default_w.or(gpu.power_limit_w);
+        let subtitle = match stock {
+            Some(watts) => format!("{}: {:.0} W", tr("stock limit", "стоковый лимит"), watts),
+            None => tr("stock limit unknown", "стоковый лимит неизвестен").to_string(),
+        };
+        let row = adw::ExpanderRow::builder()
+            .title(format!("GPU #{} · {}", gpu.index, gpu.name))
+            .subtitle(&subtitle)
+            .build();
+        row.set_show_enable_switch(true);
+        row.set_enable_expansion(tuning.enabled);
+        row.set_expanded(false);
+        let power = spin_row(
+            &tr("Power limit", "Лимит питания"),
+            &tr("W — 0 = driver auto", "Вт — 0 = авто драйвера"),
+            tuning.power_limit_w.unwrap_or(0) as f64,
+            0.0,
+            1000.0,
+        );
+        row.add_row(&power);
+        cards_group.add(&row);
+        cards.borrow_mut().push(SetupCard {
+            uuid: gpu.uuid.clone(),
+            row,
+            power,
+            stock_w: stock,
+        });
+    }
+    if gpus.is_empty() {
+        cards_group.add(
+            &adw::ActionRow::builder()
+                .title(tr("No GPU detected", "Карты не обнаружены"))
+                .subtitle(tr(
+                    "The service is offline or nvidia-smi failed. The preset is still saved.",
+                    "Сервис недоступен или nvidia-smi не отвечает. Пресет всё равно сохранится.",
+                ))
+                .build(),
+        );
+    }
+    cards_page.add(&cards_group);
+
+    let safe_group = adw::PreferencesGroup::builder()
+        .title(tr("Safe start", "Безопасный старт"))
+        .description(tr(
+            "Recommended is 80% of the stock power limit with clock locks off. It is a safe start, not a promise of maximum hashrate.",
+            "«Рекомендуемый» — 80% стокового лимита питания без локов частот. Это безопасный старт, а не обещание максимального хешрейта.",
+        ))
+        .build();
+    let fill_row = adw::ActionRow::builder()
+        .title(tr("80% of stock power", "80% стокового питания"))
+        .subtitle(tr(
+            "Applied to every ticked card",
+            "Применяется ко всем отмеченным картам",
+        ))
+        .build();
+    let fill = gtk::Button::builder()
+        .label(tr("Fill", "Заполнить"))
+        .css_classes(["pill"])
+        .valign(gtk::Align::Center)
+        .build();
+    fill_row.add_suffix(&fill);
+    safe_group.add(&fill_row);
+    let auto_row = adw::ActionRow::builder()
+        .title(tr("Driver auto", "Авто драйвера"))
+        .subtitle(tr(
+            "No power limit; the driver decides",
+            "Без лимита питания; решает драйвер",
+        ))
+        .build();
+    let clear = gtk::Button::builder()
+        .label(tr("Use auto", "Авто"))
+        .css_classes(["flat"])
+        .valign(gtk::Align::Center)
+        .build();
+    auto_row.add_suffix(&clear);
+    safe_group.add(&auto_row);
+    cards_page.add(&safe_group);
+    stack.add_named(&cards_page, Some("cards"));
+    {
+        let cards = cards.clone();
+        fill.connect_clicked(move |_| {
+            for card in cards.borrow().iter() {
+                if !card.row.enables_expansion() {
+                    continue;
+                }
+                if let Some(stock) = card.stock_w {
+                    card.power.set_value((stock * 0.8).round().max(50.0));
+                }
+            }
+        });
+    }
+    {
+        let cards = cards.clone();
+        clear.connect_clicked(move |_| {
+            for card in cards.borrow().iter() {
+                card.power.set_value(0.0);
+            }
+        });
+    }
+
+    // Step 2 — miner and version.
+    let miner_page = adw::PreferencesPage::new();
+    let miner_group = adw::PreferencesGroup::builder()
+        .title(tr("Miner", "Майнер"))
+        .description(tr(
+            "Install once; every preset can reuse it. Only one miner runs at a time.",
+            "Установите один раз; все пресеты могут его использовать. Одновременно работает один майнер.",
+        ))
+        .build();
+    let miner_row = adw::ComboRow::builder()
+        .title(tr("Miner", "Майнер"))
+        .model(&string_list(&miner_names()))
+        .selected(miner_index(&preset.miner))
+        .build();
+    let version_row = adw::ComboRow::builder()
+        .title(tr("Version", "Версия"))
+        .build();
+    let fee_row = adw::ActionRow::builder()
+        .title(tr("Fee", "Комиссия"))
+        .build();
+    let install_row = adw::ActionRow::builder()
+        .title(tr("Installation", "Установка"))
+        .build();
+    let download = gtk::Button::builder()
+        .label(tr("Download", "Скачать"))
+        .css_classes(["pill"])
+        .valign(gtk::Align::Center)
+        .build();
+    let import_button = gtk::Button::builder()
+        .label(tr("Import", "Импорт"))
+        .css_classes(["pill"])
+        .valign(gtk::Align::Center)
+        .build();
+    install_row.add_suffix(&download);
+    install_row.add_suffix(&import_button);
+    miner_group.add(&miner_row);
+    miner_group.add(&version_row);
+    miner_group.add(&fee_row);
+    miner_group.add(&install_row);
+    miner_page.add(&miner_group);
+    stack.add_named(&miner_page, Some("miner"));
+    setup_miner_versions(&miner_row, &version_row);
+    if let Some(index) = catalog::miner(&preset.miner).and_then(|def| {
+        def.versions
+            .iter()
+            .position(|v| v.version == preset.miner_version)
+    }) {
+        version_row.set_selected(index as u32);
+    }
+    setup_miner_state(app, &miner_row, &version_row, &install_row, &fee_row);
+    {
+        let app = app.clone();
+        let miner_row = miner_row.clone();
+        let version_row = version_row.clone();
+        let install_row = install_row.clone();
+        let fee_row = fee_row.clone();
+        miner_row.connect_notify_local(Some("selected"), move |row, _| {
+            setup_miner_versions(row, &version_row);
+            setup_miner_state(&app, row, &version_row, &install_row, &fee_row);
+        });
+    }
+    {
+        let app = app.clone();
+        let miner_row = miner_row.clone();
+        let install_row = install_row.clone();
+        let fee_row = fee_row.clone();
+        version_row.connect_notify_local(Some("selected"), move |row, _| {
+            setup_miner_state(&app, &miner_row, row, &install_row, &fee_row);
+        });
+    }
+    {
+        let app = app.clone();
+        let miner_row = miner_row.clone();
+        let version_row = version_row.clone();
+        let install_row = install_row.clone();
+        let fee_row = fee_row.clone();
+        download.connect_clicked(move |_| {
+            let id = catalog::miners()
+                .get(miner_row.selected() as usize)
+                .map(|def| def.id.clone())
+                .unwrap_or_else(|| "wildrig".into());
+            let version = catalog::miners()
+                .get(miner_row.selected() as usize)
+                .and_then(|def| def.versions.get(version_row.selected() as usize))
+                .cloned();
+            download_dialog(&app, &id, version);
+            setup_miner_state(&app, &miner_row, &version_row, &install_row, &fee_row);
+        });
+    }
+    {
+        let app = app.clone();
+        let miner_row = miner_row.clone();
+        let version_row = version_row.clone();
+        let install_row = install_row.clone();
+        let fee_row = fee_row.clone();
+        import_button.connect_clicked(move |_| {
+            let id = catalog::miners()
+                .get(miner_row.selected() as usize)
+                .map(|def| def.id.clone())
+                .unwrap_or_else(|| "wildrig".into());
+            let version = catalog::miners()
+                .get(miner_row.selected() as usize)
+                .and_then(|def| def.versions.get(version_row.selected() as usize))
+                .map(|v| v.version.clone())
+                .unwrap_or_default();
+            import_miner(&app, &id, &version);
+            setup_miner_state(&app, &miner_row, &version_row, &install_row, &fee_row);
+        });
+    }
+
+    // Step 3 — wallet and pool.
+    let wallet_page = adw::PreferencesPage::new();
+    let form_group = adw::PreferencesGroup::builder()
+        .title(tr("Wallet and pool", "Кошелёк и пул"))
+        .description(tr(
+            "Nothing reaches the daemon until you press Start mining.",
+            "Ничего не передаётся сервису, пока вы не нажмёте «Запустить майнинг».",
+        ))
+        .build();
+    let name_row = adw::EntryRow::builder()
+        .title(tr("Preset name", "Название пресета"))
+        .text(&preset.name)
+        .build();
+    let wallet_row = adw::EntryRow::builder()
+        .title(tr("Wallet", "Кошелёк"))
+        .text(&preset.wallet)
+        .build();
+    let worker_row = adw::EntryRow::builder()
+        .title(tr("Worker", "Воркер"))
+        .text(&preset.worker)
+        .build();
+    let pool_row = adw::ComboRow::builder()
+        .title(tr("Pool", "Пул"))
+        .model(&string_list(&pool_names()))
+        .selected(pool_index(&preset.pool))
+        .build();
+    let pool_url_row = adw::EntryRow::builder()
+        .title(tr("Pool address", "Адрес пула"))
+        .text(&preset.pool_url)
+        .build();
+    form_group.add(&name_row);
+    form_group.add(&wallet_row);
+    form_group.add(&worker_row);
+    form_group.add(&pool_row);
+    form_group.add(&pool_url_row);
+    wallet_page.add(&form_group);
+    let summary_group = adw::PreferencesGroup::new();
+    summary_group.add(
+        &adw::ActionRow::builder()
+            .title(tr("On Start", "По кнопке «Запустить»"))
+            .subtitle(tr(
+                "Trommel saves the preset, applies the power limits and starts the miner.",
+                "Trommel сохранит пресет, применит лимиты питания и запустит майнер.",
+            ))
+            .build(),
+    );
+    wallet_page.add(&summary_group);
+    stack.add_named(&wallet_page, Some("wallet"));
+    {
+        let pool_url_row = pool_url_row.clone();
+        pool_row.connect_notify_local(Some("selected"), move |row, _| {
+            if let Some(pool) = catalog::pools().get(row.selected() as usize) {
+                pool_url_row.set_text(&pool.url);
+            }
+        });
+    }
+
+    let status = label("", &["caption", "dim-label"]);
+    status.set_margin_top(8);
+    status.set_margin_bottom(10);
+    status.set_margin_start(12);
+    status.set_margin_end(12);
+    status.set_wrap(true);
+    status.set_halign(gtk::Align::Start);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&stack);
+    content.append(&status);
+    window.set_child(Some(&content));
+
+    let step = Rc::new(Cell::new(0u32));
+    {
+        let window = window.clone();
+        let step = step.clone();
+        let stack = stack.clone();
+        let step_label = step_label.clone();
+        let back_button = back.clone();
+        let next_button = next.clone();
+        let status = status.clone();
+        back.connect_clicked(move |_| {
+            if step.get() == 0 {
+                window.close();
+                return;
+            }
+            step.set(step.get() - 1);
+            show_setup_step(
+                step.get(),
+                &stack,
+                &step_label,
+                &back_button,
+                &next_button,
+                &status,
+            );
+        });
+    }
+    {
+        let app = app.clone();
+        let window = window.clone();
+        let step = step.clone();
+        let stack = stack.clone();
+        let step_label = step_label.clone();
+        let back_button = back.clone();
+        let next_button = next.clone();
+        let status = status.clone();
+        let cards = cards.clone();
+        let miner_row = miner_row.clone();
+        let version_row = version_row.clone();
+        let install_row = install_row.clone();
+        let fee_row = fee_row.clone();
+        let name_row = name_row.clone();
+        let wallet_row = wallet_row.clone();
+        let worker_row = worker_row.clone();
+        let pool_row = pool_row.clone();
+        let pool_url_row = pool_url_row.clone();
+        next.connect_clicked(move |_| match step.get() {
+            0 => {
+                let picked = cards
+                    .borrow()
+                    .iter()
+                    .any(|card| card.row.enables_expansion());
+                if !picked && !cards.borrow().is_empty() {
+                    status.set_text(&tr(
+                        "Tick at least one card, or leave the wizard and tune cards later.",
+                        "Отметьте хотя бы одну карту или настройте карты позже.",
+                    ));
+                    return;
+                }
+                step.set(1);
+                show_setup_step(1, &stack, &step_label, &back_button, &next_button, &status);
+            }
+            1 => {
+                setup_miner_state(&app, &miner_row, &version_row, &install_row, &fee_row);
+                step.set(2);
+                show_setup_step(2, &stack, &step_label, &back_button, &next_button, &status);
+            }
+            _ => {
+                finish_quick_setup(
+                    &app,
+                    &window,
+                    &cards,
+                    &miner_row,
+                    &version_row,
+                    &name_row,
+                    &wallet_row,
+                    &worker_row,
+                    &pool_row,
+                    &pool_url_row,
+                    &status,
+                );
+            }
+        });
+    }
+
+    // Documentation screenshots can open a later step directly.
+    if let Some(initial) = std::env::var("TROMMEL_WIZARD_STEP")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        let initial = initial.min(2);
+        if initial > 0 {
+            step.set(initial);
+            show_setup_step(initial, &stack, &step_label, &back, &next, &status);
+        }
+    }
+    window.present();
+    if let Some(path) = std::env::var_os("TROMMEL_WIZARD_SCREENSHOT") {
+        let path = path.to_string_lossy().into_owned();
+        let capture = window.clone();
+        let application = app.window.application();
+        glib::timeout_add_seconds_local(3, move || {
+            if let Some(application) = application.clone() {
+                schedule_window_screenshot(capture.clone(), path.clone(), application, 0);
+            }
+            glib::ControlFlow::Break
+        });
+    }
+}
+
+/// Commit the wizard draft, then start the miner (or offer apply when running).
+#[allow(clippy::too_many_arguments)]
+fn finish_quick_setup(
+    app: &Rc<App>,
+    window: &gtk::Window,
+    cards: &Rc<RefCell<Vec<SetupCard>>>,
+    miner_row: &adw::ComboRow,
+    version_row: &adw::ComboRow,
+    name_row: &adw::EntryRow,
+    wallet_row: &adw::EntryRow,
+    worker_row: &adw::EntryRow,
+    pool_row: &adw::ComboRow,
+    pool_url_row: &adw::EntryRow,
+    status: &gtk::Label,
+) -> bool {
+    let Some(def) = catalog::miners()
+        .get(miner_row.selected() as usize)
+        .cloned()
+    else {
+        status.set_text(&tr("Choose a miner.", "Выберите майнера."));
+        return false;
+    };
+    let version = def
+        .versions
+        .get(version_row.selected() as usize)
+        .map(|v| v.version.clone())
+        .unwrap_or_default();
+    if app.config.borrow().install(&def.id, &version).is_none() {
+        status.set_text(&tr(
+            "Install the selected miner version first — use Download or Import.",
+            "Сначала установите выбранную версию майнера — «Скачать» или «Импорт».",
+        ));
+        return false;
+    }
+    let wallet = wallet_row.text().trim().to_string();
+    if wallet.is_empty() {
+        status.set_text(&tr(
+            "Enter the wallet address — mining cannot start without it.",
+            "Введите адрес кошелька — без него майнинг не запустится.",
+        ));
+        return false;
+    }
+    let pool_url = pool_url_row.text().trim().to_string();
+    if !pool_url.contains(':') {
+        status.set_text(&tr(
+            "The pool address needs a port, for example pool.pearlhash.xyz:9000.",
+            "В адресе пула нужен порт, например pool.pearlhash.xyz:9000.",
+        ));
+        return false;
+    }
+    let pool_id = catalog::pools()
+        .get(pool_row.selected() as usize)
+        .map(|pool| pool.id.clone())
+        .unwrap_or_else(|| "pearlhash".into());
+    let running = app
+        .status
+        .borrow()
+        .as_ref()
+        .map(|status| status.state.running)
+        .unwrap_or(false);
+    let mut preset_name = name_row.text().trim().to_string();
+    if preset_name.is_empty() {
+        preset_name = tr("Quick setup", "Быстрая настройка").to_string();
+    }
+    {
+        let mut cfg = app.config.borrow_mut();
+        let id = cfg
+            .active_preset
+            .clone()
+            .unwrap_or_else(|| trommel_core::config::DEFAULT_PRESET_ID.to_string());
+        let mut preset = cfg
+            .presets
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(Preset::new_pearl);
+        preset.id = id.clone();
+        preset.name = preset_name;
+        preset.wallet = wallet;
+        preset.worker = worker_row.text().to_string();
+        preset.pool = pool_id.clone();
+        preset.pool_url = pool_url;
+        preset.pool_fee_pct = catalog::pool_fee_pct(&pool_id);
+        if preset.miner != def.id {
+            preset.miner_options = def.default_options();
+        }
+        preset.miner = def.id.clone();
+        preset.miner_version = version;
+        preset.miner_fee_pct = def.fee_pct;
+        preset.miner_fee_override_pct = None;
+        preset.updated_at = util::now_unix();
+        cfg.presets.insert(id.clone(), preset);
+        cfg.active_preset = Some(id);
+        {
+            let profile = cfg.gpu_profile_mut();
+            for card in cards.borrow().iter() {
+                let mut tuning = profile.tuning_for(&card.uuid);
+                tuning.enabled = card.row.enables_expansion();
+                tuning.power_limit_w = nonzero(card.power.value() as u32);
+                profile.per_gpu.insert(card.uuid.clone(), tuning);
+            }
+        }
+    }
+    mark_dirty(app);
+    refresh_preset_list(app);
+    refresh_preset_editor(app);
+    window.close();
+    app.stack.set_visible_child_name("dashboard");
+    if running {
+        app.toast.add_toast(adw::Toast::new(&tr(
+            "Setup saved; apply it to the running miner.",
+            "Настройка сохранена; примените её к запущенному майнеру.",
+        )));
+        save_and_apply(app);
+    } else {
+        let json = serde_json::to_string(&*app.config.borrow()).unwrap_or_default();
+        let _ = app.tx.send(Cmd::ApplyStart { json });
+        app.toast.add_toast(adw::Toast::new(&tr(
+            "Starting the miner…",
+            "Запускаю майнер…",
+        )));
+    }
+    true
 }
 
 fn download_dialog(app: &Rc<App>, miner: &str, version: Option<catalog::MinerVersion>) {
@@ -2860,18 +3620,21 @@ fn tuning_summary(app: &Rc<App>, uuid: &str) -> (String, bool) {
 }
 
 fn refresh_gpu_settings(app: &Rc<App>, gpus: &[GpuStats]) {
-    let signature = gpus
-        .iter()
-        .map(|gpu| {
-            let tuning = app
-                .config
-                .borrow()
-                .gpu_profile()
-                .map(|profile| profile.tuning_for(&gpu.uuid));
-            format!("{}:{}:{:?}", gpu.uuid, gpu.name, tuning)
-        })
-        .collect::<Vec<_>>()
-        .join("|");
+    let simple = app.config.borrow().behavior.simple_mode;
+    let signature = format!(
+        "simple={simple}|{}",
+        gpus.iter()
+            .map(|gpu| {
+                let tuning = app
+                    .config
+                    .borrow()
+                    .gpu_profile()
+                    .map(|profile| profile.tuning_for(&gpu.uuid));
+                format!("{}:{}:{:?}", gpu.uuid, gpu.name, tuning)
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    );
     if *app.gpu_settings_sig.borrow() == signature {
         return;
     }
@@ -2888,12 +3651,87 @@ fn refresh_gpu_settings(app: &Rc<App>, gpus: &[GpuStats]) {
         app.settings.gpu_settings_box.append(&row);
         return;
     }
-    for gpu in gpus {
-        let (summary, _) = tuning_summary(app, &gpu.uuid);
-        let row = adw::ActionRow::builder()
-            .title(format!("GPU #{} · {}", gpu.index, gpu.name))
-            .subtitle(summary)
-            .build();
+
+    // Advanced table: one row per card, one column per tuned value.
+    let grid = gtk::Grid::new();
+    grid.set_column_spacing(18);
+    grid.set_row_spacing(8);
+    grid.set_margin_top(6);
+    grid.set_margin_bottom(6);
+    grid.set_margin_start(6);
+    grid.set_margin_end(6);
+    grid.set_hexpand(true);
+
+    let mut columns = vec![tr("GPU", "Карта"), tr("Power", "Питание")];
+    if !simple {
+        columns.push(tr("Core", "Ядро"));
+        columns.push(tr("Memory", "Память"));
+    }
+    columns.push(tr("Temp", "Темп."));
+    if !simple {
+        columns.push(tr("Fan", "Вент."));
+    }
+    for (index, title) in columns.iter().enumerate() {
+        let head = label(title, &["caption", "dim-label"]);
+        head.set_halign(if index == 0 {
+            gtk::Align::Start
+        } else {
+            gtk::Align::Center
+        });
+        if index == 0 {
+            head.set_hexpand(true);
+        }
+        grid.attach(&head, index as i32, 0, 1, 1);
+    }
+
+    let auto = tr("auto", "авто");
+    for (row_index, gpu) in gpus.iter().enumerate() {
+        let tuning = app
+            .config
+            .borrow()
+            .gpu_profile()
+            .map(|profile| profile.tuning_for(&gpu.uuid))
+            .unwrap_or_default();
+        let y = row_index as i32 + 1;
+        let name = label(&format!("#{} {}", gpu.index, gpu.name), &["bold"]);
+        name.set_hexpand(true);
+        name.set_tooltip_text(Some(&tuning_summary(app, &gpu.uuid).0));
+        grid.attach(&name, 0, y, 1, 1);
+
+        let mut column = 1;
+        let power = tuning
+            .power_limit_w
+            .map(|watts| format!("{watts} W"))
+            .unwrap_or_else(|| auto.clone());
+        let power_cell = label(&power, &["numeric"]);
+        power_cell.set_halign(gtk::Align::Center);
+        grid.attach(&power_cell, column, y, 1, 1);
+        column += 1;
+        if !simple {
+            for value in [tuning.core_clock_mhz, tuning.memory_clock_mhz] {
+                let text = value
+                    .map(|mhz| format!("{mhz} MHz"))
+                    .unwrap_or_else(|| auto.clone());
+                let cell = label(&text, &["numeric"]);
+                cell.set_halign(gtk::Align::Center);
+                grid.attach(&cell, column, y, 1, 1);
+                column += 1;
+            }
+        }
+        let temp = label(&format!("{} °C", tuning.temp_limit_c), &["numeric"]);
+        temp.set_halign(gtk::Align::Center);
+        grid.attach(&temp, column, y, 1, 1);
+        column += 1;
+        if !simple {
+            let fan = tuning
+                .fan_pct
+                .map(|pct| format!("{pct}%"))
+                .unwrap_or_else(|| auto.clone());
+            let fan_cell = label(&fan, &["numeric"]);
+            fan_cell.set_halign(gtk::Align::Center);
+            grid.attach(&fan_cell, column, y, 1, 1);
+            column += 1;
+        }
         let tune = gtk::Button::builder()
             .label(tr("Tune", "Настроить"))
             .css_classes(["pill"])
@@ -2904,19 +3742,43 @@ fn refresh_gpu_settings(app: &Rc<App>, gpus: &[GpuStats]) {
             let gpu = gpu.clone();
             tune.connect_clicked(move |_| gpu_tune_dialog(&app, &gpu));
         }
-        row.add_suffix(&tune);
-        app.settings.gpu_settings_box.append(&row);
+        grid.attach(&tune, column, y, 1, 1);
     }
-    if gpus.len() == 1 {
+    app.settings.gpu_settings_box.append(&grid);
+
+    if simple {
         let hint = label(
             &tr(
-                "Single GPU: these settings apply to this card only.",
-                "Одна карта: эти настройки относятся только к ней.",
+                "Simple mode shows power and temperature only. Clock locks live under Advanced.",
+                "Простой режим показывает только питание и температуру. Локи частот — в «Продвинутом».",
             ),
             &["caption", "dim-label"],
         );
+        hint.set_margin_top(6);
         hint.set_margin_start(6);
-        hint.set_margin_top(4);
+        app.settings.gpu_settings_box.append(&hint);
+        let advanced = gtk::Button::builder()
+            .label(tr("Advanced settings", "Продвинутые настройки"))
+            .css_classes(["flat"])
+            .halign(gtk::Align::Start)
+            .build();
+        {
+            let app = app.clone();
+            advanced.connect_clicked(move |_| {
+                app.settings.simple_mode.set_active(false);
+            });
+        }
+        app.settings.gpu_settings_box.append(&advanced);
+    } else if gpus.len() > 1 {
+        let hint = label(
+            &tr(
+                "Each card keeps its own settings. Tune copies a profile to similar or all cards.",
+                "У каждой карты свои настройки. В «Настроить» профиль копируется на одинаковые или все карты.",
+            ),
+            &["caption", "dim-label"],
+        );
+        hint.set_margin_top(6);
+        hint.set_margin_start(6);
         app.settings.gpu_settings_box.append(&hint);
     }
 }
@@ -3038,17 +3900,36 @@ fn apply_status(app: &Rc<App>, status: Status) {
 
 // --------------------------------------------------------------- screenshot
 
-fn schedule_screenshot(
-    window: adw::ApplicationWindow,
-    path: String,
-    application: adw::Application,
-    attempt: u32,
-) {
-    match save_window_png(&window, &path) {
+/// Scroll the first scrolled window inside `widget` to its bottom.
+///
+/// `AdwPreferencesPage` owns an internal `GtkScrolledWindow`; GTK does not
+/// expose it, so the screenshot helper walks the widget tree once.
+fn scroll_to_bottom(widget: &gtk::Widget) -> bool {
+    if let Some(scrolled) = widget.downcast_ref::<gtk::ScrolledWindow>() {
+        let adjustment = scrolled.vadjustment();
+        adjustment.set_value(adjustment.upper());
+        return true;
+    }
+    let mut child = widget.first_child();
+    while let Some(node) = child {
+        if scroll_to_bottom(&node) {
+            return true;
+        }
+        child = node.next_sibling();
+    }
+    false
+}
+
+fn schedule_screenshot<W>(window: W, path: String, application: gtk::Application, attempt: u32)
+where
+    W: IsA<gtk::Widget> + IsA<gtk::Native> + Clone + 'static,
+{
+    match save_widget_png(&window, &path) {
         Ok(()) => application.quit(),
-        Err(err) if attempt < 30 => {
+        Err(err) if attempt < 60 => {
             eprintln!("screenshot attempt {} failed: {err}", attempt + 1);
-            glib::timeout_add_local(Duration::from_millis(500), move || {
+            window.queue_draw();
+            glib::timeout_add_local(Duration::from_millis(400), move || {
                 schedule_screenshot(
                     window.clone(),
                     path.clone(),
@@ -3065,7 +3946,20 @@ fn schedule_screenshot(
     }
 }
 
-fn save_window_png(window: &adw::ApplicationWindow, path: &str) -> anyhow::Result<()> {
+/// Screenshot helper for a transient window (the quick-setup wizard).
+fn schedule_window_screenshot(
+    window: gtk::Window,
+    path: String,
+    application: gtk::Application,
+    attempt: u32,
+) {
+    schedule_screenshot(window, path, application, attempt);
+}
+
+fn save_widget_png<W>(window: &W, path: &str) -> anyhow::Result<()>
+where
+    W: IsA<gtk::Widget> + IsA<gtk::Native>,
+{
     let width = window.width();
     let height = window.height();
     if width <= 0 || height <= 0 {

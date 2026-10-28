@@ -6,7 +6,8 @@
   dynamic miner options.
 - Per-GPU stock snapshot/restore and apply/restart/stop flow.
 - GNOME 50 extension with shared settings and Quick Settings toggle.
-- Simple mode, quick setup entry point and a safe "recommended" GPU profile.
+- Simple mode, a three-step quick-setup wizard, per-card tuning table and a
+  safe "recommended" GPU profile.
 - External agent surface: diagnostics, config diff/apply, preset export/import
   and a read-only MCP server (`trommel mcp`; `--allow-write` opt-in).
 - `.deb`, developer install, EN/RU docs.

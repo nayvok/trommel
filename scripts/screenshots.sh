@@ -83,24 +83,72 @@ setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
 DAEMON_PID=$!
 sleep 2
 
-shot() {
-  local theme="$1" language="$2" page="$3" target="$4"
-  python3 - "$WORK" "$language" <<'PY'
+configure() {
+  local language="$1" simple="$2"
+  python3 - "$WORK" "$language" "$simple" <<'PY'
 import json, pathlib, sys
-work, language = pathlib.Path(sys.argv[1]), sys.argv[2]
+work, language, simple = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3] == "1"
 p = work/"config"/"trommel"/"config.json"
-cfg = json.loads(p.read_text()); cfg["behavior"]["language"] = language
+cfg = json.loads(p.read_text())
+cfg["behavior"]["language"] = language
+cfg["behavior"]["simple_mode"] = simple
 p.write_text(json.dumps(cfg, indent=2))
 PY
-  rm -f "$target"
-  TROMMEL_COLOR_SCHEME="$theme" TROMMEL_SCREENSHOT="$target" TROMMEL_SCREENSHOT_PAGE="$page" \
-    TROMMEL_SCREENSHOT_DELAY=6 timeout 35 "$BIN/trommel" > "$WORK/gui-$theme-$language-$page.log" 2>&1 || true
+  # The daemon owns the applied config: send the edit there too, otherwise the
+  # GUI refresh would restore the old simple-mode/language values.
+  "$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1 || true
+}
+
+shot() {
+  local theme="$1" language="$2" page="$3" target="$4" simple="${5:-1}" scroll="${6:-}"
+  configure "$language" "$simple"
+  if [ -n "$scroll" ]; then export TROMMEL_SCREENSHOT_SCROLL="$scroll"; else unset TROMMEL_SCREENSHOT_SCROLL; fi
+  local attempt
+  for attempt in 1 2; do
+    rm -f "$target"
+    TROMMEL_COLOR_SCHEME="$theme" TROMMEL_SCREENSHOT="$target" TROMMEL_SCREENSHOT_PAGE="$page" \
+      TROMMEL_SCREENSHOT_DELAY=6 timeout 55 "$BIN/trommel" > "$WORK/gui-$theme-$language-$page.log" 2>&1 || true
+    [ -f "$target" ] && break
+    echo "  … retrying $(basename "$target")" >&2
+  done
+  [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
+}
+
+tune_shot() {
+  local theme="$1" language="$2" target="$3"
+  configure "$language" 0
+  local attempt
+  for attempt in 1 2; do
+    rm -f "$target"
+    TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_TUNE=1 TROMMEL_TUNE_SCREENSHOT="$target" \
+      timeout 50 "$BIN/trommel" > "$WORK/gui-tune-$theme-$language.log" 2>&1 || true
+    [ -f "$target" ] && break
+    echo "  … retrying $(basename "$target")" >&2
+  done
+  [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
+}
+
+wizard_shot() {
+  local theme="$1" language="$2" target="$3" step="${4:-0}"
+  configure "$language" 1
+  local attempt
+  for attempt in 1 2; do
+    rm -f "$target"
+    TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_WIZARD=1 TROMMEL_WIZARD_SCREENSHOT="$target" \
+      TROMMEL_WIZARD_STEP="$step" timeout 50 "$BIN/trommel" > "$WORK/gui-wizard-$theme-$language-$step.log" 2>&1 || true
+    [ -f "$target" ] && break
+    echo "  … retrying $(basename "$target")" >&2
+  done
   [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
 }
 
 shot dark en dashboard "$DOCS/dashboard-en-dark.png"
 shot dark en miners "$DOCS/miners-en-dark.png"
 shot dark en settings "$DOCS/settings-en-dark.png"
+shot dark en settings "$DOCS/settings-advanced-en-dark.png" 0 bottom
+tune_shot dark en "$DOCS/gpu-tune-en-dark.png"
+wizard_shot dark en "$DOCS/setup-en-dark.png"
+wizard_shot dark en "$DOCS/setup-wallet-en-dark.png" 2
 shot dark ru dashboard "$DOCS/dashboard-ru-dark.png"
 shot dark ru settings "$DOCS/settings-ru-dark.png"
 shot light en dashboard "$DOCS/dashboard-en-light.png"
