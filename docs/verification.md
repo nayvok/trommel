@@ -11,7 +11,8 @@ needs a real rig. Run the commands from the repository root; see
 | `cargo test --workspace` | Config defaults/migration/diff/warnings, miner argument rendering, fee handling, catalogue parsing, `nvidia-smi` parsing, OC argument validation, supervisor/state/status helpers, D-Bus helpers, hashrate formatting, download/path safety |
 | `cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings` | Lints in all crates including GUI code |
 | `cargo fmt --check` | Formatting |
-| `./scripts/e2e.sh` | CLI lifecycle on a private bus: start/stop/toggle, config v2, apply modes, miner install reaching the daemon, snapshot/restore, `--lgc/--lmc` and reset via a fake helper, stale external state and orphan adoption |
+| `./scripts/e2e.sh` | CLI lifecycle on a private bus: start/stop/toggle, config v3, per-card inheritance vs custom overrides, apply modes, power read-back, ignored power/clock locks, restore snapshot/defaults, restore-on-stop off, helper timeout, snapshot/restore, stale external state and orphan adoption |
+| `./scripts/test-oc-helper.sh` | The real Bash helper against a stateful fake `nvidia-smi`: apply/reset, ignored power rejection, failing `-rgc`, range/UUID validation |
 | `./scripts/test-mcp.sh` | MCP initialize/ping/tools/list/tools/call, read-only default, `--allow-write` gating, rejected arguments, wallet redaction |
 | `./scripts/ui-smoke.sh` | AT-SPI click-through with a fake two-GPU rig: quick setup, start/stop, settings, preset editor, GPU tuning, miner install, alerts |
 | `./scripts/first-run-smoke.sh` | Pristine install: empty XDG dirs, no config, no wallet, no installed miner, one fake GPU; dashboard placeholders, wizard, single-GPU tuning |
@@ -40,15 +41,15 @@ not a claim that CI covers it.
 | Presets | row, chevron, New preset, Use | Editor opens; chevron is a real button; Use applies the selection |
 | Preset editor | Save, Cancel, Duplicate, Delete…, Install… | Apply, confirmation, shared install dialog |
 | Miners | row, chevron, benchmark, install dialog | Installed state, cancel, sequential benchmark with a winner |
-| Settings | switches, power 0=auto, Save and apply, Copy diagnostics, Restore stock | Aligned pill buttons, live apply, redaction, stop-first guard |
+| Settings | switches, power 0=auto, Save and apply, Copy diagnostics, Restore stock | Aligned pill buttons, live apply, redaction, restore dialog with snapshot/defaults targets, stop-first guard |
 | GPU tune | Now row, Recommended, Save, locks on/off, Similar/All GPUs | Value rows hidden while off; Apply-to only with >1 GPU; restart/stop dialog |
 | Alerts | Apply and restart / Apply and stop / Cancel, delete confirmation | Explicit restart/stop; Cancel reverts optimistic changes |
 | Menu | Open log, About, Quit | Opens the log/about, quits with `Ctrl+Q` |
 | Window | resize to ~400 px | No clipping; per-card rows and action buttons readable |
 | GNOME extension | panel icon, popup, Start/Stop, Quick Settings, panel modes, notifications | Mirrors the daemon; menu comes from the panel button; no prefs window; works after re-login |
 | Installer | `install.sh`, `.deb` postinst, release installer | Binaries, helper, rule, units, extension, no password prompt for the installing user |
-| Real rig | polkit prompt-free, 300 W/1620/810, start/stop | OC applied, ~125 TH/s, stock restore, lock warnings stay empty unless the driver ignores the lock |
-| Error paths | missing helper, missing miner, external miner, failed restore | Start aborts or explains; snapshot kept on failed restore; no silent success |
+| Real rig | polkit prompt-free, 300 W/1620/810, start/stop, restore dialog | OC applied, ~125 TH/s, power read back, stock restore; an ignored memory lock stops the miner with a named error |
+| Error paths | missing helper, missing miner, external miner, failed restore, cancelled auth | Start aborts or explains; snapshot kept on failed restore; no silent success; a 180 s auth dialog is not killed |
 
 ## Manual checks that cannot run in CI
 

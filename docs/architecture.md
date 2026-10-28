@@ -48,8 +48,9 @@ Only `trommel-oc` is privileged. It accepts either `apply --gpu GPU-… --pl W
 both `trommel-core::oc` and the script. A per-user polkit rule for the annotated
 action `io.github.nayvok.trommel.oc` removes the password prompt for the user
 who installed the package; without the rule pkexec falls back to
-authentication. The helper call is bounded by a 30 s timeout so a missing rule
-cannot hang the supervisor forever.
+authentication. The helper call waits up to 180 s so an interactive password
+dialog is not killed; the per-user rule removes the prompt entirely. A missing
+rule therefore costs one authentication, not a silent failure.
 
 The daemon runs in the user session (`PartOf=graphical-session.target`) and is
 D-Bus activated on demand. It deliberately keeps the miner alive across its own
@@ -87,7 +88,7 @@ it through `ApplyConfig`.
 
 ```
 Config
-├── schema_version: 2
+├── schema_version: 3
 ├── active_preset: Option<String>
 ├── presets: { id -> Preset }
 │     coin, algo, miner, miner_version, pool, pool_url, wallet, worker,
@@ -134,23 +135,45 @@ external tools. They are descriptive, not enforced by the daemon; `Preset`
    kills a process it did not start).
 2. Validate the active preset: wallet present, pool address contains `:`,
    miner binary installed and executable.
-3. Query all GPUs. Reuse a snapshot from the current boot, otherwise capture one
-   and persist it.
-4. Apply the profile per enabled GPU through the helper. The card is registered
+3. Resolve the effective tuning per card. A per-GPU entry with `custom = false`
+   inherits power, clocks and temperature from the profile default and only
+   keeps its own enable switch. Cards whose effective tuning has no power or
+   clock values are not touched at all.
+4. Query all GPUs. For a profile with tuning, reuse the current-boot snapshot or
+   capture one; write it with `applied = true`, the touched UUIDs and the exact
+   applied tuning *before* the first helper call.
+5. Apply the profile per enabled card through the helper. The card is registered
    in the rollback list *before* the call, so a partial failure restores every
-   card already touched.
-5. Spawn the miner with an explicit argument vector (no shell), write state and
-   clear the pool cache.
+   card already touched. The power limit is read back (±1 W); a mismatch is a
+   failure.
+6. Spawn the miner with an explicit argument vector (no shell), write state,
+   schedule a one-shot clock check and clear the pool cache.
 
-Any failure in 4–5 restores the snapshot before returning the error. Start never
-leaves an applied profile without a running miner.
+Any failure in 5–6 restores the snapshot before returning the error. If the
+rollback also fails, the snapshot is kept with `last_error`, so the UI can offer
+a retry. A profile with no tuning creates no snapshot and calls no helper.
+Start never mines with a silently unapplied power limit.
 
 ### Stop
 
-Terminate the child (or a matching PID after a daemon restart), restore the
-snapshot when `behavior.restore_stock_on_stop` is set, clear the state file and
-the pool cache. If restore fails, the snapshot is kept and the error is
-returned; Stop does not pretend the stock state was restored.
+Terminate the child (or a matching PID after a daemon restart). If
+`behavior.restore_stock_on_stop` is set and a snapshot was applied, restore the
+captured power limit, unlock the clocks, read the power back and clear the
+snapshot. On failure the snapshot is kept with `last_error` and the error is
+returned. If restore is disabled, Stop keeps the snapshot, leaves the settings
+on the cards and reports `oc.needs_restore`; it does not pretend the stock state
+was restored. State and pool cache are cleared either way.
+
+### Clock verification
+
+A power limit can be read back immediately. A clock lock cannot be verified on
+an idle GPU: the card may already sit at the locked frequency (or below it).
+The supervisor therefore waits for the miner to load the GPU and then compares
+`clocks.mem` and `clocks.sm` with `snapshot.applied_tuning`. A memory mismatch
+is decisive: Stop with a forced restore, persist the error and notify the user.
+A core mismatch is a warning because the driver may fluctuate. This catches a
+driver that accepts `-lmc` but ignores it, which was previously reported as
+“applied”.
 
 ### Crash and restart
 
@@ -194,7 +217,7 @@ design: one miner at a time is an invariant.
 
 ## Status contract
 
-`Status` (contract version 2) is serialized to JSON and pushed over
+`Status` (contract version 3) is serialized to JSON and pushed over
 `StatusChanged`; `Status()`/`Refresh()` return the same document. It contains:
 
 - `state` — running, uptime, restarts, last error, external flag, preset
@@ -207,7 +230,9 @@ design: one miner at a time is an invariant.
 - `miner` — API/log statistics (`hashrate_10s/60s/15m`, accepted, rejected,
   stale, source);
 - `pool` — cached pool statistics when mining;
-- `oc` — snapshot availability, applied flag and stale-boot flag;
+- `oc` — `applied` (the snapshot was applied), `needs_restore` (applied while
+  stopped), snapshot availability, stale-boot flag, restore-on-stop setting,
+  last restore error and a first-card summary of the restore/default targets;
 - `warnings` — config warnings plus “lock not honoured” warnings;
 - fees, expected hashrate, temperature limit, timestamp (`ts`, `ts_iso`) and
   app version.
@@ -220,19 +245,30 @@ and compare `contract_version` rather than the app version.
 
 - `oc::snapshot()` reads per-card power limits (`power.limit`,
   `power.default_limit`, min/max), clocks and identity, plus the kernel boot id.
+- `OcSnapshot` also records `applied`, `applied_gpus`, `applied_tuning` and
+  `last_error`. A snapshot is written with `applied = true` before the first
+  helper call, so a crash halfway still leaves a restorable record.
 - The snapshot is stored at `~/.local/state/trommel/oc-snapshot.json`. A
-  snapshot from another boot is reported as stale (`oc.stale`), is not used by
-  Start, and is replaced by a fresh capture on the next Start.
-- Apply passes only values that are `Some`; a profile with no tuning produces no
-  helper call.
-- Restore uses `power.limit` when available and `power.default_limit` as a
-  fallback, then resets core/memory locks with the helper's `reset` subcommand.
+  snapshot from another boot is deleted when the daemon starts and is never
+  used by Stop/Restore; Start captures a fresh one.
+- `custom = false` per-GPU entries inherit the active profile default; only
+  `custom = true` entries (written by the tuning dialog) replace it. This keeps
+  the setup wizard and the enable toggle from shadowing the default.
+- Apply passes only values that are `Some`; a profile with no power/clock
+  values produces no snapshot and no helper call.
+- Restore has two targets: `snapshot` (the captured limit, clocks unlocked) and
+  `defaults` (the driver's `power.default_limit`, clocks unlocked). The UI shows
+  both when they differ and warns when the snapshot itself already had a
+  non-default limit.
+- The helper verifies `power.limit` and fails when the driver does not honour
+  it; the supervisor verifies memory/core locks under load.
 - A pre-existing manual clock lock cannot be read back through `nvidia-smi`;
   Stop resets locks to the driver default and the UI says so. This is a
   documented limitation, not a bug.
 - `Status` compares configured locks with the driver values and adds a warning
-  when a lock is not honoured (memory always; core only under load, because an
-  idle GPU legitimately downclocks).
+  when a lock is not honoured (memory under load; core under load, because an
+  idle GPU legitimately downclocks), plus a warning when applied settings are
+  still on the cards while the miner is stopped.
 
 ## Miner installs and downloads
 

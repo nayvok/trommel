@@ -56,6 +56,12 @@ trommel config apply /tmp/trommel-proposed.json --restart
 - `config apply` saves the file first and then asks the daemon. If no daemon is
   running it prints “config saved; daemon is not running”; the change takes
   effect on the next start, not silently now.
+- `trommel stop` reports whether the stock snapshot was restored. If restore on
+  stop is disabled, the snapshot is kept and `oc.needs_restore` is true; use
+  `trommel oc restore` (an explicit action) to put the GPU back.
+- `trommel oc restore` refuses while a miner is running. Modes: `snapshot`
+  (captured pre-mining limit) and `defaults` (driver default, clocks unlocked).
+  The returned JSON includes per-card targets and a human message.
 - Never apply without showing the user the diff. Never choose `--restart` on a
   running miner without explicit approval.
 - `trommel diagnose` and the MCP config/preset tools replace **every** preset
@@ -65,7 +71,7 @@ trommel config apply /tmp/trommel-proposed.json --restart
 ## CLI JSON
 
 ```bash
-trommel status --json        # full Status document, contract_version = 2
+trommel status --json        # full Status document, contract_version = 3
 trommel gpus --json          # nvidia-smi view, works without the daemon
 trommel diagnose --json      # app/version, paths, redacted config, status, GPUs, warnings
 trommel preset list          # human table with total fees
@@ -73,6 +79,8 @@ trommel preset show          # active preset JSON
 trommel preset export <id> /tmp/preset.json
 trommel preset import /tmp/preset.json
 trommel miner list           # catalogue + installed versions
+trommel oc report --json     # snapshot, current limits and restore targets
+trommel oc restore --mode snapshot|defaults
 ```
 
 The current human-readable output is Russian. Parse JSON; do not scrape the
@@ -83,7 +91,7 @@ human text. `status` and `start/stop/toggle` connect through D-Bus and start
 
 | Field | Meaning |
 | --- | --- |
-| `contract_version` | Contract revision (2); compare this, not `version` |
+| `contract_version` | Contract revision (3); compare this, not `version` |
 | `state.running` | A miner is running (including `external`) |
 | `state.external` | The process was started outside Trommel |
 | `state.last_error` | Last supervisor/config error, if any |
@@ -93,7 +101,7 @@ human text. `status` and `start/stop/toggle` connect through D-Bus and start
 | `total` | Aggregate hashrate/power/efficiency/temperature |
 | `miner` | Hashrate windows, accepted/rejected/stale, `source` (`api`/`log`) |
 | `pool` | Cached pool statistics when mining |
-| `oc` | Snapshot availability, applied/stale flags |
+| `oc` | Snapshot availability, `applied`/`needs_restore`, stale flag, restore-on-stop, last OC error and target summary |
 | `warnings` | User-facing configuration and lock warnings |
 
 The document deliberately contains no wallet and no seed material.
@@ -121,6 +129,8 @@ args = ["mcp"]            # add "--allow-write" to enable write tools
 | `trommel_config_diff` | `config` object | `{"class": "...", "reasons": [...]}` |
 | `trommel_miners` | — | Catalogue entries and installed versions |
 | `trommel_diagnose` | — | Redacted diagnostics bundle |
+| `trommel_oc` | — | Snapshot, current limits and restore targets |
+| `trommel_restore_oc` | `mode` = `snapshot`\|`defaults` | Write tool (`--allow-write`); returns a restore report |
 | `trommel_start` | — | Starts mining (write-gated) |
 | `trommel_stop` | — | Stops and restores stock (write-gated) |
 | `trommel_apply_config` | `config`, `mode` | Applies a config (write-gated) |

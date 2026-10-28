@@ -12,7 +12,7 @@ use crate::pool::{self, PoolStats};
 use crate::state::State;
 use crate::util;
 
-pub const CONTRACT_VERSION: u32 = 2;
+pub const CONTRACT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct StateView {
@@ -55,10 +55,22 @@ pub struct TotalView {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct OcView {
+    /// Tuning from the current snapshot was applied (or an apply was started).
     pub applied: bool,
+    /// The tuning is still on the cards while the miner is stopped. The GUI
+    /// shows a banner with a Restore action in this state.
+    pub needs_restore: bool,
     pub snapshot_available: bool,
     pub stale: bool,
     pub boot_id: String,
+    pub restore_on_stop: bool,
+    pub last_error: Option<String>,
+    pub snapshot_created_at: Option<u64>,
+    pub snapshot_boot_id: Option<String>,
+    /// Summary for the first card; the full per-GPU targets are in `oc_report`.
+    pub restore_power_w: Option<u32>,
+    pub driver_default_w: Option<u32>,
+    pub was_tuned: bool,
 }
 
 fn default_temp_limit() -> u32 {
@@ -235,17 +247,30 @@ impl Status {
         };
 
         let snapshot = crate::oc::load_snapshot();
-        let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-            .map(|text| text.trim().to_string())
-            .unwrap_or_default();
+        let boot_id = crate::oc::current_boot_id();
+        // A snapshot from another boot is diagnostic only: it must never make
+        // the UI offer a restore or claim that settings are still applied.
+        let fresh = snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.boot_id == boot_id);
+        let applied = fresh.map(|s| s.applied).unwrap_or(false);
+        let first = fresh.and_then(|s| s.gpus.first());
         let oc = OcView {
-            applied: snapshot.is_some() && state.running,
-            snapshot_available: snapshot.is_some(),
-            stale: snapshot
-                .as_ref()
-                .map(|s| s.boot_id != boot_id)
-                .unwrap_or(false),
+            applied,
+            needs_restore: applied && !state.running,
+            snapshot_available: fresh.is_some(),
+            stale: snapshot.is_some() && fresh.is_none(),
             boot_id,
+            restore_on_stop: cfg.behavior.restore_stock_on_stop,
+            last_error: fresh.and_then(|s| s.last_error.clone()),
+            snapshot_created_at: fresh.map(|s| s.created_at),
+            snapshot_boot_id: fresh.map(|s| s.boot_id.clone()),
+            restore_power_w: first
+                .and_then(|gpu| gpu.restore_power_w(crate::oc::RestoreMode::Snapshot)),
+            driver_default_w: first
+                .and_then(|gpu| gpu.power_default_w)
+                .map(|value| value.round() as u32),
+            was_tuned: first.map(|gpu| gpu.was_tuned).unwrap_or(false),
         };
 
         let ts = util::now_unix();
@@ -256,6 +281,18 @@ impl Status {
             state.running && !state.external,
             state.uptime_s(),
         ));
+        if oc.needs_restore {
+            warnings.push(tr(
+                "GPU power/clocks are still applied; use Restore stock in Settings",
+                "Питание/частоты GPU всё ещё применены — верните сток в «Настройках»",
+            ));
+        }
+        if let Some(err) = &oc.last_error {
+            warnings.push(format!(
+                "{} {err}",
+                tr("GPU restore failed:", "Возврат стока не удался:")
+            ));
+        }
         Self {
             contract_version: CONTRACT_VERSION,
             state: StateView {
@@ -412,6 +449,7 @@ mod tests {
                 power_limit_w: Some(300),
                 core_clock_mhz: Some(1620),
                 memory_clock_mhz: Some(810),
+                custom: true,
                 ..Default::default()
             },
         );

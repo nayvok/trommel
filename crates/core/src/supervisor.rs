@@ -8,10 +8,11 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::config::Config;
+use crate::config::{Config, GpuTuning};
 use crate::i18n::tr;
 use crate::miners;
-use crate::oc;
+use crate::nvidia::GpuStats;
+use crate::oc::{self, AppliedTuning, OcSnapshot, RestoreMode};
 use crate::paths;
 use crate::state::{self, State};
 use crate::util;
@@ -22,6 +23,7 @@ pub enum Event {
     Crashed { code: Option<i32>, restart_in: u64 },
     Stopped { code: Option<i32> },
     Error(String),
+    Warning(String),
     UserStopped,
 }
 
@@ -41,7 +43,7 @@ impl Event {
                 tr("Miner stopped", "Майнер остановлен"),
                 code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
             )),
-            Event::Error(text) => Some(text.clone()),
+            Event::Error(text) | Event::Warning(text) => Some(text.clone()),
             Event::UserStopped => Some(tr(
                 "Mining stopped; stock clocks and power restored",
                 "Майнинг остановлен; частоты и питание возвращены в сток",
@@ -53,6 +55,11 @@ impl Event {
 pub struct Supervisor {
     child: Option<Child>,
     restart_at: Option<Instant>,
+    /// When to check that the applied clock locks are actually honoured.
+    verify_at: Option<Instant>,
+    /// Give the miner time to load the GPU; stop retrying after this.
+    verify_until: Option<Instant>,
+    verified: bool,
     pub state: State,
     pub log_path: PathBuf,
 }
@@ -61,6 +68,14 @@ impl Default for Supervisor {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn verify_delay() -> Duration {
+    std::env::var("TROMMEL_OC_VERIFY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|ms| Duration::from_millis(ms.max(1000)))
+        .unwrap_or(Duration::from_secs(15))
 }
 
 impl Supervisor {
@@ -72,9 +87,21 @@ impl Supervisor {
         if state.running && !state.external && state.miner_alive() {
             state.orphan = true;
         }
+        let now = Instant::now();
+        let (verify_at, verify_until) = if state.running && !state.external {
+            (
+                Some(now + verify_delay()),
+                Some(now + Duration::from_secs(300)),
+            )
+        } else {
+            (None, None)
+        };
         Self {
             child: None,
             restart_at: None,
+            verify_at,
+            verify_until,
+            verified: false,
             state,
             log_path: paths::log_path(),
         }
@@ -86,11 +113,14 @@ impl Supervisor {
 
     /// Start the miner: snapshot stock, apply the GPU profile, spawn.
     pub fn start(&mut self, cfg: &Config) -> anyhow::Result<()> {
-        if self.is_running() {
-            if self.child.is_some() || self.state.miner_alive() {
-                return Ok(());
-            }
-            // A stale running flag must not make Start a silent no-op.
+        if self.child.is_some() || self.state.miner_alive() {
+            anyhow::bail!(tr(
+                "The miner is already running; stop it before starting again",
+                "Майнер уже запущен — сначала остановите его"
+            ));
+        }
+        // A stale running flag must not make Start a silent no-op.
+        if self.state.running {
             self.state = State::default();
             let _ = self.state.save();
         }
@@ -151,14 +181,6 @@ impl Supervisor {
         let gpus = crate::nvidia::query_all().map_err(|e| {
             anyhow::anyhow!(tr("GPU query failed:", "Ошибка опроса GPU:") + " " + &e.to_string())
         })?;
-        let snapshot = if let Some(existing) = oc::current_boot_snapshot() {
-            existing
-        } else {
-            let snapshot = oc::snapshot()?;
-            oc::save_snapshot(&snapshot)?;
-            snapshot
-        };
-
         let profile = cfg.gpu_profile().cloned().unwrap_or_default();
         if !gpus.iter().any(|gpu| profile.tuning_for(&gpu.uuid).enabled) {
             anyhow::bail!(tr(
@@ -166,20 +188,78 @@ impl Supervisor {
                 "В активном профиле не включено ни одной видеокарты"
             ));
         }
-        let mut applied: Vec<String> = Vec::new();
-        for gpu in &gpus {
-            let tuning = profile.tuning_for(&gpu.uuid);
-            if !tuning.enabled {
-                continue;
+
+        // Only cards that actually ask for a change are touched. An enabled
+        // card with no power/clock values is not a tuning session and needs
+        // neither a snapshot nor root.
+        let targets: Vec<(&GpuStats, GpuTuning)> = gpus
+            .iter()
+            .filter_map(|gpu| {
+                let tuning = profile.tuning_for(&gpu.uuid);
+                (tuning.enabled && tuning.has_tuning()).then_some((gpu, tuning))
+            })
+            .collect();
+
+        if targets.is_empty() {
+            // A stock profile must really be stock: if a previous session left
+            // applied settings behind (restore-on-stop was off), put the
+            // snapshot back before spawning.
+            if let Some(snapshot) = oc::current_boot_snapshot() {
+                if snapshot.applied {
+                    log_line("stock profile: restoring the previous applied snapshot first");
+                    if let Err(err) = restore_with_snapshot(&snapshot, RestoreMode::Snapshot) {
+                        oc::record_error(&err.to_string());
+                        anyhow::bail!(
+                            "{} {err}",
+                            tr(
+                                "Cannot start on stock: restoring the previous settings failed:",
+                                "Не удалось начать на стоке: возврат предыдущих настроек не удался:"
+                            )
+                        );
+                    }
+                } else {
+                    oc::clear_snapshot();
+                }
             }
+            return self.spawn_and_record(cfg);
+        }
+
+        let mut snapshot = match oc::current_boot_snapshot() {
+            Some(existing) if existing.applied || existing.gpus.iter().any(|g| g.was_tuned) => {
+                existing
+            }
+            _ => oc::snapshot()?,
+        };
+        if snapshot.gpus.iter().any(|gpu| gpu.was_tuned) {
+            log_line(
+                "oc snapshot: a card already had a non-default power limit; Restore returns to that value (use driver defaults for the stock one)",
+            );
+        }
+        // Record the intent before calling the helper: if we crash halfway,
+        // Stop still knows which cards to put back.
+        snapshot.applied = true;
+        snapshot.last_error = None;
+        for (gpu, tuning) in &targets {
+            if !snapshot.applied_gpus.iter().any(|uuid| uuid == &gpu.uuid) {
+                snapshot.applied_gpus.push(gpu.uuid.clone());
+            }
+            snapshot
+                .applied_tuning
+                .insert(gpu.uuid.clone(), AppliedTuning::from(tuning));
+        }
+        oc::save_snapshot(&snapshot)?;
+
+        let mut applied: Vec<String> = Vec::new();
+        for (gpu, tuning) in &targets {
             // Register the card *before* applying: the helper applies --pl,
             // --lgc and --lmc in order, so a failure halfway must restore this
             // card as well, not just the previous ones.
             applied.push(gpu.uuid.clone());
-            if let Err(err) = oc::apply_tuning(gpu, &tuning) {
-                for uuid in &applied {
-                    if let Some(snap) = snapshot.for_uuid(uuid) {
-                        let _ = oc::restore_gpu(snap);
+            if let Err(err) = oc::apply_tuning(gpu, tuning) {
+                match rollback(&snapshot, &applied) {
+                    Ok(()) => oc::clear_snapshot(),
+                    Err(rollback_err) => {
+                        oc::record_error(&format!("{err}; rollback failed: {rollback_err}"))
                     }
                 }
                 anyhow::bail!(
@@ -191,9 +271,10 @@ impl Supervisor {
         }
 
         if let Err(err) = self.spawn(cfg) {
-            for gpu in &gpus {
-                if let Some(snap) = snapshot.for_uuid(&gpu.uuid) {
-                    let _ = oc::restore_gpu(snap);
+            match rollback(&snapshot, &applied) {
+                Ok(()) => oc::clear_snapshot(),
+                Err(rollback_err) => {
+                    oc::record_error(&format!("{err}; rollback failed: {rollback_err}"))
                 }
             }
             return Err(err);
@@ -210,13 +291,54 @@ impl Supervisor {
         self.state.miner_version = Some(preset.miner_version.clone());
         self.state.profile = Some(preset.miner.clone());
         let _ = self.state.save();
+        self.schedule_verify();
+        if !cfg.behavior.restore_stock_on_stop {
+            log_line(
+                "oc tuning applied with restore_stock_on_stop=false; Stop will leave it applied",
+            );
+        }
         crate::pool::invalidate_cache();
         Ok(())
     }
 
+    fn spawn_and_record(&mut self, cfg: &Config) -> anyhow::Result<()> {
+        let preset = cfg.preset().cloned();
+        self.spawn(cfg)?;
+        // No tuning was applied, so there is nothing to verify.
+        self.verify_at = None;
+        self.verify_until = None;
+        self.verified = true;
+        self.state.last_error = None;
+        self.state.started_at = Some(util::now_unix());
+        self.state.restarts = 0;
+        self.state.preset_id = cfg.active_preset.clone();
+        if let Some(preset) = preset {
+            self.state.miner = Some(preset.miner.clone());
+            self.state.miner_version = Some(preset.miner_version.clone());
+            self.state.profile = Some(preset.miner);
+        }
+        let _ = self.state.save();
+        crate::pool::invalidate_cache();
+        Ok(())
+    }
+
+    fn schedule_verify(&mut self) {
+        let now = Instant::now();
+        self.verified = false;
+        self.verify_at = Some(now + verify_delay());
+        self.verify_until = Some(now + Duration::from_secs(300));
+    }
+
     /// Stop the miner and restore the snapshot (when enabled).
     pub fn stop(&mut self, cfg: &Config) -> anyhow::Result<()> {
+        self.stop_internal(cfg, false)
+    }
+
+    fn stop_internal(&mut self, cfg: &Config, force_restore: bool) -> anyhow::Result<()> {
         self.restart_at = None;
+        self.verify_at = None;
+        self.verify_until = None;
+        self.verified = true;
         if let Some(mut child) = self.child.take() {
             terminate(&mut child);
             let _ = child.wait();
@@ -226,15 +348,23 @@ impl Supervisor {
             }
         }
 
-        let reset_result = if cfg.behavior.restore_stock_on_stop {
-            match oc::load_snapshot() {
-                Some(snapshot) => oc::restore_snapshot(&snapshot),
-                None => match oc::fallback_snapshot() {
-                    Some(snapshot) => oc::restore_snapshot(&snapshot),
-                    None => Ok(()),
-                },
+        let restore = cfg.behavior.restore_stock_on_stop || force_restore;
+        let reset_result = if restore {
+            match oc::current_boot_snapshot().filter(|snapshot| snapshot.applied) {
+                Some(snapshot) => {
+                    if force_restore && !cfg.behavior.restore_stock_on_stop {
+                        log_line("oc restore forced after a failed clock check");
+                    }
+                    let result = restore_with_snapshot(&snapshot, RestoreMode::Snapshot);
+                    if let Err(ref err) = result {
+                        oc::record_error(&err.to_string());
+                    }
+                    result
+                }
+                None => Ok(()),
             }
         } else {
+            log_line("oc restore skipped: restore_stock_on_stop=false (snapshot kept)");
             Ok(())
         };
 
@@ -252,6 +382,7 @@ impl Supervisor {
                 Ok(Some(status)) => {
                     let code = status.code();
                     self.state.miner_pid = None;
+                    self.verify_at = None;
                     if cfg.behavior.auto_restart && self.state.running {
                         self.state.restarts += 1;
                         self.state.last_error = Some(format!(
@@ -280,7 +411,11 @@ impl Supervisor {
                             code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()),
                             tr("auto-restart is off", "автоперезапуск выключен")
                         ));
-                        restore_stock(cfg);
+                        if let Err(err) = restore_stock(cfg) {
+                            self.state.last_error =
+                                Some(format!("{}; {err}", text_of(&self.state)));
+                            events.push(Event::Error(err.to_string()));
+                        }
                         let _ = self.state.save();
                         events.push(Event::Stopped { code });
                     }
@@ -326,14 +461,21 @@ impl Supervisor {
                 } else {
                     self.state.running = false;
                     self.state.started_at = None;
+                    if let Err(err) = restore_stock(cfg) {
+                        self.state.last_error = Some(format!("{}; {err}", text_of(&self.state)));
+                        events.push(Event::Error(err.to_string()));
+                    }
                     let _ = self.state.save();
-                    restore_stock(cfg);
                     events.push(Event::Stopped { code: None });
                 }
             }
         } else if self.state.running && !self.state.miner_alive() {
-            restore_stock(cfg);
+            let restore = restore_stock(cfg);
             self.state = State::default();
+            if let Err(err) = restore {
+                self.state.last_error = Some(err.to_string());
+                events.push(Event::Error(err.to_string()));
+            }
             let _ = self.state.save();
             events.push(Event::Stopped { code: None });
         } else if !self.state.running {
@@ -352,6 +494,7 @@ impl Supervisor {
                 self.restart_at = None;
                 match self.spawn(cfg) {
                     Ok(()) => {
+                        self.schedule_verify();
                         events.push(Event::Started(self.state.miner_pid.unwrap_or(0)));
                         let _ = self.state.save();
                     }
@@ -364,7 +507,9 @@ impl Supervisor {
                                 "Не удалось перезапустить майнер:"
                             )
                         ));
-                        restore_stock(cfg);
+                        if let Err(reset) = restore_stock(cfg) {
+                            events.push(Event::Error(reset.to_string()));
+                        }
                         let _ = self.state.save();
                         events.push(Event::Error(
                             self.state.last_error.clone().unwrap_or_default(),
@@ -373,6 +518,101 @@ impl Supervisor {
                 }
             }
         }
+
+        events.extend(self.check_applied_locks(cfg));
+        events
+    }
+
+    /// One-shot runtime check: a clock lock that the driver ignored must not
+    /// be reported as applied. Memory is decisive under load; an unmatched
+    /// core clock is a warning because it legitimately fluctuates.
+    fn check_applied_locks(&mut self, cfg: &Config) -> Vec<Event> {
+        let Some(at) = self.verify_at else {
+            return Vec::new();
+        };
+        if self.verified || Instant::now() < at {
+            return Vec::new();
+        }
+        if !self.state.running || self.state.external {
+            self.verify_at = None;
+            return Vec::new();
+        }
+        let Some(snapshot) = oc::current_boot_snapshot() else {
+            self.verify_at = None;
+            return Vec::new();
+        };
+        if snapshot.applied_tuning.is_empty() {
+            self.verify_at = None;
+            self.verified = true;
+            return Vec::new();
+        }
+        let Ok(gpus) = crate::nvidia::query_all() else {
+            self.verify_at = Some(Instant::now() + Duration::from_secs(2));
+            return Vec::new();
+        };
+        let loaded = gpus.iter().any(|gpu| gpu.util_pct.unwrap_or(0) >= 80);
+        if !loaded {
+            let until = self
+                .verify_until
+                .unwrap_or_else(|| Instant::now() + Duration::from_secs(300));
+            if Instant::now() < until {
+                self.verify_at = Some(Instant::now() + Duration::from_secs(2));
+                return Vec::new();
+            }
+            log_line("oc verify skipped: the GPU never reached load");
+            self.verify_at = None;
+            self.verified = true;
+            return Vec::new();
+        }
+
+        let issues = oc::runtime_lock_issues(&snapshot, &gpus);
+        let mut events = Vec::new();
+        if let Some(issue) = issues
+            .iter()
+            .find(|issue| issue.kind == oc::LockKind::Memory)
+        {
+            let message = format!(
+                "{} #{}: {} {} MHz {} ({} {} MHz). {}",
+                tr("GPU", "Карта"),
+                issue.index,
+                tr("memory lock", "лок памяти"),
+                issue.want,
+                tr("was not applied", "не применился"),
+                tr("now", "сейчас"),
+                issue.actual,
+                tr(
+                    "Remove the memory lock from the profile or check the NVIDIA driver.",
+                    "Уберите лок памяти из профиля или проверьте драйвер NVIDIA."
+                )
+            );
+            log_line(&format!("oc verify failed: {message}"));
+            let reset = self.stop_internal(cfg, true);
+            self.state.last_error = Some(message.clone());
+            self.state.running = false;
+            let _ = self.state.save();
+            if let Err(err) = reset {
+                events.push(Event::Error(format!("{message}; {err}")));
+            } else {
+                events.push(Event::Error(message));
+            }
+        } else {
+            for issue in issues {
+                let message = format!(
+                    "{} #{}: {} {} MHz {} ({} {} MHz)",
+                    tr("GPU", "Карта"),
+                    issue.index,
+                    tr("core lock", "лок ядра"),
+                    issue.want,
+                    tr("was not applied", "не применился"),
+                    tr("now", "сейчас"),
+                    issue.actual
+                );
+                log_line(&format!("oc verify warning: {message}"));
+                events.push(Event::Warning(message));
+            }
+        }
+        self.verify_at = None;
+        self.verified = true;
         events
     }
 
@@ -450,15 +690,53 @@ impl Supervisor {
     }
 }
 
+fn rollback(snapshot: &OcSnapshot, uuids: &[String]) -> anyhow::Result<()> {
+    let mut first_error = None;
+    for uuid in uuids {
+        let Some(gpu) = snapshot.for_uuid(uuid) else {
+            continue;
+        };
+        if let Err(err) = oc::restore_gpu(gpu, RestoreMode::Snapshot) {
+            log_line(&format!("oc rollback failed gpu={}: {err}", gpu.index));
+            if first_error.is_none() {
+                first_error = Some(err);
+            }
+        }
+    }
+    match first_error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+fn restore_with_snapshot(snapshot: &OcSnapshot, mode: RestoreMode) -> anyhow::Result<()> {
+    let result = oc::restore_snapshot(snapshot, mode);
+    if let Err(ref err) = result {
+        log_line(&format!("oc restore failed mode={}: {err}", mode.as_str()));
+    } else {
+        log_line(&format!("oc restore ok mode={}", mode.as_str()));
+    }
+    result
+}
+
 /// Best-effort stock restore after the miner is gone for good. Keeps the
 /// snapshot when the helper fails, so a later Stop can retry.
-fn restore_stock(cfg: &Config) {
+fn restore_stock(cfg: &Config) -> anyhow::Result<()> {
     if !cfg.behavior.restore_stock_on_stop {
-        return;
+        return Ok(());
     }
-    if let Some(snapshot) = oc::load_snapshot() {
-        let _ = oc::restore_snapshot(&snapshot);
+    let Some(snapshot) = oc::current_boot_snapshot().filter(|snapshot| snapshot.applied) else {
+        return Ok(());
+    };
+    let result = restore_with_snapshot(&snapshot, RestoreMode::Snapshot);
+    if let Err(ref err) = result {
+        oc::record_error(&err.to_string());
     }
+    result
+}
+
+fn text_of(state: &State) -> String {
+    state.last_error.clone().unwrap_or_default()
 }
 
 /// SIGTERM, then SIGKILL after a grace period.
@@ -523,6 +801,7 @@ mod tests {
         .unwrap()
         .contains('5'));
         assert!(!Event::UserStopped.message().unwrap().is_empty());
+        assert!(!Event::Warning("lock".into()).message().unwrap().is_empty());
     }
 
     #[test]
@@ -566,5 +845,18 @@ mod tests {
         cfg.behavior.restore_stock_on_stop = false;
         let _ = supervisor.stop(&cfg);
         assert!(!supervisor.state.running);
+    }
+
+    #[test]
+    fn already_running_is_not_a_silent_noop() {
+        let mut supervisor = Supervisor::new();
+        supervisor.state = State {
+            running: true,
+            miner_pid: Some(std::process::id()),
+            ..Default::default()
+        };
+        // A real miner PID is not needed: the child/state check fires first.
+        let cfg = Config::default();
+        assert!(supervisor.start(&cfg).is_err());
     }
 }

@@ -77,6 +77,11 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Показать или вернуть настройки GPU (снимок/сток драйвера)
+    Oc {
+        #[command(subcommand)]
+        command: OcCmd,
+    },
     /// MCP server over stdio for Codex and other agents (read-only by default)
     Mcp {
         /// Allow start/stop/apply tools
@@ -136,6 +141,20 @@ enum MinerCmd {
 }
 
 #[derive(Subcommand)]
+enum OcCmd {
+    /// Показать снимок, текущие значения и цели восстановления
+    Report {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Вернуть снимок (snapshot) или сток драйвера (defaults)
+    Restore {
+        #[arg(long, default_value = "snapshot")]
+        mode: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum ConfigCmd {
     /// Напечатать путь к config.json
     Path,
@@ -170,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Cmd::Preset { command }) => run_preset_command(command).await,
         Some(Cmd::Miner { command }) => run_miner_command(command).await,
         Some(Cmd::Config { command }) => run_config_command(command).await,
+        Some(Cmd::Oc { command }) => run_oc_command(command).await,
         Some(Cmd::Gpus { json }) => {
             let gpus = trommel_core::nvidia::query_all()?;
             if json {
@@ -239,7 +259,17 @@ async fn main() -> anyhow::Result<()> {
         Some(Cmd::Stop) => {
             let proxy = connect().await?;
             proxy.stop().await?;
-            println!("Майнинг остановлен, питание и частоты возвращены в сток");
+            let status = proxy
+                .refresh()
+                .await
+                .ok()
+                .and_then(|raw| Status::from_json(&raw).ok());
+            match status {
+                Some(status) if status.oc.needs_restore => println!(
+                    "Майнинг остановлен; настройки GPU оставлены применёнными (верните сток в «Настройках»)"
+                ),
+                _ => println!("Майнинг остановлен, питание и частоты возвращены в сток"),
+            }
             Ok(())
         }
         Some(Cmd::Toggle) => {
@@ -275,6 +305,65 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+async fn run_oc_command(command: OcCmd) -> anyhow::Result<()> {
+    let proxy = connect().await?;
+    match command {
+        OcCmd::Report { json } => {
+            let raw = proxy.oc_report().await?;
+            if json {
+                println!("{raw}");
+            } else {
+                let value: serde_json::Value = serde_json::from_str(&raw)?;
+                println!(
+                    "OC: applied={} snapshot={} stale={} needs_restore={} restore_on_stop={}",
+                    value["applied"],
+                    value["snapshot_available"],
+                    value["stale"],
+                    value["needs_restore"],
+                    value["restore_on_stop"],
+                );
+                if let Some(current) = value["current"].as_array() {
+                    for gpu in current {
+                        println!(
+                            "#{} {}: limit {} W, default {} W, core {} MHz, mem {} MHz",
+                            gpu["index"],
+                            gpu["name"].as_str().unwrap_or("GPU"),
+                            gpu["power_limit_w"],
+                            gpu["power_default_w"],
+                            gpu["core_mhz"],
+                            gpu["mem_mhz"],
+                        );
+                    }
+                }
+                if let Some(err) = value["snapshot"]["last_error"].as_str() {
+                    println!("last OC error: {err}");
+                }
+            }
+        }
+        OcCmd::Restore { mode } => {
+            if trommel_core::oc::RestoreMode::parse(&mode).is_none() {
+                anyhow::bail!("mode must be snapshot|defaults");
+            }
+            let raw = proxy.restore_oc(&mode).await?;
+            let parsed = serde_json::from_str::<serde_json::Value>(&raw).ok();
+            let effective = parsed
+                .as_ref()
+                .and_then(|value| value["mode"].as_str())
+                .unwrap_or(&mode);
+            let count = parsed
+                .as_ref()
+                .and_then(|value| value["restored"].as_u64())
+                .unwrap_or(0);
+            if effective == "defaults" {
+                println!("Сброшено на сток драйвера: {count} GPU");
+            } else {
+                println!("Возвращён снимок: {count} GPU");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Connect to the daemon, starting it if needed.

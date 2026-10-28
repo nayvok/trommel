@@ -31,10 +31,15 @@ do not expose the bus name on the system bus or through a socket.
   `trommel-core::oc` before invoking it.
 - Calls `nvidia-smi` directly with an argument vector; no paths, no shell
   interpolation, no environment-controlled commands.
-- Waits briefly for the power limit to take effect and reports failures instead
-  of claiming success.
-- Has a 30 s timeout on the caller side; a missing polkit rule produces an
-  explicit error, not a hung daemon.
+- Waits for the power limit to read back and **fails** when the driver reports a
+  different value; `reset` reports a failing `-rgc`/`-rmc` instead of swallowing
+  it. Clock locks that a driver accepts but ignores are caught under load by the
+  supervisor, which stops the miner and restores the snapshot.
+- Has a 180 s caller-side timeout (`TROMMEL_OC_TIMEOUT_MS` in tests) so an
+  interactive polkit password dialog is not killed while the user types. A
+  missing rule costs one authentication, not a silent failure.
+- Is called one GPU at a time; the daemon rejects a second concurrent OC
+  operation while one is waiting for authorization.
 
 ## Polkit
 
@@ -95,8 +100,10 @@ do not expose the bus name on the system bus or through a socket.
   without user action; Start explains the conflict instead.
 - A running miner is never silently restarted: GPU/preset changes require the
   explicit Apply and restart / Apply and stop dialog.
-- Stop restores the snapshot; a failed restore is reported and the snapshot is
-  kept for a retry.
+- Stop restores the snapshot when `restore_stock_on_stop` is on; a failed
+  restore is reported and the snapshot is kept for a retry. When the setting is
+  off, Stop keeps the snapshot, leaves the GPU settings applied and reports
+  `oc.needs_restore` instead of claiming the stock state was restored.
 - Benchmarks stop the real miner for their duration and restart it afterwards.
 
 ## Packaging and sandboxing
@@ -111,8 +118,13 @@ do not expose the bus name on the system bus or through a socket.
 ## Limitations to keep in mind
 
 - A pre-existing manual clock lock cannot be read back through `nvidia-smi`;
-  Stop resets locks to the driver default. Status warns when the driver ignores
-  a configured lock.
+  Stop resets locks to the driver default. A snapshot that already had a
+  non-default power limit is flagged (`was_tuned`) and the restore dialog offers
+  the driver default as a second target.
+- Clock locks are verified under load: memory is decisive (a mismatch stops the
+  miner), core is a warning because the driver may fluctuate. An idle card can
+  legitimately sit at the locked memory frequency, so the check is deferred
+  until the miner has loaded the GPU.
 - Fan control and per-card temperature limits are not available through
   `nvidia-smi` on consumer cards; fan flags are passed to the miner.
 - Miner binaries are third-party code. Verify the upstream source, checksum and

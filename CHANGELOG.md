@@ -7,12 +7,38 @@ Changelog; versions use SemVer.
 
 ### Fixed
 
+- **GPU settings are now verified, not assumed.** `trommel-oc` reads the power
+  limit back after `-pl` and fails instead of claiming success; `reset` reports
+  a failing `-rgc`/`-rmc`; the supervisor checks memory/core locks once the
+  miner has loaded the GPU. An ignored memory lock stops the miner with the
+  requested and actual frequencies.
+- **The 30 s helper timeout no longer kills the polkit password dialog.** The
+  call waits up to 180 s (`TROMMEL_OC_TIMEOUT_MS` for tests), and the status
+  loop keeps serving the last document while authorization is pending.
+- **A per-GPU entry no longer shadows the default profile.** Schema v3 adds
+  `custom`: entries created by the setup wizard or the GPU enable switch inherit
+  power/clocks/temperature from *Settings → GPU defaults*; only the tuning
+  dialog creates a custom override. v2 configs are migrated automatically.
+- **Stop and Restore now tell the truth.** With `restore_stock_on_stop=false`
+  Stop keeps the snapshot and reports `oc.needs_restore`; the dashboard shows a
+  banner and the status warning explains it. A failed restore keeps the snapshot
+  and its error. The Restore action offers the pre-mining snapshot or the driver
+  default when they differ, and never reports success for a no-op.
+- **Snapshot hygiene:** a snapshot from another boot is deleted at daemon start
+  and never used; a profile with no tuning creates no snapshot and needs no
+  root; a stock Start restores any lingering applied snapshot first.
 - The Dashboard navigation icon used `utilities-system-monitor-symbolic`, which
   is missing from the Adwaita icon theme, so some themes showed a broken-image
   placeholder. It now uses `view-grid-symbolic`, available in Adwaita and Yaru.
+- The Rust `--lmc` validator accepted only up to 4000 MHz while the schema, GUI
+  and helper allow real memory clocks up to 12000 MHz.
 
 ### Changed
 
+- The status contract is now **3**: `oc` gains `needs_restore`,
+  `restore_on_stop`, `last_error`, snapshot metadata and target summaries.
+- New D-Bus `OCReport()` / `RestoreOC(mode)`, CLI `trommel oc report|restore`,
+  MCP `trommel_oc` / `trommel_restore_oc`, and the under-load clock check.
 - Documentation was restructured by audience: a new index, an architecture and
   component reference, a development guide with the test harness, and a design
   specification. The UX map was folded into `docs/design.md` /

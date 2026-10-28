@@ -44,9 +44,14 @@ async fn main() -> anyhow::Result<()> {
             let mut overheated = false;
 
             loop {
-                let (cfg, state) = {
-                    let inner = engine.lock().await;
-                    (inner.cfg.clone(), inner.sup.state.clone())
+                let (cfg, state) = match engine.try_snapshot() {
+                    Some(snapshot) => snapshot,
+                    None => {
+                        // A Start/Stop/Restore is waiting for the polkit
+                        // dialog; keep the previous status and retry shortly.
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        continue;
+                    }
                 };
                 let interval = dbus::poll_interval(&cfg);
                 let temp_limit = cfg

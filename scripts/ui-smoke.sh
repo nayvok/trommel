@@ -34,26 +34,24 @@ step "Prepare private rig"
 rm -rf "$WORK"
 mkdir -p "$WORK/bin" "$WORK/config/trommel" "$WORK/state/trommel" "$WORK/data" "$WORK/cache"
 
-cat > "$WORK/bin/nvidia-smi" <<'SH'
-#!/bin/bash
-args="$*"
-case "$args" in
-  *index,uuid*)
-    echo "0, GPU-11111111-1111-1111-1111-111111111111, NVIDIA GeForce RTX 3080 Ti, 61, 68, 301.40, 300.00, 350.00, 100.00, 400.00, 1620, 810, 100, 8472"
-    echo "1, GPU-22222222-2222-2222-2222-222222222222, NVIDIA GeForce RTX 3060, 55, 62, 128.20, 130.00, 170.00, 60.00, 200.00, 1500, 750, 99, 4096"
-    ;;
-  *power.limit*) echo "300.00" ;;
-  *) exit 0 ;;
-esac
-SH
-chmod +x "$WORK/bin/nvidia-smi"
-
-cat > "$WORK/bin/oc-helper" <<SH
-#!/bin/bash
-echo "\$*" >> "$WORK/oc.log"
-exit 0
-SH
-chmod +x "$WORK/bin/oc-helper"
+cat > "$WORK/gpu-state.json" <<'JSON'
+{
+  "gpus": [
+    {"index": 0, "uuid": "GPU-11111111-1111-1111-1111-111111111111", "name": "NVIDIA GeForce RTX 3080 Ti",
+     "temp": 61, "fan": 68, "draw": 301.4, "power": 350.0, "power_default": 350.0,
+     "power_min": 100.0, "power_max": 400.0, "core": 1770, "core_default": 1770,
+     "mem": 9501, "mem_default": 9501, "util": 100, "vram": 8472},
+    {"index": 1, "uuid": "GPU-22222222-2222-2222-2222-222222222222", "name": "NVIDIA GeForce RTX 3060",
+     "temp": 55, "fan": 62, "draw": 128.2, "power": 170.0, "power_default": 170.0,
+     "power_min": 60.0, "power_max": 200.0, "core": 1500, "core_default": 1500,
+     "mem": 7000, "mem_default": 7000, "util": 99, "vram": 4096}
+  ]
+}
+JSON
+: > "$WORK/fake-mode"
+cp "$ROOT/scripts/fixtures/fake-nvidia-smi.py" "$WORK/bin/nvidia-smi"
+cp "$ROOT/scripts/fixtures/fake-oc-helper.sh" "$WORK/bin/oc-helper"
+chmod +x "$WORK/bin/nvidia-smi" "$WORK/bin/oc-helper"
 
 cat > "$WORK/bin/wildrig-multi" <<'SH'
 #!/bin/bash
@@ -150,6 +148,10 @@ export XDG_CACHE_HOME="$WORK/cache"
 export TROMMEL_OC_HELPER="$WORK/bin/oc-helper"
 export TROMMEL_NO_EXTERNAL_SCAN=1
 export TROMMEL_OC_LOG="$WORK/oc.log"
+export TROMMEL_FAKE_GPU_STATE="$WORK/gpu-state.json"
+export TROMMEL_FAKE_MODE="$WORK/fake-mode"
+export TROMMEL_OC_TIMEOUT_MS=1500
+export TROMMEL_OC_VERIFY_MS=1000
 export GTK_A11Y=atspi
 export AT_SPI_BUS_ADDRESS="${AT_SPI_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/at-spi/bus}"
 if [ ! -S "${AT_SPI_BUS_ADDRESS#unix:path=}" ]; then

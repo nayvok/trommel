@@ -42,11 +42,11 @@ The largest module and the shape of everything else.
 
 | Item | Contract |
 | --- | --- |
-| `SCHEMA_VERSION` | `2`; `Config::load` migrates v1 configs, including the legacy Pearl Miner path |
+| `SCHEMA_VERSION` | `3`; `Config::load` migrates v1 configs and infers the v2→v3 `custom` flag |
 | `Config` | `active_preset`, `presets`, `gpu_profiles`, `miner_installs`, `custom_miners`/`pools` (reserved), `behavior` |
 | `Preset` | Coin/algo/miner/version/pool/wallet/worker/profile, `miner_options`, fee fields, `extra_args`, `env` |
-| `GpuTuning` | `enabled`, optional `power_limit_w`, `core_clock_mhz`, `memory_clock_mhz`, `fan_pct`, plus global `temp_limit_c`/`temp_resume_c` |
-| `GpuProfile` | `default` tuning plus `per_gpu` overrides keyed by GPU UUID; `tuning_for(uuid)` falls back to the default |
+| `GpuTuning` | `enabled`, optional `power_limit_w`, `core_clock_mhz`, `memory_clock_mhz`, `fan_pct`, global `temp_limit_c`/`temp_resume_c`, and `custom` (per-GPU entries only) |
+| `GpuProfile` | `default` tuning plus `per_gpu` entries keyed by GPU UUID; `tuning_for(uuid)` inherits the default unless the entry is `custom` |
 | `Behavior` | Restart/poll/restore/login/notifications, `language`, `appearance`, `simple_mode` |
 | `MinerInstall` | Global install record: `miner`, `version`, `path`, `source_url`, `verified`, `custom`, `installed_at` |
 | `ApplyMode` | `Live`, `Restart`, `Stop`; `parse("live")`, `parse("restart")`, `parse("stop")` |
@@ -59,7 +59,10 @@ Key functions:
   discarding it.
 - `Config::normalize()` — repairs a dangling `active_preset`, a missing default
   GPU profile or empty preset map, a missing install path (`verified = false`)
-  and stale fee overrides for miners that do not allow them.
+  and stale fee overrides for miners that do not allow them. For a v2 file it
+  also infers `custom` on every per-GPU entry: an entry with no power/clock
+  values inherits the default; an entry with values is custom only when they
+  differ from the default.
 - `Config::preset()` / `preset_mut()` / `ensure_preset()` — active preset access;
   `ensure_preset` clones the default when the map is empty.
 - `Config::gpu_profile()` / `gpu_profile_mut()` — active profile access.
@@ -69,7 +72,8 @@ Key functions:
   registry maintenance. No current UI/CLI calls `remove_install()`; the app only
   adds installs.
 - `Config::warnings()` — user-facing validation: no preset, empty/suspicious
-  wallet, pool address without a port, missing miner install, no enabled GPU.
+  wallet, pool address without a port, missing miner install, no enabled GPU,
+  and “restore on stop is off” when the active profile has tuning.
 - `Config::diff(next) -> ConfigDiff` — `ChangeClass::{None, Live, RestartRequired}`
   plus human-readable reasons; this drives the GUI alert and MCP `config_diff`.
 - `Config::redacted()` — replaces every preset wallet with `<redacted>`; used by
@@ -127,20 +131,27 @@ unit tests cannot read or clobber real rig state. The e2e scripts point
 
 - `HELPER_PATH = /usr/libexec/trommel/trommel-oc`; `helper_path()` honours
   `TROMMEL_OC_HELPER` for tests, `helper_installed()` checks the file exists.
-- `OcSnapshot { boot_id, created_at, gpus }` and `GpuSnapshot`; `restore_power_w()`
-  prefers the captured limit and falls back to `power_default_w`.
-- `snapshot()`, `save_snapshot()`, `load_snapshot()`, `clear_snapshot()`,
-  `cleanup_stale_snapshot()`, `current_boot_snapshot()` — all snapshot I/O.
+- `OcSnapshot { boot_id, created_at, applied, applied_gpus, applied_tuning,
+  last_error, gpus }` and `GpuSnapshot` (`was_tuned` records a pre-existing
+  non-default limit). `restore_power_w(mode)` targets the captured limit
+  (`Snapshot`) or the driver default (`Defaults`).
+- `snapshot()`, `driver_default_snapshot()` (`fallback_snapshot` is an alias),
+  `save_snapshot()`, `load_snapshot()`, `clear_snapshot()`, `record_error()`,
+  `cleanup_stale_snapshot()`, `current_boot_snapshot()`, `current_boot_id()`.
 - `validate_uuid()` and `validate_apply_args()`/`validate_reset_args()` — the
   in-process mirror of the helper's checks (`GPU-…`, numeric ranges, at least
-  one tuning parameter).
+  one tuning parameter). `--lmc` accepts the real 100–12000 MHz range.
 - `apply_tuning(gpu, tuning)` — no-op when the profile has no values; validates
-  then runs the helper.
-- `restore_gpu(snapshot)` / `restore_snapshot(snapshot)` — restore each card,
-  clear the snapshot only when every restore succeeded.
+  then runs the helper and reads the power limit back (±1 W).
+- `restore_gpu(snapshot, mode)` / `restore_snapshot(snapshot, mode)` — restore
+  every applied card, verify the power limit, clear the snapshot only when every
+  restore succeeded.
+- `verify_power()`, `runtime_lock_issues()` — synchronous power check and the
+  under-load clock comparison used by the supervisor.
 - `run_helper(args)` invokes `pkexec /usr/libexec/trommel/trommel-oc …` or
-  `$TROMMEL_OC_HELPER`, with a 30 s timeout and actionable errors (cancelled
-  pkexec vs. helper failure).
+  `$TROMMEL_OC_HELPER` (directly when already root), with a 180 s default
+  timeout (`TROMMEL_OC_TIMEOUT_MS` for tests) and actionable errors (cancelled
+  pkexec, auth timeout, helper failure).
 
 Helper argument contract (also enforced by `polkit/trommel-oc`):
 
@@ -150,7 +161,9 @@ trommel-oc reset --gpu GPU-xxxx [--pl W]
 trommel-oc status --gpu GPU-xxxx
 ```
 
-Ranges: `--pl` 50–1000 W, `--lgc`/`--lmc` 100–4000 MHz. No paths, no shell.
+Ranges: `--pl` 50–1000 W, `--lgc` 100–4000 MHz, `--lmc` 100–12000 MHz. No
+paths, no shell. `apply` waits for the power limit to read back; `reset` reports
+failing `-rgc`/`-rmc` instead of swallowing them.
 
 ### `miners` — argument construction
 
@@ -172,17 +185,20 @@ arguments — no shell.
 
 ### `supervisor` — miner process lifecycle
 
-- `Event::{Started, Crashed, Stopped, Error, UserStopped}`; `message()` produces
-  localised notification text.
+- `Event::{Started, Crashed, Stopped, Error, Warning, UserStopped}`; `message()`
+  produces localised notification text.
 - `Supervisor::new()` loads and normalises state; a live miner recorded before a
   daemon restart becomes `orphan`.
 - `start(cfg)` — the Start algorithm from [architecture.md](architecture.md#start):
-  external-miner guard, preset validation, snapshot, per-GPU apply with rollback,
-  spawn, state update.
-- `stop(cfg)` — terminate child/PID, restore snapshot (unless disabled), clear
-  state; propagates restore errors.
+  external-miner guard, preset validation, effective tuning, snapshot intent,
+  per-GPU apply + power verification with rollback, spawn, state update.
+  A profile with no tuning creates no snapshot and calls no helper.
+- `stop(cfg)` — terminate child/PID, restore the applied snapshot (unless
+  disabled), clear state; propagates restore errors. With restore disabled it
+  keeps the snapshot and logs that it skipped the restore.
 - `tick(cfg) -> Vec<Event>` — one-second supervisor step: reap, auto-restart,
-  detect adoption loss, emit events.
+  detect adoption loss, emit events, and run the one-shot clock check after the
+  GPU reaches load.
 - `adopt_external(cfg)` — records a manually started miner without taking
   ownership of tuning.
 - `terminate_pid`, `log_line` — process helper and daemon log writer.
@@ -203,14 +219,17 @@ preset_id, miner, miner_version, profile }` (the last is a legacy-parse field).
 
 ### `status` — the status document
 
-- `CONTRACT_VERSION = 2`.
+- `CONTRACT_VERSION = 3`.
 - `Status` composition and collection are described in
   [architecture.md](architecture.md#status-contract).
 - `Status::collect(cfg, state)` is blocking (nvidia-smi, HTTP pool, log tail) and
   is always called from a blocking context.
 - `Status::stopped(cfg)` is the cheap snapshot used when stopping.
-- `lock_warnings()` — memory lock compared always, core lock only when the card
-  is under load; the tolerance absorbs rounding.
+- `OcView` — `applied`, `needs_restore`, `snapshot_available`, `stale`,
+  `restore_on_stop`, `last_error`, snapshot age/boot and a first-card target
+  summary. `needs_restore` drives the dashboard banner.
+- `lock_warnings()` — memory lock compared under load, core lock only when the
+  card is under load; the tolerance absorbs rounding.
 - `read_tail(path, max_bytes)` — log tail reader used by the miner parser.
 - `acceptance_pct()` — accepted/(accepted+rejected) for display.
 
@@ -227,8 +246,14 @@ preset_id, miner, miner_version, profile }` (the last is a legacy-parse field).
 | `ApplyConfig(json, mode)` | Validate, diff, stop/restart/save with rollback; returns applied/restarted/stopped/changes JSON |
 | `SetConfig(json)` | Compatibility wrapper: `ApplyConfig(json, "restart")` |
 | `RunBenchmark(request)` | `{"profiles": [], "seconds": 180}`; returns a report |
-| `ResetOC()` / `RestoreStock()` | Restore the snapshot; refuses while mining |
+| `OCReport()` | Read-only JSON: snapshot, current limits, per-card targets for `snapshot` and `defaults` |
+| `RestoreOC(mode)` | Restore `snapshot` or `defaults`; returns a JSON report; refuses while mining |
+| `ResetOC()` / `RestoreStock()` | Compatibility wrapper: `RestoreOC("snapshot")` (falls back to defaults) |
 | `OpenApp()` / `Quit()` | Launch the GUI / terminate the daemon |
+
+`Engine` also holds an `oc_busy` flag: a second OC operation is rejected while
+one is waiting for authorization. The status refresher uses `try_snapshot()` so
+a 180 s auth dialog does not freeze status collection.
 
 Properties: `Running`, `Version`, `ContractVersion`. Signals:
 `StatusChanged(json)` and `Notification(summary, body)`.
@@ -334,7 +359,8 @@ daemon.
 | Command | Behaviour |
 | --- | --- |
 | `status [--json]` | Human summary or the Status JSON contract |
-| `start` / `stop` / `toggle` | Supervisor actions; Stop restores stock |
+| `start` / `stop` / `toggle` | Supervisor actions; Stop restores stock unless disabled |
+| `oc report [--json]` / `oc restore --mode snapshot\|defaults` | Inspect or restore GPU state explicitly |
 | `gpus [--json]` | `nvidia-smi` view without the daemon |
 | `bench [--minutes N] [--miners a,b]` | Daemon benchmark, human table |
 | `preset list/show/use/export/import` | Preset management; `use --restart/--stop` |

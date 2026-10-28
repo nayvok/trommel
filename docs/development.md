@@ -61,9 +61,11 @@ The scripts never touch a real rig:
   `/.first-run-check`, `/.shots`) and sets `XDG_CONFIG_HOME`,
   `XDG_STATE_HOME`, `XDG_CACHE_HOME` and `XDG_DATA_HOME` inside it;
 - a private `dbus-daemon` prevents an existing Trommel session from answering;
-- a fake `nvidia-smi` is prepended to `PATH` and returns a deterministic
-  two-GPU rig;
-- `TROMMEL_OC_HELPER` points at a fake helper that only logs its arguments;
+- a stateful fake `nvidia-smi` (`scripts/fixtures/fake-nvidia-smi.py`) is
+  prepended to `PATH` and models a deterministic two-GPU rig, including
+  `-pl/-lgc/-lmc/-rgc/-rmc`, so the daemon can verify read-backs;
+- `TROMMEL_OC_HELPER` points at `scripts/fixtures/fake-oc-helper.sh`, which logs
+  its arguments and forwards them to the fake `nvidia-smi`;
 - `TROMMEL_NO_EXTERNAL_SCAN=1` stops the supervisor from adopting a real miner
   running on the same user;
 - unit tests get a per-process temporary `paths` root.
@@ -95,6 +97,10 @@ Runtime/test variables used outside the GUI:
 | --- | --- |
 | `TROMMEL_OC_HELPER` | Path to an alternative helper (fake in tests) |
 | `TROMMEL_OC_LOG` | Where the fake helper writes arguments (test scripts) |
+| `TROMMEL_OC_TIMEOUT_MS` | Override the 180 s helper/auth timeout (tests) |
+| `TROMMEL_OC_VERIFY_MS` | Delay before the under-load clock check (tests) |
+| `TROMMEL_FAKE_GPU_STATE` | JSON state file for the fake `nvidia-smi` |
+| `TROMMEL_FAKE_MODE` | `ignore_pl`, `ignore_lmc`, `fail_rgc`, … for the fake |
 | `TROMMEL_NO_EXTERNAL_SCAN` | Disable the `/proc` external-miner scan |
 | `TROMMEL_SKIP_BUILD` | Test scripts reuse an existing build |
 | `TROMMEL_VERSION` | Override the version expected by `test-deb.sh` |

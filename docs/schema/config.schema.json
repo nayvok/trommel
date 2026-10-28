@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/nayvok/trommel/docs/schema/config.schema.json",
-  "title": "Trommel config v2",
+  "title": "Trommel config v3",
   "type": "object",
   "required": [
     "schema_version",
@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 2
+      "const": 3
     },
     "active_preset": {
       "type": [
@@ -195,6 +195,10 @@
               "properties": {
                 "enabled": {
                   "type": "boolean"
+                },
+                "custom": {
+                  "type": "boolean",
+                  "description": "true = this card has its own power/clock override; false = inherit the profile default"
                 },
                 "power_limit_w": {
                   "type": [

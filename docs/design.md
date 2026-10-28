@@ -233,21 +233,31 @@ Groups, in order:
    appearance (immediate).
 2. **GPU defaults** — power limit (`0 = driver auto`), optional core lock,
    optional memory lock, temperature limit/resume. Lock value rows are visible
-   only while the corresponding switch is on.
+   only while the corresponding switch is on. Cards without a custom override
+   inherit these values; the description says so.
 3. **Detected GPUs** — one rounded card per card: icon, name, three configured
-   metrics (power/core/memory), live temperature/fan/load chips and a **Tune**
-   button. Simple mode shows power, temperature and load; advanced settings
+   metrics (power/core/memory), live temperature/fan/load chips, a **now** chip
+   with the actual power limit and clocks (hot when it differs from the target)
+   and a **Tune** button. Simple mode shows power, temperature and load; advanced settings
    reveal locks. The include switch lives on the dashboard GPU card.
 4. **GNOME integration** — panel mode, Quick Settings toggle, live activity,
    extension state and **Enable** / **Extension Manager**.
 5. **Actions** — **Save and apply**, **Copy diagnostics**, **Restore stock**.
-   Buttons stay vertically centred in their rows.
+   Buttons stay vertically centred in their rows. **Restore stock** asks first:
+   snapshot target, or the driver default when it differs; a pre-existing tuned
+   limit and the last restore error are explained. **Restore stock** opens a
+   confirmation with the snapshot target and, when it differs, the driver
+   default; it explains a pre-existing tuned limit and the last restore error.
 
 Rules:
 
 - The dashboard GPU include switch and the tuning dialog apply immediately
   (draft + apply flow); Cancel in the restart/stop alert must restore the switch
   and the dirty banner.
+- When applied GPU settings are still on the cards while the miner is stopped,
+  the dashboard shows an **oc banner** with a **Restore stock** action; the same
+  state is also a status warning. The banner is not dismissible into a silent
+  state.
 - `Settings → Power limit` intentionally accepts `0` as driver auto; do not
   clamp it to a low wattage.
 - The per-card dialog does not pretend to control fan or temperature; those are
@@ -321,7 +331,7 @@ profile (this prevented a 300 W default from being applied to a 165 W card).
   *clock lock*. Avoid internal words such as “snapshot”, “supervisor”,
   “restart-required diff” in user-facing copy.
 - Error messages say what failed and what to do next (“GPU helper did not
-  answer within 30 s; check the polkit rule”).
+  answer in time; check the polkit rule”).
 - Numbers are formatted with `trommel_core::util` (`125.3 TH/s`, `00:12:34`),
   with tabular figures in the UI.
 - The catalogue carries `*_en`/`*_ru` descriptions, help and pool notes.

@@ -35,25 +35,20 @@ step "Prepare pristine environment"
 rm -rf "$WORK"
 mkdir -p "$WORK/bin" "$WORK/config" "$WORK/state" "$WORK/data" "$WORK/cache"
 
-cat > "$WORK/bin/nvidia-smi" <<'SH'
-#!/bin/bash
-args="$*"
-case "$args" in
-  *index,uuid*)
-    echo "0, GPU-33333333-3333-3333-3333-333333333333, NVIDIA GeForce RTX 3080 Ti, 46, 30, 49.00, 350.00, 350.00, 100.00, 400.00, 210, 405, 0, 512"
-    ;;
-  *power.limit*) echo "350.00" ;;
-  *) exit 0 ;;
-esac
-SH
-chmod +x "$WORK/bin/nvidia-smi"
-
-cat > "$WORK/bin/oc-helper" <<SH
-#!/bin/bash
-echo "\$*" >> "$WORK/oc.log"
-exit 0
-SH
-chmod +x "$WORK/bin/oc-helper"
+cat > "$WORK/gpu-state.json" <<'JSON'
+{
+  "gpus": [
+    {"index": 0, "uuid": "GPU-33333333-3333-3333-3333-333333333333", "name": "NVIDIA GeForce RTX 3080 Ti",
+     "temp": 46, "fan": 30, "draw": 49.0, "power": 350.0, "power_default": 350.0,
+     "power_min": 100.0, "power_max": 400.0, "core": 210, "core_default": 1770,
+     "mem": 405, "mem_default": 9501, "util": 0, "vram": 512}
+  ]
+}
+JSON
+: > "$WORK/fake-mode"
+cp "$ROOT/scripts/fixtures/fake-nvidia-smi.py" "$WORK/bin/nvidia-smi"
+cp "$ROOT/scripts/fixtures/fake-oc-helper.sh" "$WORK/bin/oc-helper"
+chmod +x "$WORK/bin/nvidia-smi" "$WORK/bin/oc-helper"
 
 cat > "$WORK/bus.conf" <<XML
 <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
@@ -82,6 +77,10 @@ export XDG_CACHE_HOME="$WORK/cache"
 export TROMMEL_OC_HELPER="$WORK/bin/oc-helper"
 export TROMMEL_NO_EXTERNAL_SCAN=1
 export TROMMEL_OC_LOG="$WORK/oc.log"
+export TROMMEL_FAKE_GPU_STATE="$WORK/gpu-state.json"
+export TROMMEL_FAKE_MODE="$WORK/fake-mode"
+export TROMMEL_OC_TIMEOUT_MS=1500
+export TROMMEL_OC_VERIFY_MS=1000
 export GTK_A11Y=atspi
 export LANG=C.UTF-8
 export LANGUAGE=en

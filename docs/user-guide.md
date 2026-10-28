@@ -182,10 +182,30 @@ best-effort stock restore.
 
 ## Stock restore and limitations
 
-- The power limit is restored from the snapshot captured before mining.
+- **Restore stock** (Settings → Actions) asks first: it can restore the snapshot
+  captured before mining (`350 W`, clocks unlocked) or reset to the driver
+  default when the snapshot itself already had a reduced limit. The dialog shows
+  the exact target and warns when the two differ.
+- The power limit is restored from the snapshot captured before mining and read
+  back; a mismatch is an error, not a silent “applied”. The snapshot is kept
+  when the restore fails, so you can retry.
 - `-lgc`/`-lmc` are reset to the driver default. A pre-existing manual clock
   lock cannot be read back through `nvidia-smi`; the UI says so, and a warning
   appears when the driver does not honour a configured lock.
+- Memory/core locks are checked once the miner has loaded the GPU. If the
+  driver ignores the memory lock, the miner is stopped and the error names the
+  requested/actual frequency; remove the lock from the profile or update the
+  driver.
+- **Restore stock on stop** can be turned off. In that case Stop keeps the
+  snapshot and leaves the power/clocks applied; the dashboard shows a banner
+  with **Restore stock** and the status warning explains why. Turning it off is
+  never silent.
+- A profile with no power/clock values touches nothing: Start needs no snapshot,
+  no helper and no password, so a pure stock profile can keep restore-on-stop
+  enabled.
+- Per-card settings inherit the **GPU defaults** unless the card has a custom
+  override. The setup wizard and the enable switch do not create an override;
+  **Tune → Save** does. The card list shows “custom” or “profile default”.
 - Fan control on consumer cards is not available through `nvidia-smi`; fan flags
   are passed to the miner when supported and disappear with the process.
 - On reboot the snapshot is marked stale and is not used; Start captures a fresh

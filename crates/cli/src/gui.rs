@@ -36,7 +36,9 @@ enum Cmd {
     ApplyStart {
         json: String,
     },
-    ResetOc,
+    RestoreOc {
+        mode: String,
+    },
     Bench {
         minutes: u64,
     },
@@ -49,6 +51,7 @@ enum Ev {
     ServiceDown(String),
     Error(String),
     Applied { message: String, quiet: bool },
+    Busy(bool),
     Bench(String),
 }
 
@@ -104,21 +107,26 @@ fn spawn_worker(emit: Arc<dyn Fn(Ev) + Send + Sync>) -> tokio::sync::mpsc::Unbou
                                     if let Ok(cfg) = client.get_config().await { emit(Ev::Config(cfg)); }
                                 }
                                 Cmd::Toggle => {
+                                    emit(Ev::Busy(true));
                                     match client.toggle().await {
                                         Ok(_) => { if let Ok(json) = client.refresh().await { emit(Ev::Status(json)); } }
                                         Err(err) => emit(Ev::Error(err.to_string())),
                                     }
+                                    emit(Ev::Busy(false));
                                 }
                                 Cmd::Apply { json, mode, quiet } => {
+                                    emit(Ev::Busy(true));
                                     match client.apply_config(&json, &mode).await {
-                                        Ok(result) => emit(Ev::Applied {
-                                            message: result,
+                                        Ok(_result) => emit(Ev::Applied {
+                                            message: String::new(),
                                             quiet,
                                         }),
                                         Err(err) => emit(Ev::Error(err.to_string())),
                                     }
+                                    emit(Ev::Busy(false));
                                 }
                                 Cmd::ApplyStart { json } => {
+                                    emit(Ev::Busy(true));
                                     match client.apply_config(&json, "live").await {
                                         Ok(_) => match client.start().await {
                                             Ok(_) => {
@@ -134,15 +142,40 @@ fn spawn_worker(emit: Arc<dyn Fn(Ev) + Send + Sync>) -> tokio::sync::mpsc::Unbou
                                         },
                                         Err(err) => emit(Ev::Error(err.to_string())),
                                     }
+                                    emit(Ev::Busy(false));
                                 }
-                                Cmd::ResetOc => {
-                                    match client.reset_oc().await {
-                                        Ok(_) => emit(Ev::Applied {
-                                            message: "Stock settings restored".into(),
-                                            quiet: true,
-                                        }),
+                                Cmd::RestoreOc { mode } => {
+                                    emit(Ev::Busy(true));
+                                    match client.restore_oc(&mode).await {
+                                        Ok(report) => {
+                                            let parsed = serde_json::from_str::<serde_json::Value>(&report).ok();
+                                            let mode = parsed
+                                                .as_ref()
+                                                .and_then(|value| value["mode"].as_str())
+                                                .unwrap_or("snapshot");
+                                            let count = parsed
+                                                .as_ref()
+                                                .and_then(|value| value["restored"].as_u64())
+                                                .unwrap_or(0);
+                                            let message = if mode == "defaults" {
+                                                tr(
+                                                    &format!("Reset {count} GPU(s) to driver defaults"),
+                                                    &format!("Сброшено на сток драйвера: {count} GPU"),
+                                                ).to_string()
+                                            } else {
+                                                tr(
+                                                    &format!("Restored {count} GPU(s) to the pre-mining snapshot"),
+                                                    &format!("Возвращён снимок: {count} GPU"),
+                                                ).to_string()
+                                            };
+                                            emit(Ev::Applied { message, quiet: true });
+                                            if let Ok(json) = client.refresh().await {
+                                                emit(Ev::Status(json));
+                                            }
+                                        }
                                         Err(err) => emit(Ev::Error(err.to_string())),
                                     }
+                                    emit(Ev::Busy(false));
                                 }
                                 Cmd::Bench { minutes } => {
                                     let request = serde_json::json!({"seconds": minutes.saturating_mul(60)}).to_string();
@@ -225,6 +258,7 @@ struct App {
     toast: adw::ToastOverlay,
     stack: adw::ViewStack,
     banner: adw::Banner,
+    oc_banner: adw::Banner,
     tx: tokio::sync::mpsc::UnboundedSender<Cmd>,
     status: RefCell<Option<Status>>,
     config: RefCell<Config>,
@@ -510,12 +544,21 @@ fn build_ui(app: &adw::Application) {
         .button_label(tr("Apply", "Применить"))
         .build();
     banner.set_revealed(false);
+    let oc_banner = adw::Banner::builder()
+        .title(tr(
+            "GPU settings are still applied",
+            "Настройки GPU всё ещё применены",
+        ))
+        .button_label(tr("Restore stock", "Вернуть сток"))
+        .build();
+    oc_banner.set_revealed(false);
 
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
     toolbar.add_bottom_bar(&switcher_bar);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&banner);
+    content.append(&oc_banner);
     content.append(&toast);
     toolbar.set_content(Some(&content));
     window.set_content(Some(&toolbar));
@@ -668,6 +711,7 @@ fn build_ui(app: &adw::Application) {
         toast: toast.clone(),
         stack: stack.clone(),
         banner: banner.clone(),
+        oc_banner: oc_banner.clone(),
         tx,
         status: RefCell::new(None),
         applied: RefCell::new(cfg.clone()),
@@ -893,8 +937,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     let restore_stock = switch_row(
         &tr("Restore stock on stop", "Возвращать сток при остановке"),
         &tr(
-            "Restore the power limit captured before mining",
-            "Возвращать лимит питания, снятый до майнинга",
+            "Restore the captured power limit and unlock clocks on Stop",
+            "Возвращать снятый лимит питания и разлочивать частоты при остановке",
         ),
     );
     let notifications = switch_row(
@@ -962,8 +1006,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     let gpu = adw::PreferencesGroup::builder()
         .title(tr("GPU defaults", "Настройки GPU по умолчанию"))
         .description(tr(
-            "Per-GPU overrides are stored in the config; this is the default profile.",
-            "Переопределения по картам хранятся в конфиге; здесь — профиль по умолчанию.",
+            "Cards without a custom override use these values. Tune on a card creates its own override.",
+            "Карты без собственной настройки используют эти значения. «Настроить» на карте создаёт отдельную настройку.",
         ))
         .build();
     let power = spin_row(
@@ -1135,8 +1179,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     let stock_row = adw::ActionRow::builder()
         .title(tr("Restore stock now", "Вернуть сток сейчас"))
         .subtitle(tr(
-            "Restores the snapshot captured before mining",
-            "Возвращает снимок, снятый до майнинга",
+            "Restore the pre-mining snapshot or reset to the driver default",
+            "Вернуть снимок до майнинга или сбросить на сток драйвера",
         ))
         .build();
     stock_row.add_suffix(&stock);
@@ -1182,6 +1226,135 @@ thread_local! {
     static STOCK_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
 }
 
+// --------------------------------------------------------------- restore
+
+/// Ask before changing power/clocks and explain exactly what will be written.
+/// The daemon owns the snapshot; the status only carries a summary, so a
+/// multi-GPU rig still gets a per-GPU report in the toast afterwards.
+fn restore_stock_dialog(app: &Rc<App>) {
+    let running = app
+        .status
+        .borrow()
+        .as_ref()
+        .map(|status| status.state.running)
+        .unwrap_or(false);
+    if running {
+        app.toast.add_toast(adw::Toast::new(&tr(
+            "Stop the miner before restoring the stock profile",
+            "Сначала остановите майнер, затем верните сток",
+        )));
+        return;
+    }
+    let status = match app.status.borrow().clone() {
+        Some(status) => status,
+        None => {
+            app.toast.add_toast(adw::Toast::new(&tr(
+                "Status is not available yet; wait for the daemon",
+                "Статус ещё не получен — дождитесь демона",
+            )));
+            return;
+        }
+    };
+    let oc = status.oc.clone();
+    let has_snapshot = oc.snapshot_available && !oc.stale && oc.restore_power_w.is_some();
+    let snapshot_w = oc.restore_power_w;
+    let default_w = oc.driver_default_w;
+    let cards = status.gpus.len().max(1);
+    let mut body = String::new();
+    if has_snapshot {
+        body.push_str(&tr(
+            &format!(
+                "Restore the values captured before mining: {} W, clocks unlocked.",
+                snapshot_w.unwrap_or(0)
+            ),
+            &format!(
+                "Вернуть значения, снятые до майнинга: {} W, частоты разлочены.",
+                snapshot_w.unwrap_or(0)
+            ),
+        ));
+        if oc.was_tuned {
+            body.push(' ');
+            body.push_str(&tr(
+                &format!(
+                    "The card already had a non-default limit before mining; the driver default is {} W.",
+                    default_w.unwrap_or(0)
+                ),
+                &format!(
+                    "До майнинга на карте уже был нестандартный лимит; сток драйвера — {} W.",
+                    default_w.unwrap_or(0)
+                ),
+            ));
+        }
+    } else {
+        body.push_str(&tr(
+            &format!(
+                "No usable pre-mining snapshot. Reset power to the driver default ({} W) and unlock clocks.",
+                default_w.unwrap_or(0)
+            ),
+            &format!(
+                "Подходящего снимка нет. Сбросить питание на сток драйвера ({} W) и разлочить частоты.",
+                default_w.unwrap_or(0)
+            ),
+        ));
+    }
+    if cards > 1 {
+        body.push(' ');
+        body.push_str(&tr(
+            &format!("Applies to all {cards} cards."),
+            &format!("Применится ко всем картам: {cards}."),
+        ));
+    }
+    if let Some(err) = &oc.last_error {
+        body.push(' ');
+        body.push_str(&tr(
+            &format!("Last error: {err}"),
+            &format!("Последняя ошибка: {err}"),
+        ));
+    }
+
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr("Restore GPU stock?", "Вернуть сток GPU?"))
+        .body(&body)
+        .build();
+    dialog.add_response("cancel", &tr("Cancel", "Отмена"));
+    if has_snapshot {
+        dialog.add_response("snapshot", &tr("Restore snapshot", "Вернуть снимок"));
+        dialog.set_response_appearance("snapshot", adw::ResponseAppearance::Suggested);
+    }
+    let can_defaults = default_w.is_some() && (!has_snapshot || default_w != snapshot_w);
+    if can_defaults || !has_snapshot {
+        dialog.add_response("defaults", &tr("Driver defaults", "Сток драйвера"));
+        if !has_snapshot {
+            dialog.set_response_appearance("defaults", adw::ResponseAppearance::Suggested);
+        }
+    }
+    if !has_snapshot && default_w.is_none() {
+        dialog.set_body(&tr(
+            "No snapshot and no power limit reported by nvidia-smi; nothing to restore.",
+            "Нет ни снимка, ни лимита питания от nvidia-smi — возвращать нечего.",
+        ));
+        dialog.add_response("close", &tr("Close", "Закрыть"));
+        dialog.set_default_response(Some("close"));
+        dialog.set_close_response("close");
+        dialog.choose(Some(&app.window), None::<&gio::Cancellable>, |_| {});
+        return;
+    }
+    dialog.set_default_response(Some(if has_snapshot { "snapshot" } else { "defaults" }));
+    dialog.set_close_response("cancel");
+    let window = app.window.clone();
+    let app = app.clone();
+    dialog.choose(Some(&window), None::<&gio::Cancellable>, move |response| {
+        let mode = match response.as_str() {
+            "snapshot" => "snapshot",
+            "defaults" => "defaults",
+            _ => return,
+        };
+        let _ = app.tx.send(Cmd::RestoreOc {
+            mode: mode.to_string(),
+        });
+    });
+}
+
 // --------------------------------------------------------------- signals
 
 fn connect_signals(app: &Rc<App>) {
@@ -1224,6 +1397,13 @@ fn connect_signals(app: &Rc<App>) {
     }
     {
         let app = app.clone();
+        let banner = app.oc_banner.clone();
+        banner.connect_button_clicked(move |_| {
+            restore_stock_dialog(&app);
+        });
+    }
+    {
+        let app = app.clone();
         let button = app.quick_button.clone();
         button.connect_clicked(move |_| {
             quick_setup_wizard(&app);
@@ -1241,9 +1421,9 @@ fn connect_signals(app: &Rc<App>) {
         });
     }
     if let Some(button) = STOCK_BUTTON.with(|slot| slot.borrow().clone()) {
-        let tx = app.tx.clone();
+        let app = app.clone();
         button.connect_clicked(move |_| {
-            let _ = tx.send(Cmd::ResetOc);
+            restore_stock_dialog(&app);
         });
     }
     {
@@ -2326,7 +2506,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         .cloned()
         .unwrap_or_default();
     let tuning = profile.tuning_for(&uuid);
-    let custom = profile.per_gpu.contains_key(&uuid);
+    let custom = profile.is_custom(&uuid);
     let enabled = tuning.enabled;
     let (same_uuids, all_uuids) = {
         let status = app.status.borrow();
@@ -2363,11 +2543,21 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         ))
         .css_classes(["flat", "pill"])
         .build();
+    let profile_default = gtk::Button::builder()
+        .label(tr("Profile default", "Профиль по умолчанию"))
+        .tooltip_text(tr(
+            "Remove this card's override; it will follow Settings → GPU defaults",
+            "Убрать настройку этой карты; она будет следовать «GPU defaults»",
+        ))
+        .css_classes(["flat", "pill"])
+        .visible(custom)
+        .build();
     let save = gtk::Button::builder()
         .label(tr("Save", "Сохранить"))
         .css_classes(["suggested-action", "pill"])
         .build();
     header.pack_end(&save);
+    header.pack_start(&profile_default);
     header.pack_start(&recommended);
     window.set_titlebar(Some(&header));
     let page = adw::PreferencesPage::new();
@@ -2602,6 +2792,25 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         let app = app.clone();
         let window = window.clone();
         let uuid = uuid.clone();
+        profile_default.connect_clicked(move |_| {
+            {
+                let mut cfg = app.config.borrow_mut();
+                let profile = cfg.gpu_profile_mut();
+                profile.per_gpu.remove(&uuid);
+            }
+            mark_dirty(&app);
+            window.close();
+            app.toast.add_toast(adw::Toast::new(&tr(
+                "Card follows the profile default again",
+                "Карта снова использует профиль по умолчанию",
+            )));
+            save_and_apply(&app);
+        });
+    }
+    {
+        let app = app.clone();
+        let window = window.clone();
+        let uuid = uuid.clone();
         let same_uuids = same_uuids.clone();
         let all_uuids = all_uuids.clone();
         let base_tuning = base_tuning.clone();
@@ -2612,6 +2821,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
             // global and are edited elsewhere).
             let mut tuning = base_tuning.clone();
             tuning.enabled = enabled;
+            tuning.custom = true;
             tuning.power_limit_w = nonzero(power.value() as u32);
             tuning.core_clock_mhz = if core_lock.is_active() && core_value >= 100 {
                 Some(core_value)
@@ -3366,10 +3576,18 @@ fn finish_quick_setup(
         cfg.active_preset = Some(id);
         {
             let profile = cfg.gpu_profile_mut();
+            let default_power = profile.default.power_limit_w;
+            let default_enabled = profile.default.enabled;
             for card in cards.borrow().iter() {
+                let was_custom = profile.is_custom(&card.uuid);
                 let mut tuning = profile.tuning_for(&card.uuid);
                 tuning.enabled = card.row.enables_expansion();
                 tuning.power_limit_w = nonzero(card.power.value() as u32);
+                // Only an actual difference from the default is an override;
+                // otherwise the card keeps following Settings → GPU defaults.
+                tuning.custom = was_custom
+                    || tuning.power_limit_w != default_power
+                    || tuning.enabled != default_enabled;
                 profile.per_gpu.insert(card.uuid.clone(), tuning);
             }
         }
@@ -4178,10 +4396,35 @@ fn handle_event(app: &Rc<App>, event: Ev) {
                 app.dirty.set(false);
                 update_dirty(app);
             }
-            app.toast
-                .add_toast(adw::Toast::new(&tr("Applied", "Применено")));
-            let _ = message;
+            let text = if message.trim().is_empty() {
+                tr("Applied", "Применено").to_string()
+            } else {
+                message
+            };
+            app.toast.add_toast(adw::Toast::new(&text));
             let _ = app.tx.send(Cmd::Refresh);
+        }
+        Ev::Busy(busy) => {
+            app.action_button.set_sensitive(!busy);
+            if busy {
+                app.action_label
+                    .set_text(&tr("Waiting for authorization…", "Жду подтверждения…"));
+            } else {
+                let running = app
+                    .status
+                    .borrow()
+                    .as_ref()
+                    .map(|status| status.state.running)
+                    .unwrap_or(false);
+                app.action_label.set_text(&tr(
+                    if running { "Stop" } else { "Start" },
+                    if running {
+                        "Остановить"
+                    } else {
+                        "Запустить"
+                    },
+                ));
+            }
         }
         Ev::Bench(json) => {
             if let Ok(report) = trommel_core::bench::BenchReport::from_json(&json) {
@@ -4277,7 +4520,9 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
             {
                 let mut cfg = app.config.borrow_mut();
                 let profile = cfg.gpu_profile_mut();
+                let custom = profile.is_custom(&uuid);
                 let mut tuning = profile.tuning_for(&uuid);
+                tuning.custom = custom;
                 tuning.enabled = new_enabled;
                 profile.per_gpu.insert(uuid.clone(), tuning);
             }
@@ -4394,7 +4639,7 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
         .config
         .borrow()
         .gpu_profile()
-        .map(|profile| profile.per_gpu.contains_key(&gpu.uuid))
+        .map(|profile| profile.is_custom(&gpu.uuid))
         .unwrap_or(false)
     {
         tr("custom", "своя")
@@ -4471,7 +4716,7 @@ fn tuning_summary(app: &Rc<App>, uuid: &str) -> (String, bool) {
         .cloned()
         .unwrap_or_default();
     let tuning = profile.tuning_for(uuid);
-    let custom = profile.per_gpu.contains_key(uuid);
+    let custom = profile.is_custom(uuid);
     let power = tuning
         .power_limit_w
         .map(|value| format!("{value} W"))
@@ -4614,6 +4859,44 @@ fn gpu_settings_row(app: &Rc<App>, gpu: &GpuStats, simple: bool) -> gtk::Box {
         ),
         "trommel-muted",
     ));
+    let mut actual = String::new();
+    if let Some(limit) = gpu.power_limit_w {
+        actual.push_str(&format!("{limit:.0} W"));
+    }
+    if !simple {
+        if let (Some(core), Some(mem)) = (gpu.core_mhz, gpu.mem_mhz) {
+            if !actual.is_empty() {
+                actual.push_str(" · ");
+            }
+            actual.push_str(&format!("{core}/{mem} MHz"));
+        }
+    }
+    if !actual.is_empty() {
+        let power_hot = tuning
+            .power_limit_w
+            .zip(gpu.power_limit_w)
+            .map(|(want, have)| (want as f64 - have).abs() > 1.0)
+            .unwrap_or(false);
+        let mem_hot = tuning
+            .memory_clock_mhz
+            .zip(gpu.mem_mhz)
+            .map(|(want, have)| want.abs_diff(have) > 100)
+            .unwrap_or(false);
+        let core_hot = gpu.util_pct.unwrap_or(0) >= 80
+            && tuning
+                .core_clock_mhz
+                .zip(gpu.core_mhz)
+                .map(|(want, have)| want.abs_diff(have) > 150)
+                .unwrap_or(false);
+        live_line.append(&gpu_chip(
+            &format!("{} {actual}", tr("now", "сейчас")),
+            if power_hot || mem_hot || core_hot {
+                "trommel-hot"
+            } else {
+                "trommel-muted"
+            },
+        ));
+    }
     row.append(&live_line);
 
     let tooltip = format!("{}\n{}\n{}", gpu.uuid, detail, {
@@ -4621,7 +4904,7 @@ fn gpu_settings_row(app: &Rc<App>, gpu: &GpuStats, simple: bool) -> gtk::Box {
             .config
             .borrow()
             .gpu_profile()
-            .map(|profile| profile.per_gpu.contains_key(&gpu.uuid))
+            .map(|profile| profile.is_custom(&gpu.uuid))
             .unwrap_or(false)
         {
             tr("Per-card override", "Своя настройка карты")
@@ -4896,6 +5179,26 @@ fn apply_status(app: &Rc<App>, status: Status) {
         "Pool endpoint and total pool fee",
         "Адрес пула и комиссия пула",
     )));
+    app.oc_banner.set_revealed(status.oc.needs_restore);
+    if status.oc.needs_restore {
+        let title = if status.oc.last_error.is_some() {
+            tr(
+                "Stock restore failed; GPU settings may still be applied",
+                "Возврат стока не удался — настройки GPU могли остаться",
+            )
+        } else if !status.oc.restore_on_stop {
+            tr(
+                "GPU settings are still applied (restore on stop is off)",
+                "Настройки GPU всё ещё применены (возврат при остановке выключен)",
+            )
+        } else {
+            tr(
+                "GPU settings are still applied",
+                "Настройки GPU всё ещё применены",
+            )
+        };
+        app.oc_banner.set_title(&title);
+    }
     if status.warnings.is_empty() {
         app.warnings.set_title(&tr("No notes", "Замечаний нет"));
         app.warning_badge.set_text("✓");
