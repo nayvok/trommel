@@ -11,10 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adw::prelude::*;
+use glib::value::ToValue;
 use gtk::{gdk, gio, glib};
 
 use trommel_core::catalog::{self, MinerOption, OptionKind};
-use trommel_core::config::{ChangeClass, Config, GpuTuning, MinerInstall, Preset};
+use trommel_core::config::{Appearance, ChangeClass, Config, GpuTuning, MinerInstall, Preset};
 use trommel_core::dbus::MinerProxy;
 use trommel_core::i18n::{self, tr};
 use trommel_core::nvidia::GpuStats;
@@ -190,6 +191,7 @@ struct SettingsWidgets {
     simple_mode: adw::SwitchRow,
     poll: adw::SpinRow,
     language: adw::ComboRow,
+    appearance: adw::ComboRow,
     power: adw::SpinRow,
     core_lock: adw::SwitchRow,
     core: adw::SpinRow,
@@ -246,12 +248,23 @@ fn install_css() {
         r#"
         .trommel-gpu-card {
             background-color: @card_bg_color;
-            border: 1px solid alpha(@borders, 0.55);
+            border: none;
             border-radius: 12px;
             padding: 12px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22), 0 6px 18px rgba(0, 0, 0, 0.12);
         }
         .trommel-gpu-card:hover {
-            background-color: alpha(@card_fg_color, 0.04);
+            background-color: alpha(@card_fg_color, 0.05);
+        }
+        .trommel-hero {
+            background-color: alpha(@card_bg_color, 0.55);
+            border-radius: 12px;
+            padding: 12px 14px;
+        }
+        .trommel-hero-hashrate {
+            font-size: 2.4em;
+            font-weight: 800;
+            letter-spacing: -0.02em;
         }
         .trommel-gpu-title { font-weight: 700; }
         .trommel-metric-label { font-size: 0.78em; opacity: 0.65; }
@@ -279,6 +292,12 @@ fn install_css() {
         .trommel-pill-offline {
             background-color: alpha(@error_color, 0.16);
             color: @error_color;
+        }
+        /* Rounded actions stay compact: the same pill shape everywhere,
+           without the oversized padding that made paired buttons uneven. */
+        button.pill {
+            min-height: 26px;
+            padding: 3px 14px;
         }
         "#,
     );
@@ -357,6 +376,10 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 fn build_ui(app: &adw::Application) {
+    let cfg = Config::load_or_default();
+    i18n::set_language(cfg.behavior.language);
+    apply_appearance(cfg.behavior.appearance);
+    // Screenshot and test hook: the environment wins over the stored scheme.
     if let Ok(scheme) = std::env::var("TROMMEL_COLOR_SCHEME") {
         adw::StyleManager::default().set_color_scheme(match scheme.as_str() {
             "dark" => adw::ColorScheme::ForceDark,
@@ -366,8 +389,6 @@ fn build_ui(app: &adw::Application) {
     }
 
     install_css();
-    let cfg = Config::load_or_default();
-    i18n::set_language(cfg.behavior.language);
 
     let (event_tx, event_rx) = std::sync::mpsc::channel::<Ev>();
     let event_tx = Arc::new(event_tx);
@@ -379,12 +400,26 @@ fn build_ui(app: &adw::Application) {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Trommel")
-        .default_width(760)
-        .default_height(820)
+        .default_width(680)
+        .default_height(760)
         .build();
+    window.set_size_request(380, 420);
+    // Documentation/verification helper: render the window at another width.
+    if let Ok(value) = std::env::var("TROMMEL_WINDOW_WIDTH") {
+        if let Ok(width) = value.parse::<i32>() {
+            window.set_default_width(width);
+        }
+    }
+    if let Ok(value) = std::env::var("TROMMEL_WINDOW_HEIGHT") {
+        if let Ok(height) = value.parse::<i32>() {
+            window.set_default_height(height);
+        }
+    }
 
     let toast = adw::ToastOverlay::new();
     let stack = adw::ViewStack::new();
+    stack.set_enable_transitions(true);
+    stack.set_transition_duration(220);
     toast.set_child(Some(&stack));
 
     let title = adw::ViewSwitcherTitle::builder()
@@ -393,10 +428,14 @@ fn build_ui(app: &adw::Application) {
         .subtitle(tr("NVIDIA mining rig manager", "Менеджер NVIDIA-рига"))
         .build();
     let switcher_bar = adw::ViewSwitcherBar::builder().stack(&stack).build();
-    title
-        .bind_property("title-visible", &switcher_bar, "reveal")
-        .sync_create()
-        .build();
+    {
+        // The bottom bar is the narrow-window replacement for the header
+        // switcher, so it must be visible exactly when the title is not.
+        let switcher_bar = switcher_bar.clone();
+        title.connect_notify_local(Some("title-visible"), move |title, _| {
+            switcher_bar.set_reveal(!title.is_title_visible());
+        });
+    }
 
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&title));
@@ -443,16 +482,34 @@ fn build_ui(app: &adw::Application) {
     window.set_content(Some(&toolbar));
 
     // ------------------------------------------------------------ dashboard
-    let dashboard = adw::PreferencesPage::new();
+    // A plain scrolled page with a wider clamp than AdwPreferencesPage: the
+    // GPU cards can spread into two or three columns on a large window instead
+    // of being pinned to a 600 px reading column.
+    let dashboard = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .build();
+    let dashboard_clamp = adw::Clamp::builder()
+        .maximum_size(900)
+        .tightening_threshold(600)
+        .build();
+    let dashboard_box = gtk::Box::new(gtk::Orientation::Vertical, 18);
+    dashboard_box.set_margin_top(18);
+    dashboard_box.set_margin_bottom(24);
+    dashboard_box.set_margin_start(12);
+    dashboard_box.set_margin_end(12);
+    dashboard_clamp.set_child(Some(&dashboard_box));
+    dashboard.set_child(Some(&dashboard_clamp));
 
     let hero_group = adw::PreferencesGroup::new();
     let hero = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    hero.add_css_class("trommel-hero");
     hero.set_margin_top(10);
     hero.set_margin_bottom(12);
     hero.set_margin_start(6);
     hero.set_margin_end(6);
     let hero_top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let hero_hashrate = label("—", &["title-1", "numeric", "dim-label"]);
+    let hero_hashrate = label("—", &["trommel-hero-hashrate", "numeric", "dim-label"]);
     hero_hashrate.set_hexpand(true);
     let pill = label(
         &tr("stopped", "остановлен"),
@@ -474,7 +531,7 @@ fn build_ui(app: &adw::Application) {
     hero.append(&hero_meta);
     hero.append(&quick_button);
     hero_group.add(&hero);
-    dashboard.add(&hero_group);
+    dashboard_box.append(&hero_group);
 
     let rig_group = adw::PreferencesGroup::builder()
         .title(tr("Rig", "Риг"))
@@ -482,15 +539,31 @@ fn build_ui(app: &adw::Application) {
         .build();
     let gpu_flow = gtk::FlowBox::new();
     gpu_flow.set_selection_mode(gtk::SelectionMode::None);
-    gpu_flow.set_max_children_per_line(3);
+    gpu_flow.set_max_children_per_line(2);
     gpu_flow.set_min_children_per_line(1);
     gpu_flow.set_homogeneous(true);
-    gpu_flow.set_column_spacing(12);
-    gpu_flow.set_row_spacing(12);
+    gpu_flow.set_column_spacing(10);
+    gpu_flow.set_row_spacing(10);
     gpu_flow.set_margin_top(6);
     gpu_flow.set_margin_bottom(6);
     rig_group.add(&gpu_flow);
-    dashboard.add(&rig_group);
+    {
+        let narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MaxWidth,
+            560.0,
+            adw::LengthUnit::Px,
+        ));
+        narrow.add_setter(&gpu_flow, "max-children-per-line", Some(&1u32.to_value()));
+        window.add_breakpoint(narrow);
+        let wide = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MinWidth,
+            780.0,
+            adw::LengthUnit::Px,
+        ));
+        wide.add_setter(&gpu_flow, "max-children-per-line", Some(&3u32.to_value()));
+        window.add_breakpoint(wide);
+    }
+    dashboard_box.append(&rig_group);
 
     let totals_group = adw::PreferencesGroup::builder()
         .title(tr("Totals", "Итого"))
@@ -505,7 +578,7 @@ fn build_ui(app: &adw::Application) {
         .build();
     totals_group.add(&total_power);
     totals_group.add(&total_temp);
-    dashboard.add(&totals_group);
+    dashboard_box.append(&totals_group);
 
     let shares_group = adw::PreferencesGroup::builder()
         .title(tr("Shares and pool", "Шары и пул"))
@@ -534,7 +607,7 @@ fn build_ui(app: &adw::Application) {
     shares_group.add(&shares);
     shares_group.add(&pool_balance);
     shares_group.add(&pool_meta);
-    dashboard.add(&shares_group);
+    dashboard_box.append(&shares_group);
 
     let warnings_group = adw::PreferencesGroup::builder()
         .title(tr("Notes", "Замечания"))
@@ -544,7 +617,7 @@ fn build_ui(app: &adw::Application) {
     warning_badge.set_valign(gtk::Align::Center);
     warnings.add_suffix(&warning_badge);
     warnings_group.add(&warnings);
-    dashboard.add(&warnings_group);
+    dashboard_box.append(&warnings_group);
 
     stack.add_titled(&dashboard, Some("dashboard"), &tr("Dashboard", "Дашборд"));
     set_page_icon(&stack, &dashboard, "utilities-system-monitor-symbolic");
@@ -727,7 +800,7 @@ fn build_presets_page() -> (adw::PreferencesPage, gtk::Box) {
     let new_button = gtk::Button::builder()
         .label(tr("New preset", "Новый пресет"))
         .icon_name("list-add-symbolic")
-        .css_classes(["flat"])
+        .css_classes(["flat", "pill"])
         .halign(gtk::Align::Center)
         .build();
     new_button.set_margin_top(8);
@@ -767,7 +840,7 @@ fn build_miners_page() -> (adw::PreferencesPage, gtk::Box) {
     );
     let run = gtk::Button::builder()
         .label(tr("Run benchmark", "Сравнить"))
-        .css_classes(["flat"])
+        .css_classes(["flat", "pill"])
         .valign(gtk::Align::Center)
         .build();
     minutes.add_suffix(&run);
@@ -847,8 +920,21 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     ] {
         behavior.add(row);
     }
+    let appearance = adw::ComboRow::builder()
+        .title(tr("Appearance", "Оформление"))
+        .subtitle(tr(
+            "Colour scheme; System follows the desktop",
+            "Цветовая схема; «Системная» следует за рабочим столом",
+        ))
+        .model(&gtk::StringList::new(&[
+            i18n::tr_ref("System", "Системная"),
+            i18n::tr_ref("Light", "Светлая"),
+            i18n::tr_ref("Dark", "Тёмная"),
+        ]))
+        .build();
     behavior.add(&poll);
     behavior.add(&language);
+    behavior.add(&appearance);
     page.add(&behavior);
 
     let gpu = adw::PreferencesGroup::builder()
@@ -980,7 +1066,7 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
         .build();
     let extension_manager = gtk::Button::builder()
         .label(tr("Extension Manager", "Менеджер расширений"))
-        .css_classes(["flat"])
+        .css_classes(["flat", "pill"])
         .valign(gtk::Align::Center)
         .build();
     extension_state.add_suffix(&extension_manager);
@@ -1043,6 +1129,7 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             simple_mode,
             poll,
             language,
+            appearance,
             power,
             core_lock,
             core,
@@ -1141,6 +1228,25 @@ fn connect_signals(app: &Rc<App>) {
                 .map(|status| status.gpus.clone())
                 .unwrap_or_default();
             refresh_gpu_settings(&app, &gpus);
+        });
+    }
+    {
+        // Appearance applies immediately; it is also part of the draft so it
+        // survives a restart through the config file.
+        let app = app.clone();
+        let row = app.settings.appearance.clone();
+        row.connect_notify_local(Some("selected"), move |row, _| {
+            let appearance = match row.selected() {
+                1 => Appearance::Light,
+                2 => Appearance::Dark,
+                _ => Appearance::System,
+            };
+            if app.config.borrow().behavior.appearance == appearance {
+                return;
+            }
+            app.config.borrow_mut().behavior.appearance = appearance;
+            apply_appearance(appearance);
+            mark_dirty(&app);
         });
     }
     if let Some(button) = BENCH_BUTTON.with(|slot| slot.borrow().clone()) {
@@ -1280,7 +1386,7 @@ fn refresh_preset_list(app: &Rc<App>) {
         } else {
             let use_button = gtk::Button::builder()
                 .label(tr("Use", "Использовать"))
-                .css_classes(["flat"])
+                .css_classes(["flat", "pill"])
                 .valign(gtk::Align::Center)
                 .build();
             let app_use = app.clone();
@@ -1463,8 +1569,8 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         .title(tr("Preset", "Пресет"))
         .modal(true)
         .transient_for(&app.window)
-        .default_width(640)
-        .default_height(780)
+        .default_width(600)
+        .default_height(700)
         .build();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(
@@ -1475,7 +1581,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     header.pack_start(&cancel);
     let save = gtk::Button::builder()
         .label(tr("Save", "Сохранить"))
-        .css_classes(["suggested-action"])
+        .css_classes(["suggested-action", "pill"])
         .build();
     header.pack_end(&save);
     window.set_titlebar(Some(&header));
@@ -1502,7 +1608,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     info_install.add_suffix(&install_state);
     let install_button = gtk::Button::builder()
         .label(tr("Install…", "Установить…"))
-        .css_classes(["flat"])
+        .css_classes(["flat", "pill"])
         .valign(gtk::Align::Center)
         .build();
     info_install.add_suffix(&install_button);
@@ -1600,11 +1706,11 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     actions.set_margin_bottom(8);
     let duplicate = gtk::Button::builder()
         .label(tr("Duplicate", "Дублировать"))
-        .css_classes(["flat"])
+        .css_classes(["flat", "pill"])
         .build();
     let delete = gtk::Button::builder()
         .label(tr("Delete…", "Удалить…"))
-        .css_classes(["destructive-action"])
+        .css_classes(["destructive-action", "pill"])
         .build();
     actions.append(&duplicate);
     actions.append(&delete);
@@ -2146,11 +2252,11 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     header.set_title_widget(Some(&title));
     let recommended = gtk::Button::builder()
         .label(tr("Recommended", "Рекомендуемый"))
-        .css_classes(["flat"])
+        .css_classes(["flat", "pill"])
         .build();
     let save = gtk::Button::builder()
         .label(tr("Save", "Сохранить"))
-        .css_classes(["suggested-action"])
+        .css_classes(["suggested-action", "pill"])
         .build();
     header.pack_end(&save);
     header.pack_start(&recommended);
@@ -2539,11 +2645,11 @@ fn quick_setup_wizard(app: &Rc<App>) {
     step_label.set_halign(gtk::Align::Center);
     let back = gtk::Button::builder()
         .label(tr("Cancel", "Отмена"))
-        .css_classes(["flat"])
+        .css_classes(["flat", "pill"])
         .build();
     let next = gtk::Button::builder()
         .label(tr("Next", "Далее"))
-        .css_classes(["suggested-action"])
+        .css_classes(["suggested-action", "pill"])
         .build();
     header.set_title_widget(Some(&step_label));
     header.pack_start(&back);
@@ -2637,7 +2743,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
         .build();
     let fill = gtk::Button::builder()
         .label(tr("Apply 80 %", "Поставить 80 %"))
-        .css_classes(["flat"])
+        .css_classes(["flat", "pill"])
         .valign(gtk::Align::Center)
         .build();
     fill_row.add_suffix(&fill);
@@ -2651,7 +2757,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
         .build();
     let clear = gtk::Button::builder()
         .label(tr("Use auto", "Авто"))
-        .css_classes(["flat"])
+        .css_classes(["flat", "pill"])
         .valign(gtk::Align::Center)
         .build();
     auto_row.add_suffix(&clear);
@@ -2723,7 +2829,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
         .build();
     let install_button = gtk::Button::builder()
         .label(tr("Install…", "Установить…"))
-        .css_classes(["flat"])
+        .css_classes(["flat", "pill"])
         .valign(gtk::Align::Center)
         .build();
     install_row.add_suffix(&install_button);
@@ -3293,11 +3399,11 @@ fn miner_install_dialog(
     status.set_hexpand(true);
     let import = gtk::Button::builder()
         .label(tr("Import binary…", "Импортировать бинарник…"))
-        .css_classes(["flat"])
+        .css_classes(["flat", "pill"])
         .build();
     let download = gtk::Button::builder()
         .label(tr("Download and install", "Скачать и установить"))
-        .css_classes(["suggested-action"])
+        .css_classes(["suggested-action", "pill"])
         .build();
     footer.append(&status);
     footer.append(&import);
@@ -3557,6 +3663,13 @@ fn load_settings(app: &Rc<App>) {
         i18n::Language::En => 1,
         i18n::Language::Ru => 2,
     });
+    app.settings
+        .appearance
+        .set_selected(match behavior.appearance {
+            Appearance::System => 0,
+            Appearance::Light => 1,
+            Appearance::Dark => 2,
+        });
     if let Some(profile) = cfg.gpu_profile() {
         app.settings
             .power
@@ -3608,6 +3721,14 @@ fn load_settings(app: &Rc<App>) {
     refresh_extension_state(app);
 }
 
+fn apply_appearance(appearance: Appearance) {
+    adw::StyleManager::default().set_color_scheme(match appearance {
+        Appearance::System => adw::ColorScheme::Default,
+        Appearance::Light => adw::ColorScheme::ForceLight,
+        Appearance::Dark => adw::ColorScheme::ForceDark,
+    });
+}
+
 fn apply_simple_mode(app: &Rc<App>) {
     let simple = app.config.borrow().behavior.simple_mode;
     app.settings.core_lock.set_visible(!simple);
@@ -3628,6 +3749,11 @@ fn save_settings(app: &Rc<App>) {
         1 => i18n::Language::En,
         2 => i18n::Language::Ru,
         _ => i18n::Language::System,
+    };
+    cfg.behavior.appearance = match app.settings.appearance.selected() {
+        1 => Appearance::Light,
+        2 => Appearance::Dark,
+        _ => Appearance::System,
     };
     let profile = cfg.gpu_profile_mut();
     profile.default.power_limit_w = nonzero(app.settings.power.value() as u32);
@@ -3806,8 +3932,7 @@ fn metric(label_text: &str, value_text: &str, value_class: &str) -> gtk::Box {
 fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
     card.add_css_class("trommel-gpu-card");
-    card.set_size_request(230, -1);
-    card.set_hexpand(true);
+    card.set_size_request(240, -1);
     card.set_tooltip_text(Some(&gpu.uuid));
 
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -3816,7 +3941,7 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
     let title = label(&format!("GPU #{}", gpu.index), &["trommel-gpu-title"]);
     let name = label(&gpu.name, &["caption", "dim-label"]);
     name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    name.set_max_width_chars(24);
+    name.set_max_width_chars(18);
     titles.append(&title);
     titles.append(&name);
     header.append(&titles);
@@ -3924,7 +4049,7 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let uuid = label(&gpu.uuid, &["caption", "trommel-muted"]);
     uuid.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-    uuid.set_max_width_chars(26);
+    uuid.set_max_width_chars(20);
     uuid.set_hexpand(true);
     let tune = gtk::Button::builder()
         .label(tr("Tune", "Настроить"))
@@ -4147,7 +4272,7 @@ fn refresh_gpu_settings(app: &Rc<App>, gpus: &[GpuStats]) {
         app.settings.gpu_settings_box.append(&hint);
         let advanced = gtk::Button::builder()
             .label(tr("Advanced settings", "Продвинутые настройки"))
-            .css_classes(["flat"])
+            .css_classes(["flat", "pill"])
             .halign(gtk::Align::Start)
             .build();
         {
@@ -4205,7 +4330,7 @@ fn apply_status(app: &Rc<App>, status: Status) {
         .unwrap_or_else(|| "—".into());
     app.hero_hashrate.set_text(&hashrate);
     app.hero_hashrate.set_css_classes(&[
-        "title-1",
+        "trommel-hero-hashrate",
         "numeric",
         if running { "accent" } else { "dim-label" },
     ]);
