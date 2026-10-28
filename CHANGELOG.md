@@ -5,6 +5,26 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- **Desktop notifications without the panel applet.** The daemon sends crash,
+  error and overheat alerts through `org.freedesktop.Notifications`, so the
+  **Behavior → Notifications** switch keeps working after the GNOME Shell
+  extension was removed. The `Notification` D-Bus signal is still emitted for
+  integrations that want to render their own alert.
+
+### Removed
+
+- **The GNOME Shell extension and its shared GSettings schema.** The applet,
+  `data/schemas/org.gnome.shell.extensions.trommel.gschema.xml`, the
+  **Settings → GNOME integration** group and `install.sh --no-extension` are
+  gone; the flag is accepted as a no-op so old commands do not break.
+  `uninstall.sh` still removes an applet left by an older install. Upgrading
+  from a release that shipped the applet leaves its UUID in
+  `org.gnome.shell enabled-extensions`; the package manager removes the files,
+  and the stale entry is removed once in Extensions (or with `gsettings`). See
+  [ADR 0004](docs/adr/0004-remove-extension.md).
+
 ### Fixed
 
 - **GPU settings are now verified, not assumed.** `trommel-oc` reads the power

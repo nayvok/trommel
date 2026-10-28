@@ -1,5 +1,5 @@
 //! D-Bus service `io.github.nayvok.Trommel.Daemon`: the single source of truth
-//! shared by the daemon, CLI/GUI and the GNOME Shell extension.
+//! shared by the daemon, CLI and GUI.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -432,16 +432,52 @@ pub fn events_to_notifications(events: &[Event]) -> Vec<(String, String)> {
             continue;
         };
         let summary = match event {
-            Event::Started(_) => "Trommel: start",
-            Event::Crashed { .. } => "Trommel: restart",
-            Event::Stopped { .. } => "Trommel: miner stopped",
-            Event::Error(_) => "Trommel: error",
-            Event::Warning(_) => "Trommel: warning",
-            Event::UserStopped => "Trommel: stop",
+            Event::Started(_) => i18n::tr("Trommel: start", "Trommel: старт"),
+            Event::Crashed { .. } => i18n::tr("Trommel: restart", "Trommel: перезапуск"),
+            Event::Stopped { .. } => {
+                i18n::tr("Trommel: miner stopped", "Trommel: майнер остановлен")
+            }
+            Event::Error(_) => i18n::tr("Trommel: error", "Trommel: ошибка"),
+            Event::Warning(_) => i18n::tr("Trommel: warning", "Trommel: предупреждение"),
+            Event::UserStopped => i18n::tr("Trommel: stop", "Trommel: стоп"),
         };
-        out.push((summary.to_string(), body));
+        out.push((summary, body));
     }
     out
+}
+
+/// Show a desktop notification through the freedesktop notification service.
+///
+/// The daemon is the only long-lived process, so it talks to
+/// `org.freedesktop.Notifications` itself instead of relying on a shell
+/// applet. The call runs in its own task and is bounded by a timeout, so a
+/// missing service (CI, a private test bus) or a hung notification daemon can
+/// never stall the status or supervisor loops; failures are ignored.
+pub fn notify_desktop(connection: &zbus::Connection, summary: &str, body: &str) {
+    let connection = connection.clone();
+    let summary = summary.to_string();
+    let body = body.to_string();
+    tokio::spawn(async move {
+        let hints = std::collections::HashMap::<&str, zbus::Variant>::new();
+        let args = (
+            "Trommel",
+            0u32,
+            crate::APP_ID,
+            summary.as_str(),
+            body.as_str(),
+            &[] as &[&str],
+            &hints,
+            8000i32,
+        );
+        let request = connection.call_method(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.Notifications"),
+            "Notify",
+            &args,
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(2), request).await;
+    });
 }
 
 pub fn poll_interval(cfg: &Config) -> Duration {

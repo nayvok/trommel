@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use trommel_core::dbus::{self, Engine};
+use trommel_core::i18n::tr;
 use trommel_core::status::Status;
 use trommel_core::supervisor::log_line;
 use trommel_core::{paths, OBJECT_PATH};
@@ -39,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
     let refresher = {
         let engine = engine.clone();
         let iface_ref = iface_ref.clone();
+        let connection = connection.clone();
         tokio::spawn(async move {
             let mut last_json = String::new();
             let mut overheated = false;
@@ -88,20 +90,21 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or(false);
                 if hot && !overheated && notify_enabled {
                     overheated = true;
-                    let _ = Engine::emit_notification(
-                        iface_ref.signal_emitter(),
-                        "Trommel: перегрев",
-                        &format!(
-                            "Температура достигла {} °C (порог {} °C). Майнер поставит паузу.",
-                            status
-                                .gpu
-                                .as_ref()
-                                .and_then(|gpu| gpu.temp_c)
-                                .unwrap_or_default(),
-                            temp_limit
-                        ),
-                    )
-                    .await;
+                    let temp = status
+                        .gpu
+                        .as_ref()
+                        .and_then(|gpu| gpu.temp_c)
+                        .unwrap_or_default();
+                    let summary = tr("Trommel: overheat", "Trommel: перегрев");
+                    let body = format!(
+                        "{} {temp} °C ({} {temp_limit} °C). {}",
+                        tr("Temperature reached", "Температура достигла"),
+                        tr("limit", "порог"),
+                        tr("The miner will pause.", "Майнер поставит паузу."),
+                    );
+                    let _ = Engine::emit_notification(iface_ref.signal_emitter(), &summary, &body)
+                        .await;
+                    dbus::notify_desktop(&connection, &summary, &body);
                 } else if !hot && overheated {
                     overheated = false;
                 }
@@ -118,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
     let supervisor_loop = {
         let engine = engine.clone();
         let iface_ref = iface_ref.clone();
+        let connection = connection.clone();
         let refresh_tx = refresh_tx.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(1));
@@ -141,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
                         let _ =
                             Engine::emit_notification(iface_ref.signal_emitter(), &summary, &body)
                                 .await;
+                        dbus::notify_desktop(&connection, &summary, &body);
                     }
                 }
                 let _ = refresh_tx.send(()).await;

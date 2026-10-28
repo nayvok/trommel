@@ -34,7 +34,7 @@ export CARGO_HOME="$PWD/.cargo-home"
 ## Run locally
 
 ```bash
-./install.sh --no-extension   # user binaries + helper + service
+./install.sh                 # user binaries + helper + service
 trommel status
 trommel gui
 ```
@@ -61,8 +61,6 @@ weaken that isolation.
   stable and documented.
 - **GPU/OC**: test on real hardware; report the card model, driver, stock limits
   and what the helper log showed.
-- **GNOME extension**: test on GNOME 50, including Extension Manager
-  enable/disable and the re-login behaviour.
 - **Packaging**: `.deb` is the released target; RPM/AppImage/Flatpak need a
   working integration story first (see [docs/packaging.md](docs/packaging.md)).
 - **Docs**: if a document and the code disagree, fix the document in the same
@@ -88,7 +86,7 @@ repository cleanup, refactors and behaviour changes. A PR should include:
 
 - what changed and why;
 - test commands/results (unit, e2e, MCP, UI smoke as applicable);
-- hardware/desktop details for GPU or extension changes;
+- hardware/desktop details for GPU changes;
 - screenshots for visible UI changes;
 - the documentation update that goes with it.
 
@@ -103,14 +101,13 @@ cargo test --workspace
 ```
 
 By contributing you agree that your changes can be distributed under the
-project's eventual license. The extension is GPL-3.0-or-later; the app license
-is still being decided.
+project's eventual license; the app license is still being decided.
 
 ## Reporting bugs
 
 Include `trommel status --json`, `trommel diagnose --json`,
 `systemctl --user status trommeld`, the daemon journal,
 `nvidia-smi --query-gpu=name,driver_version,power.limit,power.default_limit
---format=csv`, the GNOME Shell version and whether the extension is enabled.
+--format=csv` and the GNOME Shell version.
 Never paste a seed phrase or private key; a wallet address is public but you may
 redact it.

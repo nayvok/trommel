@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 APP_ID="io.github.nayvok.Trommel"
-EXT_UUID="trommel@nayvok.github.io"
 VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
 ARCH="amd64"
 STAGE="$ROOT/dist/${APP_ID}_${VERSION}_${ARCH}"
@@ -16,13 +15,11 @@ mkdir -p "$STAGE/DEBIAN" \
     "$STAGE/usr/share/metainfo" \
     "$STAGE/usr/share/icons/hicolor/scalable/apps" \
     "$STAGE/usr/share/icons/hicolor/symbolic/apps" \
-    "$STAGE/usr/share/glib-2.0/schemas" \
     "$STAGE/usr/lib/systemd/user" \
     "$STAGE/usr/share/dbus-1/services" \
     "$STAGE/usr/share/polkit-1/actions" \
     "$STAGE/usr/share/polkit-1/rules.d" \
-    "$STAGE/usr/share/trommel" \
-    "$STAGE/usr/share/gnome-shell/extensions/$EXT_UUID"
+    "$STAGE/usr/share/trommel"
 
 cargo build --release -p trommeld
 cargo build --release -p trommel --features gui
@@ -40,19 +37,9 @@ install -m644 data/$APP_ID.desktop "$STAGE/usr/share/applications/"
 install -m644 data/$APP_ID.metainfo.xml "$STAGE/usr/share/metainfo/"
 install -m644 data/icons/$APP_ID.svg "$STAGE/usr/share/icons/hicolor/scalable/apps/"
 install -m644 data/icons/$APP_ID-symbolic.svg "$STAGE/usr/share/icons/hicolor/symbolic/apps/"
-install -m644 data/schemas/org.gnome.shell.extensions.trommel.gschema.xml "$STAGE/usr/share/glib-2.0/schemas/"
 install -m755 packaging/deb/postinst "$STAGE/DEBIAN/postinst"
 install -m755 packaging/deb/prerm "$STAGE/DEBIAN/prerm"
 install -m755 packaging/deb/postrm "$STAGE/DEBIAN/postrm"
-
-TMP_EXT="$(mktemp -d)"
-( cd "extension/$EXT_UUID" && gnome-extensions pack --force \
-    --extra-source=icons --extra-source=LICENSE \
-    --schema="$ROOT/data/schemas/org.gnome.shell.extensions.trommel.gschema.xml" \
-    --out-dir "$TMP_EXT" . >/dev/null )
-python3 -m zipfile -e "$TMP_EXT/$EXT_UUID.shell-extension.zip" \
-    "$STAGE/usr/share/gnome-shell/extensions/$EXT_UUID"
-rm -rf "$TMP_EXT"
 
 cat > "$STAGE/DEBIAN/control" <<CONTROL
 Package: trommel
@@ -63,7 +50,6 @@ Architecture: $ARCH
 Maintainer: nayvok <yanyushkov@gmail.com>
 Depends: libgtk-4-1, libadwaita-1-0, libglib2.0-0t64, libglib2.0-bin, pkexec | policykit-1, dbus-user-session, systemd
 Recommends: nvidia-driver | nvidia-utils, gnome-shell
-Suggests: gnome-shell-extension-manager
 Description: NVIDIA mining rig manager with presets and miner catalogue
  Trommel is a GTK4/libadwaita control room for NVIDIA mining rigs. It shows
  live hashrate, temperature and power for every card, keeps reusable presets

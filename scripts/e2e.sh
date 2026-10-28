@@ -13,19 +13,6 @@ step() { printf '\n\033[1;34m== %s ==\033[0m\n' "$*"; }
 step "Build"
 ( cd "$ROOT" && cargo build -q -p trommeld -p trommel ) || { echo "build failed" >&2; exit 1; }
 
-step "Extension source"
-EXT_JS="$ROOT/extension/trommel@nayvok.github.io/extension.js"
-if grep -q 'this\.menu' "$EXT_JS"; then
-    fail "extension uses Extension.menu instead of the panel button menu"
-else
-    pass "extension menu comes from the panel button"
-fi
-if grep -q 'this\._indicator\.menu' "$EXT_JS"; then
-    pass "panel menu is wired through this._indicator.menu"
-else
-    fail "panel menu wiring is missing"
-fi
-
 step "Prepare environment"
 rm -rf "$WORK"
 mkdir -p "$WORK/bin" "$WORK/config/trommel" "$WORK/state" "$WORK/data" "$WORK/cache"
@@ -102,7 +89,7 @@ cfg = {
     "path":str(work/"bin"/"wildrig-multi"),"sha256":"","source_url":"","verified":False,"custom":True,"installed_at":0}},
   "custom_miners": {}, "pools": {},
   "behavior": {"auto_restart":True,"restart_delay_s":2,"poll_interval_s":1,
-    "restore_stock_on_stop":True,"start_mining_on_login":False,"notifications":False,"language":"en"}
+    "restore_stock_on_stop":True,"start_mining_on_login":False,"notifications":True,"language":"en"}
 }
 (work/"config"/"trommel"/"config.json").write_text(json.dumps(cfg, indent=2))
 PY
@@ -125,10 +112,35 @@ BUS_PID="$(printf '%s\n' "$BUS_OUT" | sed -n 2p)"
 cleanup() {
     pkill -f "$WORK/bin/wildrig-multi" 2>/dev/null || true
     pkill -f "$WORK/data/trommel/miners" 2>/dev/null || true
+    [ -n "${NOTIFY_PID:-}" ] && kill "$NOTIFY_PID" 2>/dev/null || true
     [ -n "${DAEMON_PID:-}" ] && kill "$DAEMON_PID" 2>/dev/null || true
     [ -n "$BUS_PID" ] && kill "$BUS_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+step "Notification service stub"
+NOTIFY_LOG="$WORK/notify.log"
+NOTIFY_READY="$WORK/notify.ready"
+: > "$NOTIFY_LOG"
+NOTIFY_STUB=0
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import gi' >/dev/null 2>&1; then
+    python3 "$ROOT/scripts/fixtures/notify-stub.py" "$NOTIFY_LOG" "$NOTIFY_READY" \
+        > "$WORK/notify-stub.out" 2>&1 &
+    NOTIFY_PID=$!
+    for _ in $(seq 1 50); do
+        [ -f "$NOTIFY_READY" ] && break
+        sleep 0.1
+    done
+    if [ -f "$NOTIFY_READY" ]; then
+        NOTIFY_STUB=1
+        pass "notification service stub owns org.freedesktop.Notifications"
+    else
+        fail "notification stub did not start"
+        cat "$WORK/notify-stub.out"
+    fi
+else
+    echo "  - python3-gi is unavailable; desktop notification delivery is skipped"
+fi
 
 step "Root helper"
 if "$ROOT/scripts/test-oc-helper.sh" > "$WORK/helper-test.out" 2>&1; then
@@ -441,6 +453,17 @@ if "$BIN/trommel" start >/dev/null 2>&1; then
     "$BIN/trommel" stop >/dev/null 2>&1 || true
 else
     fail "start still blocked by stale state"
+fi
+
+step "Desktop notifications"
+if [ "$NOTIFY_STUB" = 1 ]; then
+    if grep -q 'Trommel' "$NOTIFY_LOG" 2>/dev/null; then
+        pass "daemon delivers desktop notifications without an applet"
+    else
+        fail "no org.freedesktop.Notifications call reached the stub"
+    fi
+else
+    echo "  - notification stub not running; desktop delivery not exercised"
 fi
 
 echo

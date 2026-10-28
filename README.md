@@ -35,7 +35,7 @@ arguments are hidden until you turn them on.
   everything.
 - **Miner catalogue** — short description, installed versions and a link to the
   upstream release page. The developer fee is shown as a breakdown
-  (miner + pool = total) in the dashboard, editor and panel popup.
+  (miner + pool = total) in the dashboard and the preset editor.
 - **Miner-dependent settings** — option descriptors come from the selected
   miner in the catalogue: types, ranges, defaults and CLI flags. Values whose
   keys no longer exist are dropped when the miner changes.
@@ -59,9 +59,6 @@ arguments are hidden until you turn them on.
   clock locks; simple mode hides the clock rows.
 - **Safe apply flow** — if the miner is running and you edit the profile, you
   choose **Apply and restart** or **Apply and stop**; failures roll back.
-- **GNOME Shell integration** — a panel indicator, live popup, Quick Settings
-  toggle and optional labels. The app can enable it and reflects the state from
-  Extension Manager.
 - **Simple mode by default** — ordinary users see power, temperature and Start;
   advanced miner options and raw arguments are one switch away.
 - **Agent-friendly** — JSON config, CLI diagnostics, diff/apply commands and an
@@ -98,10 +95,8 @@ bash trommel-install.sh
 ```
 
 The package contains the app, `trommeld`, the polkit helper, desktop entry,
-icons, metainfo, GSettings schema and the GNOME extension. The daemon starts on
-demand over D-Bus; GPU tuning works without a password for the user who ran the
-install. The extension is enabled from **Settings → GNOME integration** (or
-Extension Manager) after a re-login on Wayland.
+icons and metainfo. The daemon starts on demand over D-Bus; GPU tuning works
+without a password for the user who ran the install.
 
 Upgrade by installing the new release's `.deb`; remove with
 `sudo apt remove trommel`. The dev install below is for contributors.
@@ -109,21 +104,19 @@ Upgrade by installing the new release's `.deb`; remove with
 ### Developer install
 
 ```bash
-./install.sh                 # build, install, enable service + extension
-./install.sh --no-extension  # without the panel applet
-./install.sh --no-helper     # without the polkit helper (no OC)
+./install.sh             # build, install and enable the user service
+./install.sh --no-helper # without the polkit helper (no OC)
 ```
 
-The script installs binaries to `~/.local/bin`, the helper to
-`/usr/libexec/trommel/`, and the extension to the user extension directory. It
-asks for `sudo` once for the helper and polkit rule.
+The script installs binaries to `~/.local/bin` and the helper to
+`/usr/libexec/trommel/`. It asks for `sudo` once for the helper and polkit rule.
 
 ### Other formats
 
 RPM, AppImage and Flatpak are **not released**. Reasons and the current
 status are documented in [docs/packaging.md](docs/packaging.md). Flatpak cannot
-provide the host `nvidia-smi`/polkit/systemd/extension integration this app
-needs without a broad sandbox; a GUI-only Flatpak would be a different product.
+provide the host `nvidia-smi`/polkit/systemd integration this app needs without
+a broad sandbox; a GUI-only Flatpak would be a different product.
 
 ## First run
 
@@ -163,7 +156,7 @@ file is left untouched.
 
 ```bash
 trommel status               # human-readable
-trommel status --json        # contract used by the GUI/extension
+trommel status --json        # contract used by the GUI and CLI
 trommel start / stop / toggle
 trommel preset list          # show presets and their total fee
 trommel preset use <id> --restart
@@ -206,13 +199,13 @@ hashrate calculation and is editable per preset.
 - On reboot the snapshot is marked stale and is not used; Start captures a fresh
   one, and the driver resets GPU settings anyway.
 
-## GNOME extension
+## Notifications
 
-The extension is shipped with the package and is listed in Extension Manager.
-It has no separate preferences window: panel label mode, live activity and the
-Quick Settings toggle are configured in **Trommel → Settings → GNOME
-integration**, using a shared GSettings schema. If Extension Manager disables
-it, the app shows it as disabled. The daemon works without the extension.
+**Behavior → Notifications** turns crash, error and overheat alerts into regular
+desktop notifications. `trommeld` sends them through
+`org.freedesktop.Notifications`, so they work on any freedesktop desktop; the
+same events are also emitted as the `Notification` D-Bus signal for custom
+integrations. No shell extension is installed.
 
 ## Documentation
 
@@ -226,7 +219,6 @@ Start at the [documentation index](docs/README.md). The most used entry points:
 - [Using Trommel from an external agent](docs/agents.md)
 - [Packaging and releases](docs/packaging.md)
 - [Verification](docs/verification.md)
-- [GNOME extension](docs/extension.md)
 - [Security model](docs/security.md)
 - [Roadmap](docs/roadmap.md)
 
@@ -238,8 +230,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) / [Русский](CONTRIBUTING.ru.md) an
 ## License
 
 **License is not chosen yet.** The old MIT claim was removed; the AppStream
-metadata currently uses `LicenseRef-proprietary`. The GNOME Shell extension is
-`GPL-3.0-or-later` because it derives from GNOME Shell. Mining binaries are not
+metadata currently uses `LicenseRef-proprietary`. Mining binaries are not
 distributed by this project; their licenses are listed on their upstream pages.
 
 ## Disclaimer

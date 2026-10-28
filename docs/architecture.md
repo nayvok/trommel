@@ -1,16 +1,15 @@
 # Architecture
 
 Trommel separates a **privileged, long-lived owner** of the rig state
-(`trommeld`) from **short-lived clients** (the GTK app, the CLI and the GNOME
-Shell extension). This is the central rule; every other design decision follows
-from it.
+(`trommeld`) from **short-lived clients** (the GTK app and the CLI). This is the
+central rule; every other design decision follows from it.
 
 ## Runtime topology
 
 ```
 ┌────────────────────────────┐        ┌─────────────────────────────┐
-│ trommel (GTK4/libadwaita)  │        │ GNOME Shell 50 extension    │
-│ draft Config, no GPU calls │        │ read-only status + toggle  │
+│ trommel (GTK4/libadwaita)  │        │ trommel CLI                 │
+│ draft Config, no GPU calls │        │ read-only JSON + commands   │
 └─────────────┬──────────────┘        └──────────────┬──────────────┘
               │ D-Bus session bus                    │ D-Bus session bus
               │ io.github.nayvok.Trommel             │ (same interface)
@@ -238,8 +237,8 @@ design: one miner at a time is an invariant.
   app version.
 
 The document is display-oriented: it is not an RPC request format and has no
-wallet. Extensions and external agents should treat unknown fields as optional
-and compare `contract_version` rather than the app version.
+wallet. Clients and external agents should treat unknown fields as optional and
+compare `contract_version` rather than the app version.
 
 ## GPU tuning and stock restore
 
@@ -308,13 +307,20 @@ preset only references `miner@version`.
 - The GUI is single-instance: a second launch presents the existing window
   (`APP_SLOT`).
 
-## Extension
+## Notifications
 
-The GNOME Shell 50 extension (`trommel@nayvok.github.io`) is a read-only D-Bus
-client plus Start/Stop/Toggle/OpenApp. It has no `prefs.js`: its four settings
-live in `org.gnome.shell.extensions.trommel` and are edited by the app
-(**Settings → GNOME integration**). It never touches GPU tuning. See
-[extension.md](extension.md).
+`behavior.notifications` gates two paths for the same events (miner started,
+stopped, crashed, warnings and an overheat episode):
+
+- the daemon calls `org.freedesktop.Notifications.Notify` on the session bus,
+  which turns the event into a regular desktop notification. The call is
+  bounded by a short timeout and failures are ignored, so a desktop without a
+  notification service (or a test bus) never blocks the daemon;
+- the daemon emits the `Notification(summary, body)` D-Bus signal for custom
+  integrations that want to render their own alert.
+
+Both use the same localised summary and body. The daemon is the only
+long-lived process, so it owns this path; there is no shell extension.
 
 ## Design constraints and trade-offs
 
@@ -330,7 +336,7 @@ live in `org.gnome.shell.extensions.trommel` and are edited by the app
 - **No `nvidia-smi` in the GUI.** Any future client can be added without
   privileged access.
 - **No Flatpak.** The sandbox conflicts with the host helper, systemd
-  unit, extension and runtime binary downloads; see
+  unit and runtime binary downloads; see
   [ADR 0003](adr/0003-packaging.md).
 - **Debian first.** One tested distribution beats four untested ones; see
   [packaging.md](packaging.md).

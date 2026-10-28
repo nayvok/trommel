@@ -16,7 +16,9 @@ sections — the README and guides do not describe it.
 - Modal preset editor, one shared miner install dialog (catalogue, custom
   version, HTTPS download, local import), adaptive 400 px window.
 - GNOME Shell 50 extension with shared GSettings, live popup and Quick Settings
-  toggle; no `prefs.js`.
+  toggle; no `prefs.js`. It has since been removed from the tree — desktop
+  notifications now come from the daemon, see
+  [ADR 0004](adr/0004-remove-extension.md).
 - Agent surface: `diagnose`, config validate/export/diff/apply, preset
   export/import, read-only-by-default MCP server.
 - GitHub Releases (`deb` + checksum + installer), release workflow, e2e, UI
@@ -63,6 +65,7 @@ Ordered by expected value, not commitment:
 
 Architecture decisions are recorded as ADRs:
 [name](adr/0001-name.md), [extension packaging](adr/0002-extension-packaging.md),
-[packaging](adr/0003-packaging.md). Add a new ADR rather than rewriting an old
-one; a superseding decision gets its own number and an explicit “supersedes”
-note.
+[packaging](adr/0003-packaging.md),
+[removing the extension](adr/0004-remove-extension.md). Add a new ADR rather
+than rewriting an old one; a superseding decision gets its own number and an
+explicit “supersedes” note.

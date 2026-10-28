@@ -46,7 +46,7 @@ do not move GTK types into `trommel-core` or the daemon.
 | `./scripts/check-polkit.sh` | Action id and helper path consistency | none |
 | `./scripts/check-docs.sh` | Relative markdown links resolve; no references to removed docs | none |
 | `./scripts/package-deb.sh` + `./scripts/test-deb.sh` | Package builds and has the expected layout | dpkg-dev |
-| Asset validation | `desktop-file-validate`, `appstreamcli validate`, `glib-compile-schemas --strict` | those tools |
+| Asset validation | `desktop-file-validate`, `appstreamcli validate` | those tools |
 
 CI (`.github/workflows/ci.yml`) runs secrets, format, clippy with `gui`, tests,
 e2e, MCP, docs links and asset validation on Ubuntu 26.04. The release workflow
@@ -167,8 +167,8 @@ Common causes:
    `normalize()` and add a migration/default test.
 3. If the D-Bus surface changes, update `MinerProxy`, the CLI/MCP callers and
    [architecture.md](architecture.md#status-contract).
-4. If a status field is added, render it in the GUI and the extension, or
-   explicitly leave it unrendered on purpose.
+4. If a status field is added, render it in the GUI and the CLI, or explicitly
+   leave it unrendered on purpose.
 5. Add the user-visible strings in both languages (`tr(en, ru)`).
 6. Extend `e2e.sh` for lifecycle behaviour and `ui-smoke.sh`/`first-run-smoke.sh`
    for visible interaction.
@@ -183,8 +183,7 @@ Common causes:
 3. `./scripts/ui-smoke.sh` and `./scripts/first-run-smoke.sh` on a desktop
    session; regenerate screenshots if the UI changed.
 4. Bump `version` in the workspace `Cargo.toml`; add a `CHANGELOG.md` entry and
-   a metainfo `<release>` entry; bump the extension `metadata.json` version if
-   it changed.
+   a metainfo `<release>` entry.
 5. `./scripts/package-deb.sh`, `./scripts/test-deb.sh`, optional Docker install
    on Ubuntu 26.04.
 6. Commit, tag `vX.Y.Z`, push the tag. The release workflow publishes the

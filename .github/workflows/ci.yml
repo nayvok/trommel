@@ -17,7 +17,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
             desktop-file-utils appstream gettext librsvg2-bin \
-            python3 git ca-certificates dbus
+            python3 python3-gi gir1.2-glib-2.0 git ca-certificates dbus
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -46,6 +46,3 @@ jobs:
         run: |
           desktop-file-validate data/io.github.nayvok.Trommel.desktop
           appstreamcli validate --explain data/io.github.nayvok.Trommel.metainfo.xml
-          mkdir -p /tmp/trommel-schemas
-          cp data/schemas/*.gschema.xml /tmp/trommel-schemas/
-          glib-compile-schemas --strict --targetdir=/tmp/trommel-schemas /tmp/trommel-schemas

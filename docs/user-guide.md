@@ -17,8 +17,7 @@ repository or PPA; upgrades are new release downloads.
 `./install.sh` is the developer path. A working NVIDIA driver and `nvidia-smi`
 are required. The app talks to the daemon over D-Bus; the daemon runs as your
 user, and the narrow GPU helper runs through polkit — without a password for the
-user who installed the package. On Wayland log out and back in once to see the
-GNOME extension.
+user who installed the package.
 
 ## First run: Quick setup
 
@@ -126,8 +125,6 @@ before the catalogue was updated, type the version and paste the upstream URL.
 - **GPU defaults** — power limit (`0 = driver auto`), optional core/memory clock
   locks, temperature limit and resume temperature. Cards without their own
   override inherit these values.
-- **GNOME integration** — panel label, Quick Settings toggle, live activity,
-  extension state and an **Enable** button.
 - **Actions** — **Save and apply**, **Copy diagnostics** (redacted), **Restore
   stock**.
 
@@ -159,8 +156,7 @@ benchmark. Stop resets the locks to the driver default.
 
 The miner developer fee comes from the catalogue and is fixed unless the
 catalogue marks it configurable. The pool fee is used for the effective hashrate
-calculation. The total is shown in the dashboard, preset editor and extension
-popup:
+calculation. The total is shown in the dashboard and the preset editor:
 
 ```
 miner 0.00% + pool 1.00% = total 1.00%
@@ -223,13 +219,13 @@ best-effort stock restore.
 - Trommel does not kill a miner it did not start. Stop that process yourself
   before pressing Start.
 
-## GNOME extension
+## Notifications
 
-The extension is shipped with the package and listed in Extension Manager. It
-has no separate preferences window: panel label mode, live activity and the
-Quick Settings toggle are configured in **Trommel → Settings → GNOME
-integration**, using a shared GSettings schema. If Extension Manager disables it,
-the app shows it as disabled. The daemon works without the extension.
+**Behavior → Notifications** turns crash, error and overheat events into regular
+desktop notifications. The daemon sends them through
+`org.freedesktop.Notifications`, so they work on any freedesktop desktop and do
+not need a shell extension. The same events are also emitted as the
+`Notification` D-Bus signal for custom integrations.
 
 ## Benchmarks
 
@@ -259,8 +255,5 @@ review the diff. For MCP-aware agents, run `trommel mcp` (read-only) or
   Run `./scripts/check-polkit.sh` and reinstall the rule.
 - **Start says the miner is missing** — install the referenced version or switch
   the preset to an installed one; installs are global, not per preset.
-- **Extension installed but disabled** — `gnome-extensions info
-  trommel@nayvok.github.io`; enable it in Extension Manager or the app; log out
-  and back in on Wayland if needed.
 - **No pool balance** — the pool API is cached for a minute and backs off after
   failures; only PearlHash has an account API adapter.

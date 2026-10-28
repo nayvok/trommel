@@ -13,12 +13,11 @@ fit together, read [architecture.md](architecture.md) first.
 | `trommel` CLI | `crates/cli/src/main.rs` | Rust | Command-line client, daemon activation, JSON output |
 | `trommel` GUI | `crates/cli/src/gui.rs` | Rust (GTK4) | libadwaita application behind `--features gui` |
 | MCP server | `crates/cli/src/mcp.rs` | Rust | stdio Model Context Protocol interface |
-| GNOME extension | `extension/trommel@nayvok.github.io/` | GJS | Panel indicator, popup, Quick Settings toggle |
 | Catalogue | `resources/catalog/*.toml` | TOML | Built-in miners, coins and pools |
 | Root helper | `polkit/trommel-oc` | Bash | Narrow `nvidia-smi` wrapper run through pkexec |
 | Polkit assets | `polkit/` | XML / conf | Action definition and per-user rule template |
 | systemd units | `systemd/` | INI | D-Bus activation, user service, start-at-login |
-| Desktop assets | `data/` | XML / desktop / SVG | Desktop entry, metainfo, icons, GSettings schema |
+| Desktop assets | `data/` | XML / desktop / SVG | Desktop entry, metainfo, icons |
 | Installer | `install.sh`, `uninstall.sh` | Bash | Developer install/removal |
 | Packaging | `packaging/`, `scripts/*deb*` | Bash / spec | Debian package, GitHub release bundle, RPM template |
 | Test harness | `scripts/e2e.sh`, `ui-smoke.sh`, `first-run-smoke.sh`, `test-mcp.sh` | Bash / Python | Automated verification |
@@ -31,8 +30,8 @@ fit together, read [architecture.md](architecture.md) first.
 
 | Constant | Value | Used by |
 | --- | --- | --- |
-| `BUS_NAME` | `io.github.nayvok.Trommel.Daemon` | daemon, clients, extension |
-| `OBJECT_PATH` | `/io/github/nayvok/Trommel` | daemon, clients, extension |
+| `BUS_NAME` | `io.github.nayvok.Trommel.Daemon` | daemon, GUI, CLI |
+| `OBJECT_PATH` | `/io/github/nayvok/Trommel` | daemon, GUI, CLI |
 | `APP_ID` | `io.github.nayvok.Trommel` | GUI, desktop entry, metainfo |
 | `VERSION` | `CARGO_PKG_VERSION` | status, CLI, About |
 
@@ -333,10 +332,11 @@ daemon.
    `Engine` at `OBJECT_PATH` on `BUS_NAME`.
 2. **Status refresher** — every `poll_interval` (or when a supervisor event
    requests it) collects `Status`, emits `StatusChanged` only when the JSON
-   changed, updates `Engine`, and emits one overheat notification per episode
-   when the first GPU reaches the temperature limit.
+   changed, updates `Engine`, and sends one overheat desktop notification per
+   episode when the first GPU reaches the temperature limit.
 3. **Supervisor loop** — a 1 s interval calling `Supervisor::tick`, logging
-   events, mapping them to notifications, requesting a refresh.
+   events, sending one desktop notification (and the `Notification` signal) per
+   event, requesting a refresh.
 4. **Shutdown** — SIGTERM/SIGINT exit the process and deliberately leave the
    miner running; the next daemon instance adopts it by PID.
 
@@ -418,14 +418,13 @@ executes commands. It never blocks the GTK main loop.
 | dashboard block in `build_ui` | Hero card, GPU flow, totals, shares, pool, warnings |
 | `build_presets_page` / `refresh_preset_list` | Preset list; rows open the editor |
 | `build_miners_page` / `refresh_miners` | Miner catalogue, install state, benchmark button |
-| `build_settings_page` / `load_settings` / `save_settings` | Behaviour, appearance, GPU defaults, GNOME integration, actions |
+| `build_settings_page` / `load_settings` / `save_settings` | Behaviour, appearance, GPU defaults, actions |
 | `preset_editor_dialog` | Modal preset editor (save/cancel/duplicate/delete/install) |
 | `miner_install_dialog` | The only miner install UI (catalogue, custom version, download, import) |
 | `gpu_tune_dialog` | Per-card tuning, “Now” row, copy to similar/all GPUs |
 | `quick_setup_wizard` | Three-step first-run flow (cards → miner → wallet) |
 | `save_and_apply_with` | Diff + restart/stop alert; `on_cancel` restores optimistic changes |
 | `apply_status` | Renders a `Status` into every widget, including empty states |
-| `extension_settings` / `refresh_extension_state` / `enable_extension` | GSettings and Extension Manager integration |
 | `copy_diagnostics` | Redacted bundle to the clipboard |
 
 Rules that are easy to break:
@@ -454,25 +453,21 @@ documented in [development.md](development.md#ui-hooks) when adding one:
 
 ---
 
-## GNOME Shell extension
+## Notifications
 
-`extension/trommel@nayvok.github.io/extension.js` exports one default class:
+`behavior.notifications` gates two consumers of the same event stream:
 
-- D-Bus constants mirror `trommel-core` (`BUS_NAME`, `OBJECT_PATH`, interface
-  `io.github.nayvok.Trommel`).
-- `TrommelToggle` is a `QuickSettings.QuickToggle` bound to Start/Stop.
-- The panel button owns the popup (`_buildPanel`, `_buildMenu`); there is no
-  separate preferences surface.
-- `_connectProxy` subscribes to `StatusChanged`, `Notification` and the bus-name
-  owner, reconnects when the owner changes and shows “service missing” otherwise.
-- `_apply(status)` renders hashrate, temperature, power, shares, pool balance,
-  preset, miner and fee; `_applyPanelMode` and `_applyLiveActivity` read the
-  shared GSettings.
-- Users get Start/Stop/Toggle/OpenApp only; the extension never tunes GPUs.
+- `dbus::notify_desktop(connection, summary, body)` calls
+  `org.freedesktop.Notifications.Notify` (app name `Trommel`, app icon, 8 s
+  timeout) inside a 2 s bound; a missing service or a failure is ignored so the
+  daemon never blocks. The status refresher sends one overheat alert per
+  episode; the supervisor loop sends one per `Event` through
+  `events_to_notifications`.
+- The `Notification(summary, body)` D-Bus signal stays available for external
+  integrations. Both paths use the same `i18n::tr` strings.
 
-Settings schema: `data/schemas/org.gnome.shell.extensions.trommel.gschema.xml`
-(`panel-mode`, `quick-toggle-enabled`, `live-activity-enabled`,
-`notifications-enabled`). See [extension.md](extension.md).
+There is no shell extension and no GSettings schema; the GUI only edits the
+`behavior.notifications` switch.
 
 ---
 
@@ -483,7 +478,6 @@ Settings schema: `data/schemas/org.gnome.shell.extensions.trommel.gschema.xml`
 | `data/io.github.nayvok.Trommel.desktop` | Application menu entry |
 | `data/io.github.nayvok.Trommel.metainfo.xml` | AppStream metadata and release notes |
 | `data/icons/*.svg`, `data/icons/src/trommel.svg` | Installed icons; source artwork |
-| `data/schemas/*.gschema.xml` | Shared extension/app settings |
 | `systemd/trommeld.service` | User service (`Type=dbus`) |
 | `systemd/trommel-autostart.service` | “Start mining at login” one-shot |
 | `systemd/io.github.nayvok.Trommel.Daemon.service` | D-Bus activation file |
@@ -521,9 +515,8 @@ Settings schema: `data/schemas/org.gnome.shell.extensions.trommel.gschema.xml`
 | Change GPU apply/restore | `crates/core/src/oc.rs`, `polkit/trommel-oc`, `scripts/e2e.sh` |
 | Change the config model | `crates/core/src/config.rs`, `docs/schema/*.json`, migration/normalise tests |
 | Add a D-Bus method | `crates/core/src/dbus.rs` (trait + impl), CLI/MCP callers, [architecture.md](architecture.md) |
-| Add a status field | `crates/core/src/status.rs`, GUI rendering, extension rendering |
+| Add a status field | `crates/core/src/status.rs`, GUI rendering, CLI/MCP output |
 | Add a GUI page/dialog | `crates/cli/src/gui.rs`, [design.md](design.md), screenshots, UI smoke |
 | Add a CLI command | `crates/cli/src/main.rs`, [agents.md](agents.md), [user-guide.md](user-guide.md) |
 | Add an MCP tool | `crates/cli/src/mcp.rs`, `scripts/test-mcp.sh`, [agents.md](agents.md) |
-| Change the extension | `extension/…/extension.js`, schema, [extension.md](extension.md) |
 | Change packaging | `packaging/`, `scripts/package-deb.sh`, `.github/workflows/`, [packaging.md](packaging.md) |

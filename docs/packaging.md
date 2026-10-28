@@ -7,10 +7,10 @@ There is no apt repository and no PPA; upgrades are new release downloads.
 
 | Format | Status | Why |
 | --- | --- | --- |
-| `.deb` | **Released** on GitHub | Needs host `nvidia-smi`, a polkit helper, a systemd user unit, GSettings and the GNOME extension |
-| `.rpm` | Template only (`packaging/rpm/trommel.spec.in`) | Needs a Fedora/openSUSE install/upgrade/removal and extension test |
-| AppImage | Deferred | Read-only mount cannot install the daemon, helper, user unit or extension; a portable tarball with an explicit host-helper installer is the better fallback |
-| Flatpak | Deferred | Sandbox lacks `/dev/nvidia*` and `/proc/driver/nvidia`, cannot use the host `nvidia-smi`, the polkit helper, the user unit or the extension, and downloads miner binaries at runtime. A GUI-only Flatpak would be a different product |
+| `.deb` | **Released** on GitHub | Needs host `nvidia-smi`, a polkit helper and a systemd user unit |
+| `.rpm` | Template only (`packaging/rpm/trommel.spec.in`) | Needs a Fedora/openSUSE install/upgrade/removal test |
+| AppImage | Deferred | Read-only mount cannot install the daemon, helper or user unit; a portable tarball with an explicit host-helper installer is the better fallback |
+| Flatpak | Deferred | Sandbox lacks `/dev/nvidia*` and `/proc/driver/nvidia`, cannot use the host `nvidia-smi`, the polkit helper or the user unit, and downloads miner binaries at runtime. A GUI-only Flatpak would be a different product |
 
 Do not publish an RPM/AppImage/Flatpak artifact until its integration story is
 tested. The reasoning is recorded in [ADR 0003](adr/0003-packaging.md).
@@ -64,8 +64,6 @@ bash trommel-install.sh
 /usr/share/applications/io.github.nayvok.Trommel.desktop
 /usr/share/metainfo/io.github.nayvok.Trommel.metainfo.xml
 /usr/share/icons/hicolor/{scalable,symbolic}/apps/io.github.nayvok.Trommel*.svg
-/usr/share/glib-2.0/schemas/org.gnome.shell.extensions.trommel.gschema.xml
-/usr/share/gnome-shell/extensions/trommel@nayvok.github.io/
 ```
 
 Dependencies: GTK4, libadwaita, glib, `libglib2.0-bin`, pkexec/polkit, user
@@ -74,29 +72,28 @@ built and tested on Ubuntu 26.04.
 
 Maintainer scripts:
 
-- `postinst` compiles schemas, refreshes the desktop/icon caches and writes
+- `postinst` recompiles the system schema cache (which drops a schema left by an
+  older package), refreshes the desktop/icon caches and writes
   `/etc/polkit-1/rules.d/50-trommel.rules` for `SUDO_USER`, so GPU tuning does
   not prompt from the user service. The shipped `/usr/share` rule is only a
   local fallback.
 - `prerm` intentionally does not stop the miner.
 - `postrm` removes the generated per-user rule on remove/purge.
 
-The package intentionally does **not** enable the user service or the extension:
-D-Bus activation starts the daemon on demand, and the first app launch offers
-the extension.
+The package intentionally does **not** enable the user service: D-Bus
+activation starts the daemon on demand.
 
 ## Developer install
 
 ```bash
-./install.sh                 # build, install user binaries, helper, service, extension
-./install.sh --no-build      # use target/release
-./install.sh --no-extension  # skip the GNOME Shell extension
-./install.sh --no-helper     # skip the polkit helper (no OC)
+./install.sh             # build, install user binaries, helper and service
+./install.sh --no-build  # use target/release
+./install.sh --no-helper # skip the polkit helper (no OC)
 ```
 
 `install.sh` installs to `~/.local/bin`, `~/.config/systemd/user`,
-`~/.local/share/{applications,icons,metainfo,glib-2.0/schemas,dbus-1/services}`,
-puts the helper at `/usr/libexec/trommel/trommel-oc` and installs the per-user
+`~/.local/share/{applications,icons,metainfo,dbus-1/services}`, puts the helper
+at `/usr/libexec/trommel/trommel-oc` and installs the per-user
 polkit rule through `scripts/install-polkit-rule.sh`. It restarts `trommeld` so
 an upgrade does not leave the previous process running.
 
@@ -108,7 +105,7 @@ refuses to remove the helper while a miner is still running.
 
 | Workflow | Trigger | Checks |
 | --- | --- | --- |
-| `ci.yml` | push to `main`, pull request | secrets, docs links, fmt, clippy with `gui`, tests, e2e, MCP, release build, desktop/metainfo/schema validation |
+| `ci.yml` | push to `main`, pull request | secrets, docs links, fmt, clippy with `gui`, tests, e2e, MCP, release build, desktop/metainfo validation |
 | `package.yml` | manual | builds the `.deb` and validates its layout |
 | `release.yml` | tag `v*` | everything in CI plus polkit check, release bundle and GitHub Release upload |
 
@@ -116,6 +113,5 @@ refuses to remove the helper while a miner is still running.
 
 One version for the whole workspace (`Cargo.toml` `[workspace.package]
 version`). The release workflow derives the asset name from it. Also update
-`CHANGELOG.md`, the metainfo `<release>` entry and the extension
-`metadata.json` version when it changes. The full checklist is in
+`CHANGELOG.md` and the metainfo `<release>` entry. The full checklist is in
 [development.md](development.md#release-checklist).

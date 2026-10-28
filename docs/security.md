@@ -14,7 +14,6 @@ trust boundaries around that. Report vulnerabilities privately; see
 | `trommel-oc` | Root, invoked via pkexec | One `nvidia-smi` call per GPU with numeric arguments | Accept paths, shell text, arbitrary commands, other GPUs' UUID formats |
 | Miner binary | User, third-party | Mine, bind a local API port, write its log | Be inspected or verified by Trommel beyond the executable/checksum checks |
 | Pool API | Network | Return statistics to the daemon | Control the miner, trigger a config change, see the wallet in logs (the daemon does not log it) |
-| GNOME extension | User session | Read status, Start/Stop/Toggle/OpenApp | Tune GPUs, install miners, write the config |
 
 The D-Bus service is a **same-user** interface: any process running as the user
 can call `GetConfig` and read the wallet. This is normal for a desktop service;
@@ -109,10 +108,10 @@ do not expose the bus name on the system bus or through a socket.
 ## Packaging and sandboxing
 
 - The `.deb` installs the helper root-owned (0755) and does not enable the user
-  service or the extension; D-Bus activation and the first launch handle that.
+  service; D-Bus activation and the first launch handle that.
 - Flatpak is not shipped: the sandbox blocks the host `nvidia-smi`, the polkit
-  helper, the systemd user unit, the extension and runtime binary downloads.
-  See [ADR 0003](adr/0003-packaging.md).
+  helper, the systemd user unit and runtime binary downloads. See
+  [ADR 0003](adr/0003-packaging.md).
 - The RPM spec is a template and is not released until it is tested.
 
 ## Limitations to keep in mind

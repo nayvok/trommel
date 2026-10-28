@@ -19,7 +19,7 @@ runtime.
 | GPU snapshot | `~/.local/state/trommel/oc-snapshot.json` | read | Per-boot stock power/clocks |
 | Benchmarks | `~/.local/state/trommel/bench/*.json` | read | A/B reports |
 | Miner store | `~/.local/share/trommel/miners/<id>/<version>/` | read | Never hand-edit; use `trommel miner import/install` |
-| Status JSON | `trommel status --json` | read | The GUI/extension contract |
+| Status JSON | `trommel status --json` | read | The GUI/CLI contract |
 | Diagnostics | `trommel diagnose --json` | read | Redacted bundle for a model |
 | Config diff/apply | `trommel config diff/apply` | read/apply | Explicit mode, explicit consent |
 | D-Bus | `io.github.nayvok.Trommel.Daemon` | read + control | Same user session; local trust |

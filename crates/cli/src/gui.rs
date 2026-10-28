@@ -243,12 +243,6 @@ struct SettingsWidgets {
     memory: adw::SpinRow,
     temp_limit: adw::SpinRow,
     temp_resume: adw::SpinRow,
-    panel_mode: adw::ComboRow,
-    quick_toggle: adw::SwitchRow,
-    live_activity: adw::SwitchRow,
-    extension_state: adw::ActionRow,
-    extension_enable: gtk::Button,
-    extension_manager: gtk::Button,
     diagnostics: gtk::Button,
 }
 
@@ -963,8 +957,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     let notifications = switch_row(
         &tr("Notifications", "Уведомления"),
         &tr(
-            "Start, stop and overheat; shown by the GNOME extension",
-            "Старт, стоп и перегрев; показывает расширение GNOME",
+            "Show a desktop notification for crashes, errors and overheat",
+            "Показывать уведомление при падении, ошибке и перегреве",
         ),
     );
     let start_login = switch_row(
@@ -1099,61 +1093,6 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     }
     page.add(&gpu);
 
-    let extension = adw::PreferencesGroup::builder()
-        .title(tr("GNOME integration", "Интеграция с GNOME"))
-        .description(tr(
-            "The panel applet is optional; mining works without it. Settings here are shared with the extension via GSettings.",
-            "Апплет в панели необязателен; майнинг работает и без него. Настройки здесь общие с расширением через GSettings.",
-        ))
-        .build();
-    let panel_mode = adw::ComboRow::builder()
-        .title(tr("Panel label", "Подпись в панели"))
-        .model(&gtk::StringList::new(&[
-            tr("Icon only", "Только иконка").as_str(),
-            tr("Hashrate", "Хешрейт").as_str(),
-            tr("Temperature", "Температура").as_str(),
-            tr("Hashrate and temperature", "Хешрейт и температура").as_str(),
-        ]))
-        .build();
-    let quick_toggle = switch_row(
-        &tr("Quick Settings toggle", "Переключатель в Quick Settings"),
-        &tr(
-            "Start/stop mining from the system menu",
-            "Старт/стоп из системного меню",
-        ),
-    );
-    let live_activity = switch_row(
-        &tr("Live activity card", "Живая карточка"),
-        &tr(
-            "Show hashrate and temperature in the popup",
-            "Показывать хешрейт и температуру в поповере",
-        ),
-    );
-    let extension_state = adw::ActionRow::builder()
-        .title(tr("GNOME Shell extension", "Расширение GNOME Shell"))
-        .subtitle(tr("Checking…", "Проверяю…"))
-        .build();
-    let extension_enable = gtk::Button::builder()
-        .label(tr("Enable", "Включить"))
-        .css_classes(["pill"])
-        .valign(gtk::Align::Center)
-        .build();
-    // Icon-only: on a 400 px window a labelled button squeezed the row title
-    // into a one-character column. The tooltip keeps it discoverable.
-    let extension_manager = gtk::Button::builder()
-        .icon_name("application-x-addon-symbolic")
-        .tooltip_text(tr("Extension Manager", "Менеджер расширений"))
-        .css_classes(["flat", "pill"])
-        .valign(gtk::Align::Center)
-        .build();
-    extension_state.add_suffix(&extension_manager);
-    extension_state.add_suffix(&extension_enable);
-    extension.add(&panel_mode);
-    extension.add(&quick_toggle);
-    extension.add(&live_activity);
-    extension.add(&extension_state);
-    page.add(&extension);
-
     let actions = adw::PreferencesGroup::builder()
         .title(tr("Actions", "Действия"))
         .build();
@@ -1217,12 +1156,6 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             memory,
             temp_limit,
             temp_resume,
-            panel_mode,
-            quick_toggle,
-            live_activity,
-            extension_state,
-            extension_enable,
-            extension_manager,
             diagnostics,
         },
     )
@@ -1432,16 +1365,6 @@ fn connect_signals(app: &Rc<App>) {
         button.connect_clicked(move |_| {
             restore_stock_dialog(&app);
         });
-    }
-    {
-        let app = app.clone();
-        let button = app.settings.extension_enable.clone();
-        button.connect_clicked(move |_| enable_extension(&app));
-    }
-    {
-        let app = app.clone();
-        let button = app.settings.extension_manager.clone();
-        button.connect_clicked(move |_| open_extension_manager(&app));
     }
     {
         let app = app.clone();
@@ -2559,90 +2482,6 @@ fn refresh_miners(app: &Rc<App>) {
         });
         app.miners_group.add(&row);
         app.miner_rows.borrow_mut().push(row);
-    }
-}
-
-fn extension_settings() -> Option<gio::Settings> {
-    let source = gio::SettingsSchemaSource::default()?;
-    let schema = source.lookup("org.gnome.shell.extensions.trommel", true)?;
-    Some(gio::Settings::new_full(
-        &schema,
-        None::<&gio::SettingsBackend>,
-        None,
-    ))
-}
-
-fn refresh_extension_state(app: &Rc<App>) {
-    let info = std::process::Command::new("gnome-extensions")
-        .args(["info", "trommel@nayvok.github.io"])
-        .output();
-    let enabled = std::process::Command::new("gnome-extensions")
-        .args(["list", "--enabled"])
-        .output()
-        .map(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .any(|line| line.trim() == "trommel@nayvok.github.io")
-        })
-        .unwrap_or(false);
-    let text = match info {
-        Ok(output) => format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ),
-        Err(_) => String::new(),
-    };
-    if text.contains("не найден") || text.contains("not found") || text.is_empty() {
-        app.settings.extension_state.set_subtitle(&tr(
-            "Not installed — install the package or run install.sh",
-            "Не установлено — установите пакет или запустите install.sh",
-        ));
-        app.settings.extension_enable.set_sensitive(false);
-        return;
-    }
-    let state_text = if enabled {
-        tr("Enabled", "Включено")
-    } else {
-        tr(
-            "Disabled — enable it here or in Extension Manager",
-            "Выключено — включите здесь или в менеджере расширений",
-        )
-    };
-    app.settings.extension_state.set_subtitle(&state_text);
-    app.settings.extension_enable.set_sensitive(!enabled);
-}
-
-fn enable_extension(app: &Rc<App>) {
-    let output = std::process::Command::new("gnome-extensions")
-        .args(["enable", "trommel@nayvok.github.io"])
-        .output();
-    match output {
-        Ok(output) if output.status.success() => {
-            refresh_extension_state(app);
-            app.toast.add_toast(adw::Toast::new(&tr(
-                "Extension enabled. Log out and back in if the panel icon does not appear.",
-                "Расширение включено. Если иконка не появилась — перелогиньтесь.",
-            )));
-        }
-        Ok(output) => {
-            let text = String::from_utf8_lossy(&output.stderr).to_string();
-            app.toast.add_toast(adw::Toast::new(&text));
-        }
-        Err(err) => app.toast.add_toast(adw::Toast::new(&err.to_string())),
-    }
-}
-
-fn open_extension_manager(app: &Rc<App>) {
-    let launched = std::process::Command::new("gtk-launch")
-        .arg("com.mattjakeman.ExtensionManager")
-        .spawn()
-        .is_ok();
-    if !launched {
-        app.toast.add_toast(adw::Toast::new(&tr(
-            "Extension Manager is not installed.",
-            "Менеджер расширений не установлен.",
-        )));
     }
 }
 
@@ -4362,26 +4201,6 @@ fn load_settings(app: &Rc<App>) {
             .temp_resume
             .set_value(profile.default.temp_resume_c as f64);
     }
-    if let Some(settings) = extension_settings() {
-        let mode = settings.string("panel-mode");
-        app.settings.panel_mode.set_selected(match mode.as_str() {
-            "icon" => 0,
-            "hashrate" => 1,
-            "temperature" => 2,
-            _ => 3,
-        });
-        app.settings
-            .quick_toggle
-            .set_active(settings.boolean("quick-toggle-enabled"));
-        app.settings
-            .live_activity
-            .set_active(settings.boolean("live-activity-enabled"));
-    } else {
-        app.settings.panel_mode.set_sensitive(false);
-        app.settings.quick_toggle.set_sensitive(false);
-        app.settings.live_activity.set_sensitive(false);
-    }
-    refresh_extension_state(app);
 }
 
 fn apply_appearance(appearance: Appearance) {
@@ -4433,23 +4252,6 @@ fn save_settings(app: &Rc<App>) {
     profile.default.temp_limit_c = app.settings.temp_limit.value() as u32;
     profile.default.temp_resume_c = app.settings.temp_resume.value() as u32;
     set_autostart_unit(app.settings.start_login.is_active());
-    if let Some(settings) = extension_settings() {
-        let mode = match app.settings.panel_mode.selected() {
-            0 => "icon",
-            1 => "hashrate",
-            2 => "temperature",
-            _ => "both",
-        };
-        let _ = settings.set_string("panel-mode", mode);
-        let _ = settings.set_boolean(
-            "quick-toggle-enabled",
-            app.settings.quick_toggle.is_active(),
-        );
-        let _ = settings.set_boolean(
-            "live-activity-enabled",
-            app.settings.live_activity.is_active(),
-        );
-    }
     mark_dirty(app);
 }
 

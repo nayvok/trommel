@@ -11,7 +11,7 @@ needs a real rig. Run the commands from the repository root; see
 | `cargo test --workspace` | Config defaults/migration/diff/warnings, miner argument rendering, fee handling, catalogue parsing, `nvidia-smi` parsing, OC argument validation, supervisor/state/status helpers, D-Bus helpers, hashrate formatting, download/path safety |
 | `cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings` | Lints in all crates including GUI code |
 | `cargo fmt --check` | Formatting |
-| `./scripts/e2e.sh` | CLI lifecycle on a private bus: start/stop/toggle, config v3, per-card inheritance vs custom overrides, apply modes, power read-back, ignored power/clock locks, restore snapshot/defaults, restore-on-stop off, helper timeout, snapshot/restore, stale external state and orphan adoption |
+| `./scripts/e2e.sh` | CLI lifecycle on a private bus: start/stop/toggle, config v3, per-card inheritance vs custom overrides, apply modes, power read-back, ignored power/clock locks, restore snapshot/defaults, restore-on-stop off, helper timeout, snapshot/restore, stale external state and orphan adoption. A stub `org.freedesktop.Notifications` service (Python/Gio; the step is skipped when `python3-gi` is missing) proves the daemon sends desktop notifications without a shell applet |
 | `./scripts/test-oc-helper.sh` | The real Bash helper against a stateful fake `nvidia-smi`: apply/reset, ignored power rejection, failing `-rgc`, range/UUID validation |
 | `./scripts/test-mcp.sh` | MCP initialize/ping/tools/list/tools/call, read-only default, `--allow-write` gating, rejected arguments, wallet redaction |
 | `./scripts/ui-smoke.sh` | AT-SPI click-through with a fake two-GPU rig: quick setup, start/stop, settings, preset editor, GPU tuning, miner install, alerts |
@@ -19,8 +19,8 @@ needs a real rig. Run the commands from the repository root; see
 | `./scripts/check-polkit.sh` | Polkit action id and helper path match the code |
 | `./scripts/check-no-secrets.sh` | No wallet-like strings or secret markers in tracked files |
 | `./scripts/check-docs.sh` | Relative markdown links resolve; removed docs are not referenced; docs are reachable from the index |
-| `./scripts/package-deb.sh` + `./scripts/test-deb.sh` | Package builds; expected binaries, helper, units, desktop/metainfo, schema and extension are present |
-| Asset validation | `desktop-file-validate`, `appstreamcli validate`, `glib-compile-schemas --strict`; the package build also runs `gnome-extensions pack` |
+| `./scripts/package-deb.sh` + `./scripts/test-deb.sh` | Package builds; expected binaries, helper, units and desktop/metainfo are present |
+| Asset validation | `desktop-file-validate`, `appstreamcli validate` |
 
 CI (`.github/workflows/ci.yml`) runs unit tests, clippy, fmt, e2e, MCP, secrets,
 docs links and asset validation on Ubuntu 26.04. UI smoke, first-run smoke,
@@ -48,8 +48,8 @@ not a claim that CI covers it.
 | Errors | force a long daemon error | Toast shows **Details**; the dialog text is selectable and **Copy** puts it on the clipboard |
 | Menu | Open log, About, Quit | Opens the log/about, quits with `Ctrl+Q` |
 | Window | resize to ~400 px | No clipping; GPU value bubbles and action buttons readable |
-| GNOME extension | panel icon, popup, Start/Stop, Quick Settings, panel modes, notifications | Mirrors the daemon; menu comes from the panel button; no prefs window; works after re-login |
-| Installer | `install.sh`, `.deb` postinst, release installer | Binaries, helper, rule, units, extension, no password prompt for the installing user |
+| Notifications | A crash/error or an overheat event with **Behavior → Notifications** on | A desktop notification appears from `trommeld`; no shell extension is installed |
+| Installer | `install.sh`, `.deb` postinst, release installer | Binaries, helper, rule, units, no password prompt for the installing user |
 | Real rig | polkit prompt-free, 300 W/1620/810, start/stop, restore dialog | OC applied, ~125 TH/s, power read back, stock restore; an ignored memory lock stops the miner with a named error |
 | Error paths | missing helper, missing miner, external miner, failed restore, cancelled auth | Start aborts or explains; snapshot kept on failed restore; no silent success; a 180 s auth dialog is not killed |
 
@@ -60,8 +60,6 @@ not a claim that CI covers it.
   installed driver.
 - **Polkit without a password.** Requires the rule installed for the desktop
   user and, typically, an active graphical session.
-- **GNOME extension load.** GNOME Shell 50 caches extensions at login; installing
-  or enabling requires a log-out/log-in on Wayland.
 - **Wayland rendering, fonts and theme.** Screenshots from another machine or
   font stack are not comparable; regenerate them locally.
 - **Real pool API.** The pool is external and rate-limited; the cache/backoff

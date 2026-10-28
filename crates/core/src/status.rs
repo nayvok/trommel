@@ -1,4 +1,4 @@
-//! The status contract shared by the daemon, CLI, GUI and GNOME extension.
+//! The status contract shared by the daemon, CLI and GUI.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;

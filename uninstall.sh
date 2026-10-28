@@ -32,7 +32,7 @@ rm -f "$HOME/.config/systemd/user/trommeld.service" \
       "$HOME/.local/share/dbus-1/services/io.github.nayvok.Trommel.Daemon.service"
 systemctl --user daemon-reload 2>/dev/null || true
 
-say "Removing extension"
+say "Removing the legacy GNOME Shell applet (if installed)"
 gnome-extensions disable "$EXT_UUID" 2>/dev/null || true
 gnome-extensions uninstall "$EXT_UUID" 2>/dev/null || true
 
