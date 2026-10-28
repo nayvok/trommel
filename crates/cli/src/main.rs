@@ -200,22 +200,14 @@ async fn main() -> anyhow::Result<()> {
                     .and_then(|raw| Status::from_json(&raw).ok()),
                 Err(_) => None,
             };
-            let cfg = Config::load_or_default();
-            let mut redacted = cfg.clone();
-            if let Some(preset) = redacted.preset_mut() {
-                preset.wallet = if preset.wallet.is_empty() {
-                    String::new()
-                } else {
-                    "<redacted>".into()
-                };
-            }
+            let cfg = Config::load_or_default().redacted();
             let report = serde_json::json!({
                 "app": "Trommel",
                 "version": trommel_core::VERSION,
                 "contract_version": trommel_core::status::CONTRACT_VERSION,
                 "config_path": paths::config_path(),
                 "state_path": paths::state_path(),
-                "config": redacted,
+                "config": cfg,
                 "status": status,
                 "gpus": trommel_core::nvidia::query_all().ok(),
             });
