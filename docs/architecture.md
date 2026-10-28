@@ -1,76 +1,317 @@
 # Architecture
 
+Trommel separates a **privileged, long-lived owner** of the rig state
+(`trommeld`) from **short-lived clients** (the GTK app, the CLI and the GNOME
+Shell extension). This is the central rule; every other design decision follows
+from it.
+
+## Runtime topology
+
 ```
-GUI (draft Config) ──D-Bus──> trommeld (applied Config, Supervisor, State)
-                                  ├── polkit helper → nvidia-smi (apply/restore)
-                                  ├── exactly one miner child
-                                  ├── miner HTTP API + log + nvidia-smi
-                                  └── StatusChanged (JSON) ──> GUI / extension
-App ── GSettings org.gnome.shell.extensions.trommel ──> extension (UI only)
-Extension ── D-Bus ──> trommeld (status/start/stop); never OC
+┌────────────────────────────┐        ┌─────────────────────────────┐
+│ trommel (GTK4/libadwaita)  │        │ GNOME Shell 50 extension    │
+│ draft Config, no GPU calls │        │ read-only status + toggle  │
+└─────────────┬──────────────┘        └──────────────┬──────────────┘
+              │ D-Bus session bus                    │ D-Bus session bus
+              │ io.github.nayvok.Trommel             │ (same interface)
+              ▼                                      ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ trommeld (user service, Type=dbus)                               │
+│  Engine: applied Config · Supervisor · last Status               │
+│  loops: status refresher · 1 s supervisor tick                   │
+└───────┬──────────────────────┬───────────────────────┬───────────┘
+        │ spawn (args vector)  │ pkexec                 │ HTTPS
+        ▼                      ▼                       ▼
+  miner child            trommel-oc (root)        pool account API
+  (exactly one)           nvidia-smi --pl/-lgc/-lmc
+        │
+        ├── local HTTP API 127.0.0.1:<api_port>
+        └── log file ~/.local/state/trommel/miner.log
 ```
 
-## Crates
+The CLI (`trommel`) is the same client as the GUI: it connects to
+`io.github.nayvok.Trommel.Daemon` and, if nothing owns the name, asks D-Bus
+activation (or `trommeld` from `PATH`) to start it. `trommel` without a
+subcommand opens the GUI when built with `--features gui`.
 
-- `trommel-core`: configuration v2, catalogue, download manager, NVIDIA query,
-  OC snapshot/helper, supervisor, status contract, D-Bus engine.
-- `trommeld`: serves `io.github.nayvok.Trommel.Daemon`, polls status, reaps the
-  miner, schedules restarts and emits notifications.
-- `trommel`: CLI and GTK4/libadwaita UI. The GUI is one `gui.rs` module for now;
-  it keeps a draft and never runs `nvidia-smi` itself.
+## Process and privilege model
 
-## Configuration
+| Process | User | Responsibility | Never does |
+| --- | --- | --- | --- |
+| `trommeld` | desktop user | Owns config, miner child, snapshot, status; serves D-Bus | Runs as root, edits the helper, downloads without a user action |
+| `trommel` (GUI/CLI) | desktop user | Draft editing, display, command dispatch | Calls `nvidia-smi`, spawns/kills the miner, writes state |
+| `trommel-oc` | root via `pkexec` | Applies/restores `--pl/--lgc/--lmc` for one GPU UUID | Accepts paths, shell fragments or arbitrary commands |
+| miner child | desktop user | Mining | Is managed by anything except the supervisor |
 
-`~/.config/trommel/config.json`, `schema_version: 2`.
+Only `trommel-oc` is privileged. It accepts either `apply --gpu GPU-… --pl W
+--lgc MHz --lmc MHz` or `reset --gpu GPU-… --pl W`; values are range-checked by
+both `trommel-core::oc` and the script. A per-user polkit rule for the annotated
+action `io.github.nayvok.trommel.oc` removes the password prompt for the user
+who installed the package; without the rule pkexec falls back to
+authentication. The helper call is bounded by a 30 s timeout so a missing rule
+cannot hang the supervisor forever.
 
-- `presets` — coin/algo/miner + version/pool/wallet/worker/GPU profile/options
-  and fee data.
-- `gpu_profiles` — `default` tuning plus per-GPU overrides keyed by UUID.
-- `miner_installs` — **global** registry keyed `id@version`; presets reference
-  a version, never a path. Installs are applied to the daemon immediately, so a
-  running daemon sees a newly imported miner without a restart.
-- `behavior` — restart/poll/restore/logins/language.
+The daemon runs in the user session (`PartOf=graphical-session.target`) and is
+D-Bus activated on demand. It deliberately keeps the miner alive across its own
+restart: on start-up it adopts a matching process by PID (`Supervisor::new` sets
+`orphan`) instead of spawning a second miner.
 
-Old flat Pearl Miner configs are migrated from `~/.config/pearl-miner` on load;
-the old file is left untouched.
+## Crates and dependency direction
 
-## Apply flow
+```
+trommel (bin) ─────────────┐
+  ├── cli/src/main.rs      │
+  ├── cli/src/gui.rs       ├──> trommel-core
+  └── cli/src/mcp.rs       │      (config, catalog, dbus, oc, supervisor, …)
+trommeld (bin) ────────────┘
+```
 
-`ApplyConfig(json, mode)` with `mode = live | restart | stop`.
+- `crates/core` — library shared by both binaries and tests. It has no UI code
+  and no process-global state except caches and the i18n language.
+- `crates/daemon` — `trommeld` only: D-Bus service wiring plus two tokio loops.
+- `crates/cli` — `trommel` CLI, the GTK GUI behind the `gui` feature and the
+  stdio MCP server.
 
-- `live` is rejected if the running profile needs a restart.
-- `restart` stops (restores stock), saves the new config, starts it again.
-- `stop` stops and saves without starting.
-- On start failure the old config is saved back and a best-effort stock restore
-  is attempted.
+The GUI feature is optional: `cargo build -p trommel` produces a CLI-only
+binary, `cargo build -p trommel --features gui` adds GTK4/libadwaita. The
+release packages always build with `gui`.
+
+Per-module responsibilities and key functions are listed in
+[components.md](components.md).
+
+## Configuration model (schema v2)
+
+`~/.config/trommel/config.json` is the single source of truth for intent. It is
+owned by the daemon once running; the GUI keeps a **draft** copy and only sends
+it through `ApplyConfig`.
+
+```
+Config
+├── schema_version: 2
+├── active_preset: Option<String>
+├── presets: { id -> Preset }
+│     coin, algo, miner, miner_version, pool, pool_url, wallet, worker,
+│     gpu_profile, api_port, expected_hashrate, miner_options, fee overrides,
+│     extra_args, env, timestamps
+├── gpu_profiles: { id -> GpuProfile }
+│     name, default: GpuTuning, per_gpu: { gpu-uuid -> GpuTuning }
+├── miner_installs: { "id@version" -> MinerInstall }
+│     path, source_url, verified, custom, installed_at
+├── custom_miners: { id -> CustomMiner }      (reserved; not used by the GUI)
+├── pools: { id -> CustomPool }               (reserved for future endpoints)
+└── behavior: auto_restart, restart_delay_s, poll_interval_s,
+              restore_stock_on_stop, start_mining_on_login, notifications,
+              language, appearance, simple_mode
+```
+
+`GpuTuning` uses `Option` values as the source of truth: `None` means “do not
+touch”, `Some` means “apply”. `enabled` decides whether the card participates in
+the profile at all. A fresh profile has no clock locks; power limit `None` means
+driver auto, and `0` in the UI maps to `None`.
+
+Presets reference a miner **id and version**, never a path. `miner_installs` is
+global: one installation is visible to every preset, and a preset whose version
+is missing blocks Start until the user installs it or switches versions.
+
+`Config::normalize()` repairs the common broken states on load (dangling active
+preset, missing default profile, missing install path, stale fee override).
+`Config::from_v1`
+migrates the former flat configuration once, from the legacy
+`~/.config/pearl-miner/config.json`; the old file is left untouched. That is the
+only user-visible legacy configuration path; the state file keeps one legacy
+`profile` field so old state files still parse.
+
+The JSON schemas in [`schema/`](schema/) are the machine-readable form for
+external tools. They are descriptive, not enforced by the daemon; `Preset`
+(`additionalProperties: true`) tolerates forward-compatible fields.
+
+## Lifecycle
+
+### Start
+
+1. Reject if the supervisor already owns a live child, or if an **external**
+   miner is detected in `/proc` (the user must stop it first; Trommel never
+   kills a process it did not start).
+2. Validate the active preset: wallet present, pool address contains `:`,
+   miner binary installed and executable.
+3. Query all GPUs. Reuse a snapshot from the current boot, otherwise capture one
+   and persist it.
+4. Apply the profile per enabled GPU through the helper. The card is registered
+   in the rollback list *before* the call, so a partial failure restores every
+   card already touched.
+5. Spawn the miner with an explicit argument vector (no shell), write state and
+   clear the pool cache.
+
+Any failure in 4–5 restores the snapshot before returning the error. Start never
+leaves an applied profile without a running miner.
+
+### Stop
+
+Terminate the child (or a matching PID after a daemon restart), restore the
+snapshot when `behavior.restore_stock_on_stop` is set, clear the state file and
+the pool cache. If restore fails, the snapshot is kept and the error is
+returned; Stop does not pretend the stock state was restored.
+
+### Crash and restart
+
+`Supervisor::tick()` runs once per second. When the child exits unexpectedly and
+`auto_restart` is on, it schedules a restart after `restart_delay_s`, increments
+`state.restarts` and emits an event. Restart uses the same config and does not
+re-capture the stock snapshot.
+
+### Apply while mining
+
+`ApplyConfig(json, mode)` with `mode`:
+
+| Mode | Running miner | Stopped miner |
+| --- | --- | --- |
+| `live` | Rejected when the diff class is `RestartRequired` | Saved |
+| `restart` | Stop (restores stock), start with the new config, save on success | Save, start |
+| `stop` | Stop, save, stay stopped | Save |
+
+`Config::diff` classifies changes: active preset, GPU profiles and the active
+preset's settings require a restart; language, notifications and the autostart
+setting are live changes. On a failed start the previous config is saved back
+and a best-effort stock restore is attempted. The GUI never sends `restart` or
+`stop` without the explicit alert dialog.
+
+### External miner and daemon restart
+
+`state::find_external_miner()` scans `/proc` for known miner binaries and for
+shell scripts whose first argument is a known miner. It ignores the command line
+as a whole, because config JSON can contain miner names. `TROMMEL_NO_EXTERNAL_SCAN=1`
+is a test isolation hook. A daemon restart does not kill the miner: the state
+file records the PID, `Supervisor::new` marks it orphaned and `tick()` monitors
+it by PID.
+
+### Benchmark
+
+`RunBenchmark` stops the miner if needed, runs each requested miner for the
+given duration (30–3600 s), records raw and effective hashrate with fees, saves
+the report under `~/.local/state/trommel/bench/`, restarts the previous miner
+if it was running and returns the JSON report. Benchmarks are sequential by
+design: one miner at a time is an invariant.
 
 ## Status contract
 
-`Status` carries `contract_version`, `state`, `preset`, `miner_info`, `gpus[]`,
-`total`, `miner`, `pool`, `oc`, `warnings` and fees. The extension only reads
-this document and sends Start/Stop/Toggle/OpenApp.
+`Status` (contract version 2) is serialized to JSON and pushed over
+`StatusChanged`; `Status()`/`Refresh()` return the same document. It contains:
 
-## Stock snapshot
+- `state` — running, uptime, restarts, last error, external flag, preset
+  id/name;
+- `miner_info` — catalogue description, version, license, install/verified
+  state and the fee breakdown;
+- `gpus[]` and `gpu` — one `GpuStats` per card from `nvidia-smi`;
+- `total` — aggregate hashrate, power, efficiency (J/TH), max temperature and
+  enabled/total GPU counts;
+- `miner` — API/log statistics (`hashrate_10s/60s/15m`, accepted, rejected,
+  stale, source);
+- `pool` — cached pool statistics when mining;
+- `oc` — snapshot availability, applied flag and stale-boot flag;
+- `warnings` — config warnings plus “lock not honoured” warnings;
+- fees, expected hashrate, temperature limit, timestamp (`ts`, `ts_iso`) and
+  app version.
 
-Before applying a profile the daemon writes `oc-snapshot.json` with `boot_id`
-and per-GPU power/clocks. On stop the helper restores `power.limit` (or
-`power.default_limit` as fallback) and resets `-lgc/-lmc`. A snapshot from a
-different boot is stale and removed. Pre-existing manual clock locks cannot be
-read back through `nvidia-smi`; this limitation is shown in the UI.
+The document is display-oriented: it is not an RPC request format and has no
+wallet. Extensions and external agents should treat unknown fields as optional
+and compare `contract_version` rather than the app version.
 
-## Security boundaries
+## GPU tuning and stock restore
 
-- The root helper is `/usr/libexec/trommel/trommel-oc`; it accepts only a GPU
-  UUID and numeric `--pl/--lgc/--lmc` values.
-- The daemon runs as the user; the polkit rule matches the annotated action
-  `io.github.nayvok.trommel.oc` for the installing user (deb postinst) or the
-  dev user. The helper is the only privileged program.
-- Miner processes are spawned directly with an argument vector; no shell.
-- Downloads are HTTPS-only, size-limited, optionally SHA-256 verified, and
-  extracted with path-traversal checks.
+- `oc::snapshot()` reads per-card power limits (`power.limit`,
+  `power.default_limit`, min/max), clocks and identity, plus the kernel boot id.
+- The snapshot is stored at `~/.local/state/trommel/oc-snapshot.json`. A
+  snapshot from another boot is reported as stale (`oc.stale`), is not used by
+  Start, and is replaced by a fresh capture on the next Start.
+- Apply passes only values that are `Some`; a profile with no tuning produces no
+  helper call.
+- Restore uses `power.limit` when available and `power.default_limit` as a
+  fallback, then resets core/memory locks with the helper's `reset` subcommand.
+- A pre-existing manual clock lock cannot be read back through `nvidia-smi`;
+  Stop resets locks to the driver default and the UI says so. This is a
+  documented limitation, not a bug.
+- `Status` compares configured locks with the driver values and adds a warning
+  when a lock is not honoured (memory always; core only under load, because an
+  idle GPU legitimately downclocks).
+
+## Miner installs and downloads
+
+Miner binaries are never committed or bundled. Two paths install them:
+`download::install` (HTTPS, ≤512 MiB, optional SHA-256, `tar.gz`/`zip`/raw
+extraction with absolute-path and `..` rejection, executable check, atomic move
+into `~/.local/share/trommel/miners/<miner>/<version>/`) and
+`download::import_binary` (copy a local executable into the same store). A
+running daemon receives the updated config immediately after either command, so
+a newly installed version is usable without a restart. Installs are global; a
+preset only references `miner@version`.
+
+## Pool and miner statistics
+
+- Pool statistics come from the PearlHash account API
+  (`https://pearlhash.xyz/api/account/<wallet>`). The call is cached for 60 s and
+  runs on a background thread with retry/backoff, because a slow API used to
+  block `Status::collect` for tens of seconds. Other pools show configured data
+  only.
+- Miner statistics prefer the local HTTP API on `127.0.0.1:<api_port>`; if that
+  fails, the daemon parses the tail of the miner log. The parser is tolerant:
+  it walks the JSON document, matches key names and prefers top-level summaries
+  over per-GPU entries.
+
+## Concurrency
+
+- `Engine` holds `Inner { cfg, sup, status, last_report }` behind an async
+  `Mutex`. Every D-Bus method takes it; blocking work (`nvidia-smi`, helper,
+  spawn) runs in `spawn_blocking`/`block_in_place`.
+- The daemon runs two async loops: the status refresher (poll interval, or an
+  on-demand refresh after supervisor events) and the 1 s supervisor tick.
+- The GUI owns a separate thread with a small tokio runtime and a
+  command/event channel (`Cmd`/`Ev`). GTK state is only touched on the main
+  thread; D-Bus results arrive as `Ev::Status/Config/Error/...`.
+- The i18n language is process-global (`AtomicU8`); the daemon updates it when
+  a config with a new language is applied.
+- The GUI is single-instance: a second launch presents the existing window
+  (`APP_SLOT`).
 
 ## Extension
 
-`trommel@nayvok.github.io` has no `prefs.js`. Its UI settings live in
-`org.gnome.shell.extensions.trommel`, shared with the app. The extension starts
-the daemon through D-Bus activation and reconnects when the owner disappears.
+The GNOME Shell 50 extension (`trommel@nayvok.github.io`) is a read-only D-Bus
+client plus Start/Stop/Toggle/OpenApp. It has no `prefs.js`: its four settings
+live in `org.gnome.shell.extensions.trommel` and are edited by the app
+(**Settings → GNOME integration**). It never touches GPU tuning. See
+[extension.md](extension.md).
+
+## Design constraints and trade-offs
+
+- **The manager is not a miner.** No bundled binaries, no wallet, no seed
+  phrases; the catalogue links to upstream releases.
+- **One miner at a time.** Never spawn a second child, never silently restart a
+  running miner, never kill an external process without explicit user action.
+- **Stock restore is mandatory by default.** No hardcoded power limit; capture
+  before touching power/clocks and restore on stop.
+- **The daemon is the source of truth.** Editing `config.json` directly is not
+  enough while the daemon runs — use Apply/CLI so the daemon validates and
+  applies the change.
+- **No `nvidia-smi` in the GUI.** Any future client can be added without
+  privileged access.
+- **No Flatpak.** The sandbox conflicts with the host helper, systemd
+  unit, extension and runtime binary downloads; see
+  [ADR 0003](adr/0003-packaging.md).
+- **Debian first.** One tested distribution beats four untested ones; see
+  [packaging.md](packaging.md).
+
+## Files and locations
+
+| Path | Contents |
+| --- | --- |
+| `~/.config/trommel/config.json` | Applied config (schema v2) |
+| `~/.local/state/trommel/state.json` | Running state, PID, preset, restart count |
+| `~/.local/state/trommel/miner.log` | Miner stdout/stderr |
+| `~/.local/state/trommel/daemon.log` | Daemon event log |
+| `~/.local/state/trommel/oc-snapshot.json` | Per-boot stock snapshot |
+| `~/.local/state/trommel/bench/bench-<ts>.json` | A/B benchmark reports |
+| `~/.local/share/trommel/miners/<id>/<version>/` | Installed miner binaries |
+| `/usr/libexec/trommel/trommel-oc` | Root helper |
+| `/usr/share/polkit-1/actions/io.github.nayvok.trommel.policy` | Polkit action |
+
+XDG variables are honoured; `paths.rs` centralises every location and uses a
+temporary root under `cargo test` so unit tests never touch real user state.

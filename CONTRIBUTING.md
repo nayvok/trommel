@@ -3,14 +3,24 @@
 **English** · [Русский](CONTRIBUTING.ru.md)
 
 Thanks for helping. Trommel is a small Rust/GTK project; the most useful
-contributions are miner catalogue entries, packaging tests and GPU reports.
+contributions are miner catalogue entries, packaging tests, GPU reports and
+documentation fixes. Start with the [documentation index](docs/README.md), then
+pick the matching guide:
+
+- code and tests — [docs/development.md](docs/development.md),
+  [docs/components.md](docs/components.md);
+- screens and copy — [docs/design.md](docs/design.md);
+- catalogue — [docs/miners.md](docs/miners.md);
+- packaging — [docs/packaging.md](docs/packaging.md).
 
 ## Setup
 
 ```bash
 sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
-  gettext librsvg2-bin desktop-file-utils appstream
+  gettext librsvg2-bin desktop-file-utils appstream \
+  gir1.2-atspi-2.0 dbus xdg-utils
 cargo build -p trommel --features gui
+cargo build -p trommel          # CLI-only build must keep working
 cargo build -p trommeld
 cargo test --workspace
 ```
@@ -29,43 +39,68 @@ trommel status
 trommel gui
 ```
 
-For UI work, generate deterministic screenshots with a fake two-GPU rig:
+For UI work, use the isolated harnesses instead of a real rig:
 
 ```bash
-./scripts/screenshots.sh
+./scripts/e2e.sh              # CLI lifecycle, fake GPU/helper/miner
+./scripts/ui-smoke.sh         # AT-SPI click-through (desktop session)
+./scripts/first-run-smoke.sh  # pristine-install path
+./scripts/screenshots.sh      # deterministic docs screenshots
 ```
+
+They create their own XDG directories, private D-Bus and a fake `nvidia-smi`;
+see [docs/development.md](docs/development.md#test-harness-isolation). Do not
+weaken that isolation.
 
 ## What to work on
 
 - **Miner catalogue**: add versions, descriptions, fee data, option descriptors
-  and checksums in `resources/catalog/miners.toml`. See `docs/miners.md`.
+  and checksums in `resources/catalog/miners.toml`. See
+  [docs/miners.md](docs/miners.md).
 - **Pools/coins**: add a pool entry and a parser adapter only when the API is
   stable and documented.
-- **GPU/OC**: test on real hardware; report card model, driver and defaults.
-- **GNOME extension**: test on GNOME 50, including Extension Manager enable/
-  disable and re-login behavior.
-- **Packaging**: `.deb` is the v1 target; RPM/AppImage/Flatpak need a working
-  integration story first (see `docs/packaging.md`).
+- **GPU/OC**: test on real hardware; report the card model, driver, stock limits
+  and what the helper log showed.
+- **GNOME extension**: test on GNOME 50, including Extension Manager
+  enable/disable and the re-login behaviour.
+- **Packaging**: `.deb` is the released target; RPM/AppImage/Flatpak need a
+  working integration story first (see [docs/packaging.md](docs/packaging.md)).
+- **Docs**: if a document and the code disagree, fix the document in the same
+  change. Run `./scripts/check-docs.sh`.
 
 ## Code rules
 
-- Rust 2021, `cargo fmt`, no clippy warnings.
-- User-facing strings use `i18n::tr("English", "Русский")`; source is English.
+- Rust 2021, `cargo fmt`, no clippy warnings with
+  `--features trommel/gui`.
+- User-facing strings use `i18n::tr("English", "Русский")`; English is the
+  source. Do not concatenate translated fragments.
 - No shell interpolation when spawning miners; use `Command` with argument
   vectors. `shell-words` is only for parsing the user's extra arguments.
 - No bundled miner binaries, no secrets, no hardcoded wallets.
 - Keep the daemon as the single source of truth; the GUI edits a draft.
-- Update tests and docs with behavior changes.
+- Update tests, the matching document and, for visible changes, screenshots.
+- Keep `trommel-core` free of GTK and of daemon-only policy.
 
 ## Commit and PR workflow
 
 Use feature branches and Conventional Commits. Keep commits focused; do not mix
-repository cleanup, refactors and behavior changes. A PR should include:
+repository cleanup, refactors and behaviour changes. A PR should include:
 
 - what changed and why;
-- test commands/results;
+- test commands/results (unit, e2e, MCP, UI smoke as applicable);
 - hardware/desktop details for GPU or extension changes;
-- screenshots for visible UI changes.
+- screenshots for visible UI changes;
+- the documentation update that goes with it.
+
+Before pushing:
+
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings
+cargo test --workspace
+./scripts/check-no-secrets.sh
+./scripts/check-docs.sh
+```
 
 By contributing you agree that your changes can be distributed under the
 project's eventual license. The extension is GPL-3.0-or-later; the app license
@@ -73,8 +108,9 @@ is still being decided.
 
 ## Reporting bugs
 
-Include `trommel status --json`, `systemctl --user status trommeld`,
+Include `trommel status --json`, `trommel diagnose --json`,
+`systemctl --user status trommeld`, the daemon journal,
 `nvidia-smi --query-gpu=name,driver_version,power.limit,power.default_limit
---format=csv`, GNOME Shell version and whether the extension is enabled.
+--format=csv`, the GNOME Shell version and whether the extension is enabled.
 Never paste a seed phrase or private key; a wallet address is public but you may
 redact it.

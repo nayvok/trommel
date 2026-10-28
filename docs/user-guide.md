@@ -1,14 +1,24 @@
 # Trommel user guide
 
+Trommel controls a local NVIDIA rig: it stores presets, installs miners, applies
+power/clocks, starts exactly one miner and restores the stock GPU state when
+mining stops. The daemon keeps working after the window is closed.
+
+Russian: [user-guide.ru.md](user-guide.ru.md).
+
 ## Install
 
 Download the latest `.deb` from GitHub Releases
 (<https://github.com/nayvok/trommel/releases/latest>) and install it with
-`sudo apt install ./trommel_amd64.deb`, or run the release `trommel-install.sh`.
-There is no apt repository. `./install.sh` is the developer path. A working
-NVIDIA driver and `nvidia-smi` are required. The app talks to the daemon over
-D-Bus; the daemon runs as your user, the narrow GPU helper runs through polkit
-and works without a password for the user who installed the package.
+`sudo apt install ./trommel_amd64.deb`, or run the release
+`trommel-install.sh`, which verifies the SHA-256 first. There is no apt
+repository or PPA; upgrades are new release downloads.
+
+`./install.sh` is the developer path. A working NVIDIA driver and `nvidia-smi`
+are required. The app talks to the daemon over D-Bus; the daemon runs as your
+user, and the narrow GPU helper runs through polkit — without a password for the
+user who installed the package. On Wayland log out and back in once to see the
+GNOME extension.
 
 ## First run: Quick setup
 
@@ -16,61 +26,104 @@ Simple mode is on by default: the preset editor hides raw miner arguments and
 per-miner options. Turn it off in **Settings → Behavior → Simple mode** if you
 need them.
 
-The dashboard shows a **Quick setup** button until the wallet and the miner are
-ready. It opens a three-step wizard aimed at a rig with one to three cards:
+The dashboard shows **Quick setup** until a wallet and an installed miner are
+ready. It opens a three-step wizard for a rig with one to three cards:
 
 1. **Cards** — every detected GPU has a switch and its own power limit. Untick a
-   card to leave it untouched. **Fill** sets 80% of each card's stock limit;
+   card to leave it untouched. **Apply 80 %** sets 80 % of each ticked card's
+   stock limit, expands the rows and writes the applied watts back into them;
    **Use auto** clears the limit. This is a safe start with clock locks off, not
    a promise of maximum hashrate.
-2. **Miner** — pick a miner and version. **Download** or **Import** installs it
-   once for every preset; the state is shown in the row. Only one miner runs at
-   a time.
+2. **Miner** — pick a miner and version. **Install…** opens the shared install
+   dialog: download a catalogue version, type a version newer than the catalogue,
+   or import a local binary. The version is installed once for every preset;
+   only one miner runs at a time.
 3. **Wallet** — preset name, wallet, worker, pool and pool address. Nothing is
-   sent to the daemon until you press **Start mining**; if the wallet or pool
-   address is incomplete the wizard explains what is missing instead of failing
-   silently. With a running miner the wizard saves the draft and shows the
-   usual Apply and restart / Apply and stop dialog — it never restarts silently.
+   sent to the daemon until you press **Start mining**; incomplete wallet or pool
+   address is explained in the wizard. With a running miner the wizard saves the
+   draft and shows the usual Apply and restart / Apply and stop dialog — it never
+   restarts silently.
 
 ![Wallet step](images/setup-wallet-en-dark.png)
 
-The classic path still works: create a preset in **Presets**, choose a pool, a
-miner version, wallet/worker and a GPU profile, then Save and apply and Start.
-Before the miner starts, Trommel snapshots the current power limit and clocks
-for every enabled GPU; Stop restores the snapshot. If restore fails, the
-snapshot is kept and the error is shown.
+The classic path still works: create or open a preset in **Presets**, choose a
+pool, a miner version and wallet/worker, then Save and apply and press Start.
+Before the miner starts, Trommel snapshots each enabled card's power limit and
+clocks; Stop restores the snapshot. If restore fails, the snapshot is kept and
+the error is shown.
+
+## Dashboard
+
+- The hero card shows total hashrate, the state pill (`mining`, `external`, `stopped`,
+  `offline`), the active preset/miner/version and the fee
+  breakdown.
+- Every GPU is a card with live temperature, fan, power, utilisation and clocks,
+  plus a switch that includes the card in the active profile. Click the card to
+  tune it.
+- Below the cards: total power, maximum temperature, accepted/rejected shares,
+  pool balance, the configured pool endpoint with its fee, and warnings.
+- When the miner is stopped, hashrate and balance show numeric placeholders and
+  the pool row still names the configured endpoint.
+- The header **Start** applies your edited draft before starting. If the wallet
+  or miner is missing, it opens Quick setup instead of failing with a toast.
 
 ## Presets and installed miners
 
-A preset references a miner **version**, not a path. Installing a version once
-makes it visible as `Installed` in every preset. If a preset references a
-missing version, Start is disabled until you import/download it or switch to an
-installed version. Removing a miner that is used by a preset is refused.
+A preset bundles coin/algorithm (Pearl/pearlhash in the current catalogue),
+pool, wallet, worker, miner version and miner options. GPU settings are edited in **Settings → GPU defaults** and **Detected
+GPUs**, not in the preset editor. A preset references a miner **version**,
+not a path. Installing a version once makes every preset that references it see
+the version as installed. If a preset references a missing version, Start is
+blocked until you install it or switch to an installed version. There is no
+uninstall action yet.
 
-## Appearance
+![Presets](images/presets-en-dark.png)
 
-**Settings → Behavior → Appearance** selects System, Light or Dark. The change
-applies immediately and is saved with the rest of the behaviour settings.
+Presets open in a modal editor with **Cancel**/**Save** in the header and
+**Duplicate**/**Delete…** in the footer. Saving applies immediately: a stopped
+miner is saved at once; a running miner gets the restart/stop dialog. Deleting
+asks for confirmation, names the preset, and explains that the daemon keeps
+mining with the previously applied preset until another one is applied.
 
-Trommel is a libadwaita application: it always uses libadwaita's own widget
-styling and inherits the desktop's GTK theme for colours (Yaru on Ubuntu,
-Adwaita on stock GNOME). There is deliberately no per-app theme switch: forcing
-`GTK_THEME` makes libadwaita skip its stylesheet and breaks row spacing, so
-theme changes belong to the desktop, not to the app.
+![Preset editor](images/preset-editor-en-dark.png)
 
-## Fees
+## Miner installation
 
-The miner developer fee comes from the catalogue and is fixed unless the
-catalogue says it is configurable. The pool fee is used for the effective
-hashrate calculation; for a custom pool it is the real fee. The total is shown
-in the dashboard, preset editor, miner catalogue and extension popup.
+The install dialog is the only place that installs miners, and it is shared by
+the Miners page, the preset editor and the wizard:
 
-## Miner options
+![Miners](images/miners-en-dark.png)
 
-The options section is built from the selected miner's descriptors. Defaults
-come from the selected version; changing miner keeps compatible values, warns
-about incompatible ones and offers a reset. Extra arguments are appended
-verbatim as an argument vector (no shell).
+![Miner installation](images/miner-install-en-dark.png)
+
+- pick a catalogue version or type your own version name;
+- download from an HTTPS URL (optional SHA-256; `tar.gz`, `zip` or a raw binary);
+- or import a local executable.
+
+Imported builds are copied into Trommel's managed store, so moving or deleting
+the original download does not break the preset. Downloads are size-limited and
+archive paths are validated. An install without a SHA-256 is recorded as
+unverified; supply one whenever the release publishes it.
+
+The catalogue is a convenience, not a gate: if a miner released a new build
+before the catalogue was updated, type the version and paste the upstream URL.
+
+## Settings
+
+![Settings](images/settings-en-dark.png)
+
+- **Behavior** — restart on crash, restore stock on stop, notifications, start
+  mining at login, simple mode, poll interval, language (needs an app restart)
+  and appearance.
+- **GPU defaults** — power limit (`0 = driver auto`), optional core/memory clock
+  locks, temperature limit and resume temperature.
+- **Detected GPUs** — one card per GPU with configured power/core/memory, live
+  temperature/fan/load and **Tune**. In simple mode power,
+  temperature and load are shown; advanced settings reveal the locks.
+- **GNOME integration** — panel label, Quick Settings toggle, live activity,
+  extension state and an **Enable** button.
+- **Actions** — **Save and apply**, **Copy diagnostics** (redacted), **Restore
+  stock**.
 
 ## Clock locks (advanced)
 
@@ -78,62 +131,106 @@ Core and memory clock locks are opt-in and off in a fresh profile. Turn off
 **Simple mode** (or press **Advanced settings** under the card table) to see
 them in **Settings → GPU defaults** and in each card's **Tune** dialog.
 
-**Settings → Detected GPUs** is a per-card table. In simple mode it lists power
-and live temperature; in advanced mode it adds the core and memory locks and
-live fan speed, so you can compare every card at a glance. Each row has
-**Tune**; the row tooltip repeats the profile summary. Fan speed and the
-temperature limit are **not** per-card controls: the limit is global in
-**Settings → GPU defaults** and fan speed is a miner option in the preset
-editor.
-
 ![Advanced GPU settings](images/settings-advanced-en-dark.png)
+
+The tuning dialog starts with a **Now** row so you can compare the target with
+the live state. A clock value row is visible only while its lock switch is on.
+**Recommended** means 80 % of the stock power limit with both locks off — a safe
+start, not an optimum. On a multi-GPU machine **Apply to** copies the values to
+similar cards or all cards.
 
 ![GPU tuning dialog](images/gpu-tune-en-dark.png)
 
 A lower memory clock can reduce power/heat and sometimes raise hashrate on
 PearlHash-like coins, but it can hurt other algorithms; test with the A/B
-benchmark. `Stop` resets `-lgc/-lmc` via the helper. Use **Similar GPUs** or
-**All GPUs** in the dialog to copy one card's tuning.
+benchmark. Stop resets the locks to the driver default.
+
+## Fees
+
+The miner developer fee comes from the catalogue and is fixed unless the
+catalogue marks it configurable. The pool fee is used for the effective hashrate
+calculation. The total is shown in the dashboard, preset editor and extension
+popup:
+
+```
+miner 0.00% + pool 1.00% = total 1.00%
+```
+
+The UI never pretends a fixed fee can be changed.
+
+## Miner options
+
+The options section is built from the selected miner's descriptors: types,
+ranges, defaults and CLI flags come from the catalogue for the selected miner.
+Changing the miner rebuilds the rows; values whose keys the new miner does not
+define are dropped when the preset is saved. Extra arguments are appended
+verbatim as an argument vector (no shell). In simple mode both sections are
+hidden.
 
 ## Apply while mining
 
-If the miner is running and you change a GPU/profile setting, the Apply button
-asks:
+If the miner is running and you change a GPU/profile setting, **Apply** asks:
 
 - **Apply and restart** — stop, restore stock, save, start again.
-- **Apply and stop** — stop, restore stock, save the new config, leave it
-  stopped.
-- **Cancel** — keep the old applied config and your draft.
+- **Apply and stop** — stop, restore stock, save the new config, stay stopped.
+- **Cancel** — keep the old applied config and your draft; optimistic switch
+  changes are undone.
 
-If a live-only change is made (for example notifications), it is applied without
-a restart.
+A live-only change (language, notifications, autostart) is applied without a
+restart. A failed start saves the previous config back and attempts a
+best-effort stock restore.
+
+## Stock restore and limitations
+
+- The power limit is restored from the snapshot captured before mining.
+- `-lgc`/`-lmc` are reset to the driver default. A pre-existing manual clock
+  lock cannot be read back through `nvidia-smi`; the UI says so, and a warning
+  appears when the driver does not honour a configured lock.
+- Fan control on consumer cards is not available through `nvidia-smi`; fan flags
+  are passed to the miner when supported and disappear with the process.
+- On reboot the snapshot is marked stale and is not used; Start captures a fresh
+  one, and the driver resets GPU settings anyway.
+- Trommel does not kill a miner it did not start. Stop that process yourself
+  before pressing Start.
+
+## GNOME extension
+
+The extension is shipped with the package and listed in Extension Manager. It
+has no separate preferences window: panel label mode, live activity and the
+Quick Settings toggle are configured in **Trommel → Settings → GNOME
+integration**, using a shared GSettings schema. If Extension Manager disables it,
+the app shows it as disabled. The daemon works without the extension.
+
+## Benchmarks
+
+**Miners → A/B benchmark** (or `trommel bench --minutes 3`) stops mining, runs
+each selected miner sequentially, records raw and fee-adjusted effective
+hashrate, restarts the previous miner if it was running, and prints the winner.
+Benchmarking moves a real rig: the miner stops for the duration of the test.
 
 ## Asking an external agent
 
-Use **Settings → Actions → Copy diagnostics** or `trommel diagnose --json`
-to create a redacted diagnostics file, then give it to Codex/ChatGPT together with the config schema.
-`trommel config diff proposed.json` shows whether a change needs a restart;
-`trommel config apply proposed.json --restart` applies it only after you review
-the diff. For MCP-aware agents, run `trommel mcp` (read-only) or
+Use **Settings → Actions → Copy diagnostics** or `trommel diagnose --json` to
+create a redacted bundle, then give it to Codex/ChatGPT together with the config
+schema. `trommel config diff proposed.json` shows whether a change needs a
+restart; `trommel config apply proposed.json --restart` applies it after you
+review the diff. For MCP-aware agents, run `trommel mcp` (read-only) or
 `trommel mcp --allow-write`. See [agents.md](agents.md).
-
-## GNOME integration
-
-The extension is shipped with the package. Enable it in Settings or Extension
-Manager; if it does not appear, log out and back in. The popup shows total
-hashrate, temperature, power, shares, pool balance, active preset and miner/fee.
-Settings for the panel label, live activity and Quick Settings toggle are in the
-app, not in a separate extension preferences window.
 
 ## Troubleshooting
 
 - **Service is not running** — `systemctl --user start trommeld` or just reopen
-  the app; D-Bus activation should start it.
-- **GPU unavailable** — check `nvidia-smi` as your user; a container/Flatpak
+  the app; D-Bus activation should start it. Check
+  `journalctl --user -b -u trommeld`.
+- **GPU unavailable** — check `nvidia-smi` as your user; a container or Flatpak
   sandbox may hide the device nodes.
-- **OC not applied** — check the polkit helper/policy; the app still starts the
-  miner with a visible warning only when no GPU tuning was required. If tuning
-  was requested and failed, the start is aborted.
+- **OC not applied** — check the polkit helper/policy. The app aborts the start
+  when tuning was requested and failed, instead of mining with unknown clocks.
+  Run `./scripts/check-polkit.sh` and reinstall the rule.
+- **Start says the miner is missing** — install the referenced version or switch
+  the preset to an installed one; installs are global, not per preset.
 - **Extension installed but disabled** — `gnome-extensions info
-  trommel@nayvok.github.io`; enable it in Extension Manager or the app; re-login
-  on Wayland if needed.
+  trommel@nayvok.github.io`; enable it in Extension Manager or the app; log out
+  and back in on Wayland if needed.
+- **No pool balance** — the pool API is cached for a minute and backs off after
+  failures; only PearlHash has an account API adapter.

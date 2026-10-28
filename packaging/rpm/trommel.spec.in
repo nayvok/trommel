@@ -1,6 +1,8 @@
-# Template only — not built or released in v1. Verify on Fedora first.
+# Template only — not built or released. Verify install/upgrade/removal and the
+# extension on Fedora before publishing. Keep the version in sync with
+# Cargo.toml [workspace.package].
 Name:           trommel
-Version:        0.2.0
+Version:        0.4.3
 Release:        1%{?dist}
 Summary:        NVIDIA mining rig manager with presets and miner catalogue
 License:        LicenseRef-proprietary

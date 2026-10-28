@@ -1,50 +1,108 @@
 # Using Trommel from an external agent
 
-Trommel is deliberately file/CLI-first, so Codex or another coding agent can
-inspect and change it without a special API:
+Trommel is designed to be inspected and changed by an agent without a private
+API. The daemon is the single source of truth; everything an agent needs is
+reachable through JSON, files, the CLI, D-Bus or the MCP server.
 
-- config: `~/.config/trommel/config.json` (schema v2)
-- state: `~/.local/state/trommel/state.json`
-- miner log: `~/.local/state/trommel/miner.log`
-- miner installs: `~/.local/share/trommel/miners/`
-- schemas: [`config.schema.json`](schema/config.schema.json),
-  [`preset.schema.json`](schema/preset.schema.json)
+This document is the contract. [AGENTS.md](../AGENTS.md) contains the
+repository-level working rules; [architecture.md](architecture.md) explains the
+runtime.
+
+## Surface
+
+| Surface | Access | Read/write | Notes |
+| --- | --- | --- | --- |
+| Config | `~/.config/trommel/config.json` | read; write only through Apply | Schema v2; see [schemas](schema/config.schema.json) |
+| Runtime state | `~/.local/state/trommel/state.json` | read | PID, running, restarts, last error |
+| Miner log | `~/.local/state/trommel/miner.log` | read | Tail for hashrate/share fallback |
+| Daemon log | `~/.local/state/trommel/daemon.log` | read | Supervisor events |
+| GPU snapshot | `~/.local/state/trommel/oc-snapshot.json` | read | Per-boot stock power/clocks |
+| Benchmarks | `~/.local/state/trommel/bench/*.json` | read | A/B reports |
+| Miner store | `~/.local/share/trommel/miners/<id>/<version>/` | read | Never hand-edit; use `trommel miner import/install` |
+| Status JSON | `trommel status --json` | read | The GUI/extension contract |
+| Diagnostics | `trommel diagnose --json` | read | Redacted bundle for a model |
+| Config diff/apply | `trommel config diff/apply` | read/apply | Explicit mode, explicit consent |
+| D-Bus | `io.github.nayvok.Trommel.Daemon` | read + control | Same user session; local trust |
+| MCP | `trommel mcp` | read-only by default | stdio JSON-RPC |
+
+Paths honour XDG variables. `trommel diagnose --json` prints the effective
+`config_path`/`state_path` in its report, so an agent should read them from there
+instead of hardcoding `$HOME`.
 
 ## Safe workflow
 
 ```bash
+# 1. Observe
 trommel diagnose --json > /tmp/trommel-diagnostics.json
+trommel status --json > /tmp/trommel-status.json
 trommel config export /tmp/trommel-config.json
-# let the agent propose /tmp/trommel-proposed.json
+
+# 2. Propose a change to /tmp/trommel-proposed.json
+#    Keep ids, schema_version and unknown fields intact.
+
+# 3. Validate and classify
 trommel config validate /tmp/trommel-proposed.json
 trommel config diff /tmp/trommel-proposed.json
+
+# 4. Show the diff to the user; apply only after approval
 trommel config apply /tmp/trommel-proposed.json --restart
 ```
 
-`config diff` prints `Live` or `RestartRequired` and the reasons. `config apply`
-saves and sends the config to the daemon; `--restart`/`--stop` choose the same
-modes as the GUI. The agent should never apply a config without the user seeing
-the diff.
+- `config validate` prints warnings and **exits 0 even with warnings**. Treat a
+  non-empty warning list as a failure for the proposed config.
+- `config diff` prints `<class>: <reasons>`, where class is `None`, `Live` or
+  `RestartRequired`. A running miner with `RestartRequired` must go through
+  `--restart` or `--stop`; a plain apply is rejected by the daemon.
+- `config apply` saves the file first and then asks the daemon. If no daemon is
+  running it prints “config saved; daemon is not running”; the change takes
+  effect on the next start, not silently now.
+- Never apply without showing the user the diff. Never choose `--restart` on a
+  running miner without explicit approval.
+- `trommel diagnose` and the MCP config/preset tools replace **every** preset
+  wallet with `<redacted>`, including inactive presets. Do not ask for a wallet
+  to “complete” a diagnostic bundle; ask the user to enter it in the app.
 
 ## CLI JSON
 
 ```bash
-trommel status --json
-trommel gpus --json
-trommel preset list
-trommel preset show
-trommel preset export pearl-wildrig /tmp/preset.json
+trommel status --json        # full Status document, contract_version = 2
+trommel gpus --json          # nvidia-smi view, works without the daemon
+trommel diagnose --json      # app/version, paths, redacted config, status, GPUs, warnings
+trommel preset list          # human table with total fees
+trommel preset show          # active preset JSON
+trommel preset export <id> /tmp/preset.json
 trommel preset import /tmp/preset.json
-trommel miner list
+trommel miner list           # catalogue + installed versions
 ```
+
+The current human-readable output is Russian. Parse JSON; do not scrape the
+human text. `status` and `start/stop/toggle` connect through D-Bus and start
+`trommeld` on demand; `gpus`/`diagnose` work offline.
+
+### Status fields an agent usually needs
+
+| Field | Meaning |
+| --- | --- |
+| `contract_version` | Contract revision (2); compare this, not `version` |
+| `state.running` | A miner is running (including `external`) |
+| `state.external` | The process was started outside Trommel |
+| `state.last_error` | Last supervisor/config error, if any |
+| `state.uptime_s`, `state.restarts` | Session health |
+| `miner_info` | Miner id/name/version, install/verified flags, fee breakdown |
+| `gpus[]` | Per-card live values and static limits |
+| `total` | Aggregate hashrate/power/efficiency/temperature |
+| `miner` | Hashrate windows, accepted/rejected/stale, `source` (`api`/`log`) |
+| `pool` | Cached pool statistics when mining |
+| `oc` | Snapshot availability, applied/stale flags |
+| `warnings` | User-facing configuration and lock warnings |
+
+The document deliberately contains no wallet and no seed material.
 
 ## MCP server
 
-`trommel mcp` speaks the Model Context Protocol over stdio. It is read-only by
-default. Add `--allow-write` only when you explicitly want the agent to
-start/stop the miner or apply a proposed config.
-
-Codex (or another MCP client) can launch it as a stdio server:
+`trommel mcp` speaks JSON-RPC 2.0 over stdio (protocol version `2024-11-05`).
+It supports `initialize`, `ping`, `tools/list`, `tools/call` and `shutdown`;
+notifications without an `id` are ignored.
 
 ```toml
 [mcp_servers.trommel]
@@ -52,39 +110,83 @@ command = "trommel"
 args = ["mcp"]            # add "--allow-write" to enable write tools
 ```
 
-Read-only tools include `trommel_status`, `trommel_gpus`, `trommel_presets`,
-`trommel_preset_get`, `trommel_config`, `trommel_config_validate`,
-`trommel_config_diff`, `trommel_miners` and `trommel_diagnose`. With
-`--allow-write`, `trommel_start`, `trommel_stop` and `trommel_apply_config` are
-also exposed. Without the flag a write tool call returns a plain JSON-RPC error
-(`write tool disabled; start the MCP server with --allow-write`) and the server
-keeps serving.
+| Tool | Input | Returns |
+| --- | --- | --- |
+| `trommel_status` | — | Status JSON |
+| `trommel_gpus` | — | `nvidia-smi` GPU list |
+| `trommel_presets` | — | Preset summaries with fee totals |
+| `trommel_preset_get` | `id` | One preset, wallet redacted |
+| `trommel_config` | — | Full config, all wallets redacted |
+| `trommel_config_validate` | — | `{"warnings": [...]}` for the current config |
+| `trommel_config_diff` | `config` object | `{"class": "...", "reasons": [...]}` |
+| `trommel_miners` | — | Catalogue entries and installed versions |
+| `trommel_diagnose` | — | Redacted diagnostics bundle |
+| `trommel_start` | — | Starts mining (write-gated) |
+| `trommel_stop` | — | Stops and restores stock (write-gated) |
+| `trommel_apply_config` | `config`, `mode` | Applies a config (write-gated) |
 
-`trommel_config`, `trommel_preset_get` and `trommel diagnose --json` replace
-**every** preset wallet with `<redacted>`, not only the active one.
+Without `--allow-write`, a write tool returns a JSON-RPC error
+`write tool disabled; start the MCP server with --allow-write` and the server
+keeps running. `--allow-write` is a guardrail, not an authentication boundary:
+MCP runs as the same user and can do anything the CLI can.
 
-### Smoke test
+Validation rules visible to the agent: `mode` must be `live|restart|stop`;
+`config` must deserialize as a complete `Config`; unknown tools return
+`unknown tool: …`; malformed JSON returns a parse error. The server never
+auto-applies a config from a resource or prompt.
+
+Smoke test:
 
 ```bash
 ./scripts/test-mcp.sh
 ```
 
-The script builds the CLI, points `XDG_CONFIG_HOME` at a temporary fixture with
-two presets, and checks `initialize`, `ping`, `tools/list`, `tools/call`, the
-read-only tool set, `--allow-write` gating, bad arguments, unknown tools and
-that no wallet-shaped string appears in the output. It never calls a write tool
-for real.
+It covers the protocol, read-only defaults, write gating, bad arguments and
+wallet redaction; it never executes a real write tool.
 
-## Safety rules for agents
+## D-Bus
 
-- Never ask for or include a seed phrase/private key. Wallet addresses are
-  public but redacted by `trommel diagnose` and the MCP config tool.
-- Prefer diagnostics/JSON over screenshots; if a screenshot is needed, let the
-  user take it.
-- Validate ranges and preview the diff before applying.
-- Do not bypass the Apply and restart / Apply and stop decision for a running
-  miner.
-- Do not edit files under `~/.local/share/trommel/miners/` by hand; use
+For a non-MCP agent, the session bus is the richest surface:
+
+```bash
+gdbus introspect --session --dest io.github.nayvok.Trommel.Daemon \
+  --object-path /io/github/nayvok/Trommel
+gdbus call --session --dest io.github.nayvok.Trommel.Daemon \
+  --object-path /io/github/nayvok/Trommel --method io.github.nayvok.Trommel.Status
+```
+
+Methods, properties and signals are listed in
+[architecture.md](architecture.md#status-contract) and
+[components.md](components.md). Always pass `ApplyConfig` mode; `SetConfig` is
+a compatibility wrapper that restarts a running miner. `Refresh()` is safe to
+poll; `Status()` returns the last snapshot.
+
+## Things an agent must not do
+
+- Ask for a seed phrase or private key. A wallet address is public but personal;
+  it is redacted for a reason.
+- Start a second miner, kill an external miner, or manually edit
+  `~/.local/share/trommel/miners/`. Use Start/Stop and
   `trommel miner import/install`.
-- The daemon is the single source of truth; editing config while it runs is not
-  enough — use `trommel config apply`.
+- Edit a preset's wallet in an exported config and apply it without the user
+  seeing the diff.
+- Bypass the **Apply and restart / Apply and stop** decision for a running
+  miner.
+- “Fix” a failed stock restore by clearing `oc-snapshot.json`; the snapshot is
+  needed for a retry.
+- Treat a config file write as an applied config. The daemon owns the live
+  config; use Apply.
+- Add a bundled miner binary or a checksum/URL that was not actually verified.
+
+## A good agent loop
+
+1. Read [AGENTS.md](../AGENTS.md) and this file.
+2. `trommel diagnose --json`; check `warnings`, `state.last_error`, `oc.stale`.
+3. Reproduce with `cargo test --workspace` and the relevant script; use the fake
+   rig from [development.md](development.md#test-harness-isolation) rather than
+   a real GPU.
+4. Propose the smallest change, with tests and the related doc update.
+5. Show `trommel config diff` or the code diff; wait for approval before
+   applying anything to a rig.
+6. Verify with `status --json` after an approved apply, and confirm that the
+   stock restore was reported correctly.

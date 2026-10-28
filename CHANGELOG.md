@@ -3,6 +3,18 @@
 All notable changes to Trommel are documented here. Format follows Keep a
 Changelog; versions use SemVer.
 
+## [Unreleased]
+
+### Changed
+
+- Documentation was restructured by audience: a new index, an architecture and
+  component reference, a development guide with the test harness, and a design
+  specification. The UX map was folded into `docs/design.md` /
+  `docs/design.ru.md`; the obsolete session plan was removed.
+- `scripts/check-docs.sh` validates relative markdown links and flags removed
+  documents.
+- The config schema now documents `behavior.appearance`.
+
 ## [0.4.3] - 2026-10-28
 
 ### Fixed

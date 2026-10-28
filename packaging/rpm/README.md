@@ -1,14 +1,15 @@
-# RPM (not released in v1)
+# RPM (not released)
 
-A spec template will be added after a Fedora/openSUSE test pass. The `.deb`
-package is the supported v1 format. Paths and dependencies to verify:
+`trommel.spec.in` is a template, not a release artifact. The `.deb` package is
+the supported format. The template does not yet install every asset the Debian
+package does; a Fedora/openSUSE test pass must confirm:
 
 - `/usr/bin/trommel`, `/usr/bin/trommeld`
-- `/usr/libexec/trommel/trommel-oc`
-- systemd user units, D-Bus service, polkit action/rule
-- GSettings schema and GNOME extension
+- `/usr/libexec/trommel/trommel-oc` and the polkit action/rule
+- systemd user units and the D-Bus activation service
+- GSettings schema and the GNOME extension
 - `Requires: gtk4, libadwaita, polkit, systemd, dbus-daemon`
 - `Recommends: nvidia-driver, gnome-shell`
 
 Do not publish an RPM without testing install/upgrade/removal and the extension
-on the target distribution.
+on the target distribution. Update `docs/packaging.md` when it becomes supported.
