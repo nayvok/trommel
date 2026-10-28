@@ -320,6 +320,10 @@ fn install_css() {
             margin-bottom: 2px;
         }
         .trommel-hero-meta { opacity: 0.72; }
+        .trommel-dialog-footer {
+            padding: 10px 12px 12px;
+            border-top: 1px solid alpha(@card_fg_color, 0.10);
+        }
         .trommel-hero-action {
             font-weight: 600;
             min-height: 38px;
@@ -421,6 +425,32 @@ fn clear_box(container: &gtk::Box) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
     }
+}
+
+/// Dialog chrome rule: the header carries the title (and the close control)
+/// only. Actions live in a footer below the scrolling content, so they never
+/// scroll away and never crowd the title — secondary actions on the left, the
+/// primary action on the right.
+fn dialog_footer() -> gtk::Box {
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    footer.add_css_class("trommel-dialog-footer");
+    footer
+}
+
+/// A horizontal spacer for a [`dialog_footer`] that pushes the primary action
+/// to the trailing edge.
+fn dialog_footer_spacer() -> gtk::Box {
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    spacer
+}
+
+/// Compose a dialog body from its scrolling content and its action footer.
+fn dialog_body(content: &impl IsA<gtk::Widget>, footer: &gtk::Box) -> gtk::Box {
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    body.append(content);
+    body.append(footer);
+    body
 }
 
 fn set_page_icon(stack: &adw::ViewStack, child: &impl IsA<gtk::Widget>, icon: &str) {
@@ -1581,10 +1611,18 @@ fn show_error_details(app: &Rc<App>, message: &str) {
     // The explicit Close button is the only dismiss control; the automatic
     // dialog-title close would duplicate it.
     header.set_show_end_title_buttons(false);
-    let copy = gtk::Button::with_label(&tr("Copy", "Копировать"));
-    let close = gtk::Button::with_label(&tr("Close", "Закрыть"));
-    header.pack_end(&copy);
-    header.pack_end(&close);
+    let copy = gtk::Button::builder()
+        .label(tr("Copy", "Копировать"))
+        .css_classes(["flat", "pill"])
+        .build();
+    let close = gtk::Button::builder()
+        .label(tr("Close", "Закрыть"))
+        .css_classes(["suggested-action", "pill"])
+        .build();
+    let footer = dialog_footer();
+    footer.append(&copy);
+    footer.append(&dialog_footer_spacer());
+    footer.append(&close);
     let view = gtk::TextView::builder()
         .editable(false)
         .cursor_visible(false)
@@ -1602,7 +1640,7 @@ fn show_error_details(app: &Rc<App>, message: &str) {
         .build();
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
-    toolbar.set_content(Some(&scroll));
+    toolbar.set_content(Some(&dialog_body(&scroll, &footer)));
     dialog.set_child(Some(&toolbar));
     {
         let dialog = dialog.clone();
@@ -1898,16 +1936,24 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         &base.name,
         &tr("Preset", "Пресет"),
     )));
-    let cancel = gtk::Button::with_label(&tr("Cancel", "Отмена"));
-    header.pack_start(&cancel);
+    // Cancel is the dismiss control, so the header needs no second close
+    // button; Save sits in the footer with the rest of the actions.
     header.set_show_end_title_buttons(false);
+    let cancel = gtk::Button::builder()
+        .label(tr("Cancel", "Отмена"))
+        .css_classes(["flat", "pill"])
+        .build();
     let save = gtk::Button::builder()
         .label(tr("Save", "Сохранить"))
         .css_classes(["suggested-action", "pill"])
         .build();
-    header.pack_end(&save);
+    let footer = dialog_footer();
+    footer.append(&cancel);
+    footer.append(&dialog_footer_spacer());
+    footer.append(&save);
 
     let page = adw::PreferencesPage::new();
+    page.set_vexpand(true);
 
     let miner_group = adw::PreferencesGroup::builder()
         .title(tr("Miner", "Майнер"))
@@ -2039,7 +2085,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     page.add(&actions_group);
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
-    toolbar.set_content(Some(&page));
+    toolbar.set_content(Some(&dialog_body(&page, &footer)));
     dialog.set_child(Some(&toolbar));
 
     let options: Rc<RefCell<Vec<OptionRow>>> = Rc::new(RefCell::new(Vec::new()));
@@ -2549,19 +2595,25 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         let popover = presets_popover.clone();
         recommended.connect_clicked(move |_| popover.popdown());
     }
+    // The tuning presets are content, not window chrome: a labelled menu in
+    // the footer, next to the Save it feeds into.
     let presets = gtk::MenuButton::builder()
-        .icon_name("view-more-symbolic")
+        .label(tr("Presets", "Пресеты"))
         .tooltip_text(tr("Tuning presets", "Пресеты настройки"))
-        .css_classes(["flat"])
+        .css_classes(["flat", "pill"])
+        .always_show_arrow(true)
         .popover(&presets_popover)
         .build();
     let save = gtk::Button::builder()
         .label(tr("Save", "Сохранить"))
         .css_classes(["suggested-action", "pill"])
         .build();
-    header.pack_end(&save);
-    header.pack_end(&presets);
+    let footer = dialog_footer();
+    footer.append(&presets);
+    footer.append(&dialog_footer_spacer());
+    footer.append(&save);
     let page = adw::PreferencesPage::new();
+    page.set_vexpand(true);
 
     let group = adw::PreferencesGroup::builder()
         .title(format!("GPU #{} · {name}", gpu.index))
@@ -2740,7 +2792,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     let apply_all = apply_all;
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
-    toolbar.set_content(Some(&page));
+    toolbar.set_content(Some(&dialog_body(&page, &footer)));
     dialog.set_child(Some(&toolbar));
 
     {
@@ -2981,7 +3033,7 @@ fn setup_miner_state(
 fn show_setup_step(
     step: u32,
     stack: &gtk::Stack,
-    step_label: &gtk::Label,
+    title: &adw::WindowTitle,
     back: &gtk::Button,
     next: &gtk::Button,
     status: &gtk::Label,
@@ -2994,7 +3046,7 @@ fn show_setup_step(
     ];
     let index = (step as usize).min(pages.len() - 1);
     stack.set_visible_child_name(pages[index]);
-    step_label.set_text(&titles[index]);
+    title.set_subtitle(&titles[index]);
     let back_text = if index == 0 {
         tr("Cancel", "Отмена")
     } else {
@@ -3031,8 +3083,14 @@ fn quick_setup_wizard(app: &Rc<App>) {
         .content_width(620)
         .build();
     let header = adw::HeaderBar::new();
-    let step_label = label(&tr("Step 1 of 3", "Шаг 1 из 3"), &["caption", "dim-label"]);
-    step_label.set_halign(gtk::Align::Center);
+    // The step name is a subtitle, not a page title: the header stays a plain
+    // title bar, and Cancel/Back/Next live in the footer.
+    let window_title = adw::WindowTitle::new(
+        &tr("Quick setup", "Быстрая настройка"),
+        &tr("Step 1 of 3 · Cards", "Шаг 1 из 3 · Карты"),
+    );
+    header.set_title_widget(Some(&window_title));
+    header.set_show_end_title_buttons(false);
     let back = gtk::Button::builder()
         .label(tr("Cancel", "Отмена"))
         .css_classes(["flat", "pill"])
@@ -3041,9 +3099,10 @@ fn quick_setup_wizard(app: &Rc<App>) {
         .label(tr("Next", "Далее"))
         .css_classes(["suggested-action", "pill"])
         .build();
-    header.set_title_widget(Some(&step_label));
-    header.pack_start(&back);
-    header.pack_end(&next);
+    let footer = dialog_footer();
+    footer.append(&back);
+    footer.append(&dialog_footer_spacer());
+    footer.append(&next);
 
     let stack = gtk::Stack::new();
     stack.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
@@ -3353,6 +3412,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&stack);
     content.append(&status);
+    content.append(&footer);
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&content));
@@ -3363,7 +3423,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
         let dialog = dialog.clone();
         let step = step.clone();
         let stack = stack.clone();
-        let step_label = step_label.clone();
+        let window_title = window_title.clone();
         let back_button = back.clone();
         let next_button = next.clone();
         let status = status.clone();
@@ -3376,7 +3436,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
             show_setup_step(
                 step.get(),
                 &stack,
-                &step_label,
+                &window_title,
                 &back_button,
                 &next_button,
                 &status,
@@ -3388,7 +3448,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
         let dialog = dialog.clone();
         let step = step.clone();
         let stack = stack.clone();
-        let step_label = step_label.clone();
+        let window_title = window_title.clone();
         let back_button = back.clone();
         let next_button = next.clone();
         let status = status.clone();
@@ -3420,12 +3480,26 @@ fn quick_setup_wizard(app: &Rc<App>) {
                     return;
                 }
                 step.set(1);
-                show_setup_step(1, &stack, &step_label, &back_button, &next_button, &status);
+                show_setup_step(
+                    1,
+                    &stack,
+                    &window_title,
+                    &back_button,
+                    &next_button,
+                    &status,
+                );
             }
             1 => {
                 setup_miner_state(&app, &miner_row, &version_row, &install_row, &fee_row);
                 step.set(2);
-                show_setup_step(2, &stack, &step_label, &back_button, &next_button, &status);
+                show_setup_step(
+                    2,
+                    &stack,
+                    &window_title,
+                    &back_button,
+                    &next_button,
+                    &status,
+                );
             }
             _ => {
                 finish_quick_setup(
@@ -3453,7 +3527,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
         let initial = initial.min(2);
         if initial > 0 {
             step.set(initial);
-            show_setup_step(initial, &stack, &step_label, &back, &next, &status);
+            show_setup_step(initial, &stack, &window_title, &back, &next, &status);
         }
     }
     dialog.present(Some(&app.window));
@@ -3679,22 +3753,13 @@ fn miner_install_dialog(
         &def.name,
         &tr("Install miner", "Установка майнера"),
     )));
-    let cancel = gtk::Button::with_label(&tr("Cancel", "Отмена"));
-    header.pack_start(&cancel);
+    // Cancel dismisses the dialog and the header needs no second close
+    // button; all actions live in the footer.
+    let cancel = gtk::Button::builder()
+        .label(tr("Cancel", "Отмена"))
+        .css_classes(["flat", "pill"])
+        .build();
     header.set_show_end_title_buttons(false);
-    if !def.source_url.is_empty() {
-        let release = gtk::Button::builder()
-            .icon_name("web-browser-symbolic")
-            .tooltip_text(tr("Release page", "Страница релиза"))
-            .css_classes(["flat"])
-            .build();
-        let source_url = def.source_url.clone();
-        release.connect_clicked(move |_| {
-            let _ =
-                gio::AppInfo::launch_default_for_uri(&source_url, None::<&gio::AppLaunchContext>);
-        });
-        header.pack_end(&release);
-    }
 
     let page = adw::PreferencesPage::new();
 
@@ -3736,6 +3801,25 @@ fn miner_install_dialog(
     version_group.add(&version_combo);
     version_group.add(&version_entry);
     version_group.add(&state_row);
+    // The upstream link belongs to the version it documents, not to the window
+    // chrome: an activatable row beats a stray icon in the header.
+    if !def.source_url.is_empty() {
+        let release = adw::ActionRow::builder()
+            .title(tr("Release page", "Страница релиза"))
+            .subtitle(def.source_url.clone())
+            .activatable(true)
+            .build();
+        release.set_subtitle_lines(1);
+        let icon = gtk::Image::from_icon_name("web-browser-symbolic");
+        icon.add_css_class("dim-label");
+        release.add_suffix(&icon);
+        let source_url = def.source_url.clone();
+        release.connect_activated(move |_| {
+            let _ =
+                gio::AppInfo::launch_default_for_uri(&source_url, None::<&gio::AppLaunchContext>);
+        });
+        version_group.add(&release);
+    }
     page.add(&version_group);
 
     let source_group = adw::PreferencesGroup::builder()
@@ -3788,13 +3872,10 @@ fn miner_install_dialog(
     source_group.add(&details);
     page.add(&source_group);
 
-    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    footer.set_margin_top(10);
-    footer.set_margin_bottom(12);
-    footer.set_margin_start(12);
-    footer.set_margin_end(12);
+    let footer = dialog_footer();
     let status = label("", &["caption", "dim-label"]);
     status.set_hexpand(true);
+    status.set_valign(gtk::Align::Center);
     let import = gtk::Button::builder()
         .label(tr("Import binary…", "Импортировать бинарник…"))
         .css_classes(["flat", "pill"])
@@ -3803,6 +3884,7 @@ fn miner_install_dialog(
         .label(tr("Download and install", "Скачать и установить"))
         .css_classes(["suggested-action", "pill"])
         .build();
+    footer.append(&cancel);
     footer.append(&status);
     footer.append(&import);
     footer.append(&download);

@@ -87,8 +87,9 @@ uninstall action yet.
 
 ![Presets](images/presets-en-dark.png)
 
-Presets open in a modal editor with **Cancel**/**Save** in the header and
-**Duplicate**/**Delete…** in the footer. Saving applies immediately: a stopped
+Presets open in a modal editor with **Cancel**/**Save** in the footer and
+**Duplicate**/**Delete…** at the end of the page. Saving applies immediately: a
+stopped
 miner is saved at once; a running miner gets the restart/stop dialog. Deleting
 asks for confirmation, names the preset, and explains that the daemon keeps
 mining with the previously applied preset until another one is applied.

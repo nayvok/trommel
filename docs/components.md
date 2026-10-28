@@ -423,6 +423,7 @@ executes commands. It never blocks the GTK main loop.
 | `miner_install_dialog` | The only miner install UI (catalogue, custom version, download, import) |
 | `gpu_tune_dialog` | Per-card tuning `AdwDialog`, “Now” row, copy to similar/all GPUs |
 | `quick_setup_wizard` | Three-step first-run flow (cards → miner → wallet) |
+| `dialog_footer` / `dialog_body` | Shared dialog chrome: header keeps the title, actions go in a footer below the content |
 | `save_and_apply_with` | Diff + restart/stop alert; `on_cancel` restores optimistic changes |
 | `apply_status` | Renders a `Status` into every widget, including empty states; records sparkline samples |
 | `History` / `sparkline` / `update_sparklines` | Per-GPU five-minute ring buffer and the Cairo sparklines drawn on the GPU bubble floor |
@@ -439,6 +440,9 @@ Rules that are easy to break:
   immediately, and **Cancel** in the restart/stop alert must undo it.
 - The GPU enable switch and the tuning dialog share one profile; there is no
   second source of truth in the UI.
+- Dialogs never put actions in the header: build them with `dialog_footer()` so
+  the title stays clean, actions never scroll away and the primary button sits
+  on the trailing edge.
 - Every user-visible string goes through `tr(en, ru)` (except the screenshot and
   test hooks).
 

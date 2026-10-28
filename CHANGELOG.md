@@ -33,6 +33,13 @@ Changelog; versions use SemVer.
   back to 960 × 760. The primary action sits in the hero footer with a
   play/stop icon, right aligned with the uptime line, and keeps its
   suggested/destructive colouring.
+- **Dialog actions moved into footers.** The preset editor, GPU tuning, miner
+  install, quick setup and error details keep their headers for the title and
+  the window controls only; **Cancel**/**Save**, **Next** and the tuning presets
+  menu now sit in a footer below the content, with the primary action on the
+  right. The tuning dialog's **⋯** menu became a labelled **Presets** menu next
+  to **Save**, and the miner install dialog's release-page icon became a
+  **Release page** row in the version group.
 - **Modal windows became `AdwDialog`s.** The preset editor, miner install, GPU
   tuning, quick setup and error details are presented inside the main window.
   They inherit its style and use libadwaita's spring presentation (the same

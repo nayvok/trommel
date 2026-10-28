@@ -145,14 +145,16 @@ Every coloured value has a word next to it (“installed”, “not installed”
    the dashboard, which keeps the one-line switcher usable down to roughly
    880 px, and the 960×760 default leaves a margin for longer translations.
 3. **Wizards are the only Back/Next surfaces.** They are modal dialogs and keep
-   Cancel/close in the header on every step.
+   Cancel/Back/Next in the footer on every step.
 4. **A page is a place you return to, not a step in a flow.** Drilling down
    always opens a dialog; closing it leaves the page as it was.
 5. **Destructive or restart-triggering actions ask first** with an
    `AdwAlertDialog`: apply/restart while mining, delete a preset, overwrite a
    profile.
-6. **Keyboard:** `Ctrl+Q` quits; `Esc` closes dialogs. Dialog headers drop the
-   automatic close button when they already carry an explicit Cancel/Close.
+6. **Keyboard:** `Ctrl+Q` quits; `Esc` closes dialogs. Dialog headers carry the
+   title and the close control only; the close button is dropped when an explicit
+   Cancel/Close lives in the footer, so a dialog never shows two dismiss
+   controls.
 
 ## Surface inventory
 
@@ -217,8 +219,10 @@ Every coloured value has a word next to it (“installed”, “not installed”
 
 ### Preset editor (modal)
 
-- Header: title, **Cancel**, **Save** (no second close button). Body scrolls;
-  footer holds **Duplicate** and **Delete…**.
+- Header: the preset name and “Preset” subtitle only (no close button: Cancel
+  dismisses). The body scrolls; a footer holds **Cancel** on the left and
+  **Save** on the right, and the page ends with the **Duplicate**/**Delete…**
+  group.
 - Sections: identity (name), miner/version + **Install…**, pool and address,
   wallet/worker, fees (miner read-only unless the catalogue allows an override;
   pool fee editable), miner options, extra arguments. The coin/algorithm and the
@@ -251,8 +255,9 @@ wizard:
 - HTTPS URL, optional SHA-256, archive kind (`tar.gz`, `zip`, raw) and binary
   name;
 - **Import** of a local executable;
-- an upstream source link, the HTTPS-only/SHA-256 note and the error or success
-  message; there is no separate “verified” badge in the dialog;
+- a **Release page** row in the version group, the HTTPS-only/SHA-256 note and
+  the error or success message; there is no separate “verified” badge in the
+  dialog;
 - errors stay in the dialog; success toasts and refreshes the caller.
 
 The catalogue is a convenience, not a gate. Never add a second install UI.
@@ -288,8 +293,9 @@ Rules:
 
 ### GPU tuning (modal)
 
-- Header: card name + **GPU tuning**; a **⋯** menu with **Recommended** and
-  **Profile default**, and **Save** (the close button dismisses without saving).
+- Header: card name only. The footer holds a **Presets** menu
+  (**Recommended**, **Profile default**) on the left and **Save** on the right;
+  the close button dismisses without saving.
 - A **Now** row shows live power/core/memory/temperature so the target can be
   compared with reality.
 - Power limit, core lock + value, memory lock + value. A clock row appears only
@@ -304,8 +310,9 @@ Rules:
 
 ### Quick setup (modal wizard)
 
-Three steps, each with Cancel in the header, Back/Next in the footer and a
-status line at the bottom:
+Three steps, each with a status line and a footer carrying Cancel/Back on the
+left and Next/Start mining on the right; the header shows the wizard title and
+the current step as its subtitle:
 
 1. **Cards** — each detected card: include switch, its own power limit, stock
    limit in the subtitle. **Apply 80 %** fills the ticked cards, expands them
@@ -407,8 +414,9 @@ two-GPU rig with deterministic XDG directories. Conventions:
 - New dialogs are `AdwDialog`, never a separate `GtkWindow`: they inherit the
   window style and use libadwaita's spring presentation instead of the
   compositor's window-open animation. They must be modal, close on `Esc`, and
-  keep their actions in the header (Cancel) plus a footer for
-  destructive/secondary actions.
+  keep their header for the title and the close control, and put every action
+  in a footer below the content (secondary on the left, primary on the right).
 - Shared UI primitives: `label()`, `spin_row()`, `switch_row()`, `sync_lock_row()`,
   `gpu_stat()`, `gpu_chip()`, `set_status_text()`, `string_list()`, `clear_box()`,
-  `clear_flow()`. Reuse them rather than duplicating styling.
+  `clear_flow()`, `dialog_footer()`, `dialog_body()`. Reuse them rather than
+  duplicating styling.

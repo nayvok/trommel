@@ -537,7 +537,7 @@ def phase_install(ui: UI) -> None:
     ui.check(frame is not None, "miner install dialog opens")
     if frame is None:
         return
-    # Let the modal window finish mapping before clicking its header button.
+    # Let the modal window finish mapping before clicking its footer button.
     time.sleep(1.0)
     for name in ("Cancel", "Download and install", "Import binary…"):
         ui.check(ui.find(frame, "button", name) is not None, f"install button {name}")
