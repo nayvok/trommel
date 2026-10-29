@@ -129,9 +129,24 @@ pub fn proc_start_time(pid: u32) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
-/// `true` while `/proc/<pid>` exists (the PID may have been reused).
+/// `true` while the PID is a live process.
+///
+/// A zombie still has a `/proc/<pid>` entry but cannot run or be signalled; in
+/// a container whose PID 1 does not reap orphans, a killed miner stays a
+/// zombie. Treating it as alive used to make emergency-stop keep the state and
+/// fail forever.
 pub fn pid_alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
+    let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let Some(rest) = text.rsplit_once(')').map(|(_, rest)| rest) else {
+        return false;
+    };
+    match rest.split_whitespace().next() {
+        Some("Z") | Some("X") | Some("x") => false,
+        Some(_) => true,
+        None => false,
+    }
 }
 
 fn absolute(path: &Path) -> PathBuf {
@@ -351,6 +366,18 @@ mod tests {
     #[test]
     fn current_process_is_not_a_miner() {
         assert!(!pid_matches_miner(std::process::id()));
+    }
+
+    #[test]
+    fn a_zombie_is_not_alive() {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!pid_alive(child.id()), "an unreaped child is a zombie");
+        let _ = child.wait();
     }
 
     #[test]
