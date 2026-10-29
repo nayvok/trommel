@@ -51,8 +51,9 @@ cp "$ROOT/scripts/fixtures/fake-nvidia-smi.py" "$WORK/bin/nvidia-smi"
 cp "$ROOT/scripts/fixtures/fake-oc-helper.sh" "$WORK/bin/oc-helper"
 chmod +x "$WORK/bin/nvidia-smi" "$WORK/bin/oc-helper"
 
-cat > "$WORK/bin/wildrig-multi" <<'SH'
+cat > "$WORK/bin/wildrig-multi" <<SH
 #!/bin/bash
+printf '%s\n' "\$*" > "$WORK/miner-args.txt"
 echo "[12:00:00] hashrate: 10s: 125.0 60s: 125.0 15m: 124.0 TH/s"
 echo "[12:00:00] Shares: 512 accepted, 2 rejected"
 while true; do sleep 2; done
@@ -209,6 +210,217 @@ sleep 1
 if [ ! -f "$WORK/state/trommel/oc-snapshot.json" ]; then pass "snapshot cleared"; else fail "snapshot not cleared"; fi
 if grep -q "reset --gpu GPU-11111111.*--pl 350" "$WORK/oc.log" 2>/dev/null; then pass "stock power limit restored"; else fail "stock restore missing"; tail -10 "$WORK/oc.log" 2>/dev/null; fi
 if grep -q "reset --gpu GPU-22222222.*--pl 170" "$WORK/oc.log" 2>/dev/null; then pass "second card restored to its own snapshot"; else fail "second card restore missing"; fi
+
+step "Per-GPU participation excludes a card from the miner"
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+# The apply-and-restart test above activated the second preset; the
+# participation checks below edit the main one.
+cfg["active_preset"] = "pearl-wildrig"
+cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = False
+path.write_text(json.dumps(cfg, indent=2))
+PY
+"$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
+: > "$WORK/miner-args.txt"
+: > "$WORK/oc.log"
+if "$BIN/trommel" start > "$WORK/participation-start.out" 2>&1; then
+    pass "start with one excluded card"
+else
+    fail "start failed with one excluded card"; cat "$WORK/participation-start.out"
+fi
+sleep 2
+if python3 - "$WORK" <<'PY'
+import pathlib, sys
+work = pathlib.Path(sys.argv[1])
+args = (work / "miner-args.txt").read_text().split()
+assert "--gpu-list" in args, args
+index = args.index("--gpu-list")
+assert args[index + 1] == "0", args[index:index + 2]
+print("  miner args:", " ".join(args[index:index + 2]))
+PY
+then
+    pass "the miner received only the participating card"
+else
+    fail "the miner device list is wrong"
+fi
+if grep -q "apply --gpu GPU-22222222" "$WORK/oc.log"; then
+    fail "the excluded card was tuned"
+else
+    pass "the excluded card was not tuned"
+fi
+if "$BIN/trommel" status --json 2>/dev/null | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+by_index = {card["index"]: card for card in s["participation"]}
+assert by_index[0]["enabled"] and by_index[0]["mining"], by_index
+assert not by_index[1]["enabled"] and not by_index[1]["mining"], by_index
+assert s["total"]["gpus_enabled"] == 1, s["total"]
+assert s["total"]["gpus_total"] == 2, s["total"]
+assert any("Excluded" in w or "исключ" in w.lower() for w in s["warnings"]), s["warnings"]
+print("  excluded card:", by_index[1])
+'; then
+    pass "status marks the excluded card and counts it out"
+else
+    fail "participation status is wrong"
+fi
+"$BIN/trommel" stop >/dev/null 2>&1 || true
+if grep -q "reset --gpu GPU-22222222" "$WORK/oc.log"; then
+    fail "stop tried to restore the never-tuned excluded card"
+else
+    pass "stop restored only the tuned card"
+fi
+
+step "Excluding a previously tuned card puts its stock back"
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+cfg["behavior"]["restore_stock_on_stop"] = False
+cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = True
+path.write_text(json.dumps(cfg, indent=2))
+PY
+"$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
+: > "$WORK/oc.log"
+"$BIN/trommel" start >/dev/null 2>&1
+sleep 2
+if grep -q "apply --gpu GPU-22222222.*--pl 130" "$WORK/oc.log"; then
+    pass "both cards were tuned before the exclusion"
+else
+    fail "the second card was not tuned before the exclusion"
+fi
+"$BIN/trommel" stop >/dev/null 2>&1 || true
+[ -f "$WORK/state/trommel/oc-snapshot.json" ] \
+    && pass "restore-off keeps the snapshot for the next session" \
+    || fail "restore-off lost the snapshot"
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = False
+path.write_text(json.dumps(cfg, indent=2))
+PY
+"$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
+: > "$WORK/oc.log"
+: > "$WORK/miner-args.txt"
+"$BIN/trommel" start >/dev/null 2>&1
+sleep 2
+if grep -q "reset --gpu GPU-22222222.*--pl 170" "$WORK/oc.log"; then
+    pass "the newly excluded card was returned to its stock limit"
+else
+    fail "the newly excluded card kept its tuning"
+fi
+if grep -q "apply --gpu GPU-22222222" "$WORK/oc.log"; then
+    fail "the newly excluded card was tuned again"
+else
+    pass "the newly excluded card was not tuned"
+fi
+grep -q -- "--gpu-list 0" "$WORK/miner-args.txt" \
+    && pass "the restart used the reduced device list" \
+    || fail "the reduced device list is missing"
+"$BIN/trommel" stop >/dev/null 2>&1 || true
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+cfg["behavior"]["restore_stock_on_stop"] = True
+cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = True
+path.write_text(json.dumps(cfg, indent=2))
+PY
+"$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
+"$BIN/trommel" oc restore --mode snapshot >/dev/null 2>&1 \
+    && pass "explicit restore cleaned the restore-off session" \
+    || fail "explicit restore failed after the restore-off session"
+[ ! -f "$WORK/state/trommel/oc-snapshot.json" ] \
+    && pass "no snapshot left after the explicit restore" \
+    || fail "snapshot survived the explicit restore"
+
+step "Emergency-stop restores only the participating card"
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = False
+path.write_text(json.dumps(cfg, indent=2))
+PY
+"$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
+: > "$WORK/oc.log"
+"$BIN/trommel" start >/dev/null 2>&1
+sleep 2
+MINER_PID=$(pgrep -f "$WORK/bin/wildrig-multi" | head -1)
+[ -n "$MINER_PID" ] && pass "miner is running with one excluded card" \
+    || fail "miner did not start with one excluded card"
+kill -9 "$DAEMON_PID" 2>/dev/null || true
+sleep 1
+"$BIN/trommel" emergency-stop --reason=manual > "$WORK/participation-emergency.out" 2>&1 \
+    && pass "emergency-stop handled the reduced session" \
+    || { fail "emergency-stop failed"; cat "$WORK/participation-emergency.out"; }
+kill -0 "$MINER_PID" 2>/dev/null \
+    && fail "the excluded-session miner survived emergency-stop" \
+    || pass "emergency-stop stopped the reduced-session miner"
+grep -q "reset --gpu GPU-11111111.*--pl 350" "$WORK/oc.log" \
+    && pass "emergency-stop restored the participating card" \
+    || fail "emergency-stop did not restore the participating card"
+if grep -q "reset --gpu GPU-22222222" "$WORK/oc.log"; then
+    fail "emergency-stop touched the excluded card"
+else
+    pass "emergency-stop left the excluded card alone"
+fi
+[ ! -f "$WORK/state/trommel/oc-snapshot.json" ] \
+    && pass "emergency-stop cleared the reduced snapshot" \
+    || fail "reduced snapshot survived emergency-stop"
+setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
+DAEMON_PID=$!
+sleep 2
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = True
+path.write_text(json.dumps(cfg, indent=2))
+PY
+"$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
+
+step "A miner without device selection refuses a partial rig"
+"$BIN/trommel" miner import custom-b2 1.0.0 "$WORK/bin/wildrig-multi" >/dev/null 2>&1 \
+    && pass "custom miner imported for the capability test" \
+    || fail "custom miner import failed"
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+preset = cfg["presets"]["pearl-wildrig"]
+preset["miner"] = "custom-b2"
+preset["miner_version"] = "1.0.0"
+cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = False
+path.write_text(json.dumps(cfg, indent=2))
+PY
+"$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
+: > "$WORK/miner-args.txt"
+if "$BIN/trommel" start > "$WORK/unsupported.out" 2>&1; then
+    fail "start succeeded although the miner cannot select devices"
+else
+    pass "start is refused for a partial rig on an unsupported miner"
+fi
+grep -q "custom-b2" "$WORK/unsupported.out" \
+    && pass "the error names the miner" \
+    || { fail "the error does not name the miner"; cat "$WORK/unsupported.out"; }
+[ ! -s "$WORK/miner-args.txt" ] \
+    && pass "no miner process was spawned" \
+    || fail "the unsupported miner was spawned anyway"
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+preset = cfg["presets"]["pearl-wildrig"]
+preset["miner"] = "wildrig"
+preset["miner_version"] = "0.51.8"
+cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = True
+cfg.get("miner_installs", {}).pop("custom-b2@1.0.0", None)
+path.write_text(json.dumps(cfg, indent=2))
+PY
+"$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
 
 step "Preset commands"
 "$BIN/trommel" preset list | grep -q "pearl-wildrig" && pass "preset list" || fail "preset list"

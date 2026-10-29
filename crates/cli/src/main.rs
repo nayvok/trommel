@@ -802,8 +802,17 @@ fn print_human(status: &Status) {
         );
     } else {
         for gpu in &status.gpus {
+            let role = status
+                .participation
+                .iter()
+                .find(|card| card.uuid == gpu.uuid);
+            let role_text = match role {
+                Some(card) if !card.enabled => " · исключена",
+                Some(card) if card.mining => " · майнит",
+                _ => "",
+            };
             println!(
-                "GPU #{}:   {} · {} °C · {} W · вентилятор {}% · {} / {} MHz · {}",
+                "GPU #{}:   {} · {} °C · {} W · вентилятор {}% · {} / {} MHz · {}{}",
                 gpu.index,
                 gpu.name,
                 gpu.temp_c
@@ -821,7 +830,8 @@ fn print_human(status: &Status) {
                 gpu.mem_mhz
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "—".into()),
-                gpu.uuid
+                gpu.uuid,
+                role_text
             );
         }
     }

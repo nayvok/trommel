@@ -9,7 +9,7 @@ desktop into a pile of shell scripts.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-en-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/images/dashboard-en-light.png">
-  <img src="docs/images/dashboard-en-dark.png" alt="Trommel dashboard with two NVIDIA GPUs mining at 125.8 TH/s" width="960">
+  <img src="docs/images/dashboard-en-dark.png" alt="Trommel dashboard with two NVIDIA GPUs and the rig totals" width="960">
 </picture>
 
 <sub>Dashboard with two GPUs. The image follows your system colour scheme; the dark
@@ -29,6 +29,10 @@ arguments are hidden until you turn them on.
 - **Multi-GPU dashboard** — per-card temperature, power, fan, clocks and
   utilization; rig power and the hottest card's temperature for the whole rig,
   each with a per-card breakdown in its tooltip.
+- **Per-GPU participation** — switch a card off to exclude it from the active
+  miner: it is not passed to the miner and is not tuned, and the card is marked
+  `excluded`. WildRig, SRBMiner and OneZero use their documented device flags; a
+  miner without one refuses a partial rig instead of mining on every card.
 - **Presets** — bundle the coin/algorithm (Pearl/pearlhash in the current
   catalogue), pool, wallet, worker, miner version and miner-specific options.
   GPU settings are edited in Settings, so switching presets does not re-enter
@@ -125,7 +129,8 @@ miner are ready. It opens a three-step wizard for a 1–3 card rig:
 
 1. **Cards** — tick the cards to mine on and give each one a power limit
    (**Apply 80 %** fills the ticked cards from their stock limit, expands them
-   and shows the applied watts; **Use auto** = no limit).
+   and shows the applied watts; **Use auto** = no limit). An unticked card is
+   excluded from mining and is not tuned.
 2. **Miner** — choose a miner and version, then **Install…**: the dialog can
    download a catalogue version, take a version name that is newer than the
    catalogue, or import a local binary. One installation serves every preset.

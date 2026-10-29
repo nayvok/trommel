@@ -136,6 +136,10 @@ pub struct MinerDef {
     pub per_gpu_stats: bool,
     #[serde(default)]
     pub per_gpu_devices: bool,
+    /// Documented flag that selects the devices a miner may use (for example
+    /// `--gpu-id`). Empty when the miner cannot choose devices.
+    #[serde(default)]
+    pub device_flag: String,
     #[serde(default)]
     pub default_options: BTreeMap<String, String>,
     #[serde(default)]
@@ -166,6 +170,15 @@ impl MinerDef {
 
     pub fn option(&self, key: &str) -> Option<&MinerOption> {
         self.options.iter().find(|o| o.key == key)
+    }
+
+    /// True when the catalogue documents a flag that selects devices.
+    ///
+    /// Both halves matter: a miner may report per-GPU statistics and still
+    /// have no way to choose which cards it mines on. `per_gpu_devices` alone
+    /// is not proof, so the flag must be present as well.
+    pub fn selects_devices(&self) -> bool {
+        self.per_gpu_devices && !self.device_flag.trim().is_empty()
     }
 
     pub fn default_options(&self) -> BTreeMap<String, serde_json::Value> {
@@ -388,5 +401,27 @@ mod tests {
         let cfg = Config::default();
         let preset = cfg.preset().unwrap().clone();
         assert_eq!(install_status(&cfg, &preset), InstallStatus::NotInstalled);
+    }
+
+    #[test]
+    fn documented_device_flags_match_upstream() {
+        let cases = [
+            ("wildrig", "--gpu-list"),
+            ("srbminer", "--gpu-id"),
+            ("onezero", "--devices"),
+        ];
+        for (id, flag) in cases {
+            let def = miner(id).expect("catalogue entry");
+            assert!(def.per_gpu_devices, "{id} should support device selection");
+            assert_eq!(def.device_flag, flag, "{id}");
+            assert!(def.selects_devices(), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_miner_without_a_documented_flag_does_not_advertise_selection() {
+        let mut def = miner("wildrig").unwrap().clone();
+        def.device_flag.clear();
+        assert!(!def.selects_devices());
     }
 }

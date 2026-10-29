@@ -18,7 +18,9 @@ fee_pct = 0.0
 fee_configurable = false
 fee_flag = ""
 per_gpu_stats = false
-per_gpu_devices = false
+# `-d/--gpu-list` and `--print-devices` are documented in the upstream README.
+per_gpu_devices = true
+device_flag = "--gpu-list"
 default_options = { fan_speed = "0" }
 
 [[miners.versions]]
@@ -85,7 +87,9 @@ fee_pct = 0.85
 fee_configurable = false
 fee_flag = ""
 per_gpu_stats = true
+# `--gpu-id` selects ids printed by `--list-devices`; comma-separated.
 per_gpu_devices = true
+device_flag = "--gpu-id"
 default_options = { fan_speed = "0" }
 
 [[miners.versions]]
@@ -127,7 +131,9 @@ fee_pct = 1.0
 fee_configurable = false
 fee_flag = ""
 per_gpu_stats = true
+# `-d/--devices` is a comma-separated list of CUDA devices.
 per_gpu_devices = true
+device_flag = "--devices"
 default_options = {}
 
 [[miners.versions]]

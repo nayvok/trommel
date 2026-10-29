@@ -38,7 +38,7 @@ do not move GTK types into `trommel-core` or the daemon.
 | `cargo test --workspace` | Unit tests: config/migration, args, parsers, OC validation, status, D-Bus helpers | Rust only |
 | `cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings` | No new lints, including GUI code | GTK dev libs |
 | `cargo fmt --check` | Formatting | Rust only |
-| `./scripts/e2e.sh` | Full CLI lifecycle on a private bus with fake GPU, helper and miner, including SIGKILL/emergency-stop, startup recovery, helper lease, partial apply, restore retry, custom binary, benchmark external guard, restart budget, guard and lost session bus | Python 3, dbus |
+| `./scripts/e2e.sh` | Full CLI lifecycle on a private bus with fake GPU, helper and miner, including per-GPU participation (device arguments, excluded card untouched, restore, refusal), SIGKILL/emergency-stop, startup recovery, helper lease, partial apply, restore retry, custom binary, benchmark external guard, restart budget, guard and lost session bus | Python 3, dbus |
 | `./scripts/test-mcp.sh` | MCP protocol, read-only default, write gating, redaction | Python 3 |
 | `./scripts/ui-smoke.sh` | Critical GUI path through AT-SPI (quick setup, start/stop, settings, editor, tuning, install) | Wayland session, AT-SPI |
 | `./scripts/first-run-smoke.sh` | Pristine install: no config, no wallet, no miner, one fake GPU | Wayland session, AT-SPI |

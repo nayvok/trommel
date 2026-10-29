@@ -110,6 +110,12 @@ do not expose the bus name on the system bus or through a socket.
 
 - The supervisor never spawns a second miner and never kills an external miner
   without user action; Start explains the conflict instead.
+- Per-GPU participation never falls back to “all cards”. If one card is
+  excluded and the selected miner has no documented device-selection flag,
+  Start fails before any helper call; the flag comes from the catalogue, not
+  from config or a prompt. The device list contains validated `nvidia-smi`
+  indices only, and a benchmark entry for such a miner fails the same way.
+  See [ADR 0007](adr/0007-per-gpu-participation.md).
 - A PID is signalled only when `/proc/<pid>/exe`/`cmdline` matches the absolute
   `state.miner_path` recorded at spawn. The old name-only check is used only for
   legacy state files without a path: PIDs are reused and a custom binary has an
@@ -150,6 +156,10 @@ do not expose the bus name on the system bus or through a socket.
   Stop resets locks to the driver default. A snapshot that already had a
   non-default power limit is flagged (`was_tuned`) and the restore dialog offers
   the driver default as a second target.
+- Device selection uses the miner's documented flag and the `nvidia-smi`
+  index order. A heterogeneous or reordered rig can enumerate devices
+  differently; verify the result with a benchmark. Trommel does not guess a
+  mapping or silently switch to a different card.
 - Clock locks are verified under load: memory is decisive (a mismatch stops the
   miner), core is a warning because the driver may fluctuate. An idle card can
   legitimately sit at the locked memory frequency, so the check is deferred

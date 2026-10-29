@@ -260,6 +260,7 @@ struct App {
     hero_line: gtk::Label,
     hero_meta: gtk::Label,
     pill: gtk::Label,
+    total_gpus: adw::ActionRow,
     total_power: adw::ActionRow,
     total_temp: adw::ActionRow,
     gpu_host: gtk::Box,
@@ -720,6 +721,10 @@ fn build_ui(app: &adw::Application) {
     let totals_group = adw::PreferencesGroup::builder()
         .title(tr("Totals", "Итого"))
         .build();
+    let total_gpus = adw::ActionRow::builder()
+        .title(tr("Cards", "Карты"))
+        .subtitle("—")
+        .build();
     let total_power = adw::ActionRow::builder()
         .title(tr("Power", "Мощность"))
         .subtitle("—")
@@ -728,6 +733,7 @@ fn build_ui(app: &adw::Application) {
         .title(tr("Max temperature", "Макс. температура"))
         .subtitle("—")
         .build();
+    totals_group.add(&total_gpus);
     totals_group.add(&total_power);
     totals_group.add(&total_temp);
     dashboard_box.append(&totals_group);
@@ -811,6 +817,7 @@ fn build_ui(app: &adw::Application) {
         hero_line,
         hero_meta,
         pill,
+        total_gpus,
         total_power,
         total_temp,
         gpu_host,
@@ -3117,8 +3124,8 @@ fn quick_setup_wizard(app: &Rc<App>) {
     let cards_group = adw::PreferencesGroup::builder()
         .title(tr("Cards to mine on", "Карты для майнинга"))
         .description(tr(
-            "Each card keeps its own power limit. Untick a card to leave it untouched.",
-            "У каждой карты свой лимит питания. Снимите галочку, чтобы не трогать карту.",
+            "Each card keeps its own power limit. Untick a card to exclude it from mining: it is not passed to the miner and is not tuned.",
+            "У каждой карты свой лимит питания. Снимите галочку, чтобы исключить карту из майнинга: она не передаётся майнеру и не разгоняется.",
         ))
         .build();
     for gpu in &gpus {
@@ -4347,7 +4354,7 @@ fn save_and_apply(app: &Rc<App>) {
 
 /// Apply the draft. While mining, a restart/stop confirmation is shown; when
 /// it is cancelled, `on_cancel` restores whatever the caller changed
-/// optimistically (the GPU enable switch is the main case).
+/// optimistically (the GPU participation switch is the main case).
 fn save_and_apply_with(app: &Rc<App>, on_cancel: Option<Rc<dyn Fn()>>) {
     // The editor/settings callbacks commit first; this only decides the mode.
     let draft = app.config.borrow().clone();
@@ -4455,7 +4462,7 @@ fn handle_event(app: &Rc<App>, event: Ev) {
         }
         Ev::Busy(busy) => {
             app.action_button
-                .set_sensitive(!busy && !start_blocked(app));
+                .set_sensitive(!busy && start_block_reason(app).is_none());
             if busy {
                 set_action_text(
                     &app.action_button,
@@ -4877,7 +4884,7 @@ fn gpu_stat(
     box_
 }
 
-fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool) -> gtk::Widget {
+fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool, status: &Status) -> gtk::Widget {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
     card.add_css_class("trommel-gpu-card");
     if wide {
@@ -4913,12 +4920,12 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool) -> gtk::Widget {
     toggle.set_active(enabled);
     toggle.set_valign(gtk::Align::Center);
     toggle.set_tooltip_text(Some(&tr(
-        "Enable this GPU in the active profile",
-        "Включить эту карту в активном профиле",
+        "Mine with this GPU. An excluded card is not passed to the miner and is not tuned.",
+        "Майнить на этой карте. Исключённая карта не передаётся майнеру и не разгоняется.",
     )));
     let switch_label = tr(
-        &format!("GPU {} enable", gpu.index),
-        &format!("Карта {} включена", gpu.index),
+        &format!("GPU {} mining", gpu.index),
+        &format!("Карта {} в майнинге", gpu.index),
     );
     toggle.update_property(&[gtk::accessible::Property::Label(&switch_label)]);
     {
@@ -5130,7 +5137,30 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool) -> gtk::Widget {
     }
     card.append(&stats);
 
+    let role = status
+        .participation
+        .iter()
+        .find(|card| card.uuid == gpu.uuid);
+    let role_enabled = role.map(|card| card.enabled).unwrap_or(enabled);
+    let mining = role.map(|card| card.mining).unwrap_or(false);
+    // The chip describes the applied session, not the draft switch. A card
+    // whose switch was just turned off still says "mining" until Apply.
+    let (role_text, role_class) = if status.state.external {
+        (tr("external", "вручную"), "trommel-warm")
+    } else if !role_enabled {
+        (tr("excluded", "исключена"), "trommel-muted")
+    } else if mining {
+        (tr("mining", "майнит"), "success")
+    } else if status.state.running {
+        (tr("not mining", "не майнит"), "trommel-warm")
+    } else {
+        (String::new(), "")
+    };
+
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    if !role_text.is_empty() {
+        footer.append(&gpu_chip(&role_text, role_class));
+    }
     footer.append(&gpu_chip(&tuning_label, "trommel-muted"));
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
@@ -5149,7 +5179,8 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool) -> gtk::Widget {
     card.upcast()
 }
 
-fn refresh_gpu_cards(app: &Rc<App>, gpus: &[GpuStats]) {
+fn refresh_gpu_cards(app: &Rc<App>, status: &Status) {
+    let gpus = &status.gpus;
     // The registry only holds weak refs, but the old areas are about to be
     // destroyed, so drop their entries now instead of on the next tick.
     app.sparklines.borrow_mut().clear();
@@ -5166,7 +5197,8 @@ fn refresh_gpu_cards(app: &Rc<App>, gpus: &[GpuStats]) {
         return;
     }
     if gpus.len() == 1 {
-        app.gpu_host.append(&make_gpu_card(app, &gpus[0], true));
+        app.gpu_host
+            .append(&make_gpu_card(app, &gpus[0], true, status));
         return;
     }
     // WrapBox rather than FlowBox: on a wide window the cards share the row
@@ -5177,7 +5209,7 @@ fn refresh_gpu_cards(app: &Rc<App>, gpus: &[GpuStats]) {
         .justify(adw::JustifyMode::Fill)
         .build();
     for gpu in gpus {
-        wrap.append(&make_gpu_card(app, gpu, false));
+        wrap.append(&make_gpu_card(app, gpu, false, status));
     }
     app.gpu_host.append(&wrap);
 }
@@ -5190,7 +5222,7 @@ fn gpu_chip(text: &str, class: &str) -> gtk::Label {
     chip
 }
 
-fn has_enabled_gpu(app: &Rc<App>, gpus: &[GpuStats]) -> bool {
+fn has_selected_gpu(app: &Rc<App>, gpus: &[GpuStats]) -> bool {
     if gpus.is_empty() {
         return true;
     }
@@ -5203,12 +5235,28 @@ fn has_enabled_gpu(app: &Rc<App>, gpus: &[GpuStats]) -> bool {
     gpus.iter().any(|gpu| profile.tuning_for(&gpu.uuid).enabled)
 }
 
-fn start_blocked(app: &Rc<App>) -> bool {
+/// Why Start is disabled, or `None` when it is allowed.
+///
+/// Besides "every card is excluded", this catches the case the daemon would
+/// refuse anyway: a partial exclusion on a miner without a documented device
+/// flag. Explaining it in the button tooltip is better than a failed start.
+fn start_block_reason(app: &Rc<App>) -> Option<String> {
     let status = app.status.borrow();
-    match status.as_ref() {
-        Some(status) if !status.state.running => !has_enabled_gpu(app, &status.gpus),
-        _ => false,
+    let status = status.as_ref()?;
+    if status.state.running || status.gpus.is_empty() {
+        return None;
     }
+    if !has_selected_gpu(app, &status.gpus) {
+        return Some(tr(
+            "All GPUs are excluded from mining; enable one on the dashboard before starting",
+            "Все карты исключены из майнинга — включите хотя бы одну на дашборде перед запуском",
+        ));
+    }
+    let cfg = app.config.borrow().clone();
+    let preset = cfg.preset()?;
+    trommel_core::miners::device_plan(&cfg, preset, &status.gpus)
+        .err()
+        .map(|err| err.to_string())
 }
 
 /// Keep the hero action's visible text and its accessible name in sync: the
@@ -5219,15 +5267,9 @@ fn set_action_text(button: &gtk::Button, label: &gtk::Label, text: &str) {
     button.update_property(&[gtk::accessible::Property::Label(text)]);
 }
 
-fn update_start_sensitivity(app: &Rc<App>, blocked: bool) {
-    app.action_button.set_sensitive(!blocked);
-    let tooltip = blocked.then(|| {
-        tr(
-            "All GPUs are disabled; enable one on the dashboard before starting",
-            "Все карты выключены — включите хотя бы одну на дашборде перед запуском",
-        )
-    });
-    app.action_button.set_tooltip_text(tooltip.as_deref());
+fn update_start_sensitivity(app: &Rc<App>, reason: Option<String>) {
+    app.action_button.set_sensitive(reason.is_none());
+    app.action_button.set_tooltip_text(reason.as_deref());
 }
 
 /// Tooltip text: one header line plus one line per card, when there is any.
@@ -5244,7 +5286,7 @@ fn apply_status(app: &Rc<App>, status: Status) {
     // The sparklines read this rolling window; a fresh status may repeat the
     // previous timestamp, in which case `record` replaces the last sample.
     app.history.borrow_mut().record(&status.gpus, status.ts);
-    let blocked = !running && !has_enabled_gpu(app, &status.gpus);
+    let blocked = start_block_reason(app);
     update_start_sensitivity(app, blocked);
     let action_text = if running {
         tr("Stop", "Остановить")
@@ -5343,6 +5385,56 @@ fn apply_status(app: &Rc<App>, status: Status) {
                     warning.to_lowercase().contains("wallet") || warning.contains("Кошелёк")
                 })),
     );
+    let selected = status.total.gpus_enabled;
+    let total = status.total.gpus_total;
+    let role_word = if status.state.external {
+        tr("external miner", "внешний майнер")
+    } else if running {
+        tr("mining", "майнят")
+    } else {
+        tr("selected", "выбрано")
+    };
+    let cards_subtitle = if status.state.external {
+        format!(
+            "{selected} {} {total} · {}",
+            tr("of", "из"),
+            tr("external miner", "внешний майнер")
+        )
+    } else {
+        format!("{selected} {} {total} {role_word}", tr("of", "из"))
+    };
+    app.total_gpus.set_subtitle(&cards_subtitle);
+    let participation_lines: Vec<String> = status
+        .participation
+        .iter()
+        .map(|card| {
+            format!(
+                "{} #{} · {}",
+                tr("Card", "Карта"),
+                card.index,
+                if card.enabled {
+                    tr("selected", "выбрана")
+                } else {
+                    tr("excluded", "исключена")
+                }
+            )
+        })
+        .collect();
+    let participation_header = if status.state.external {
+        tr(
+            "The external miner selects its own devices; these switches apply to a Trommel session.",
+            "Внешний майнер сам выбирает карты; эти переключатели действуют только на сессию Trommel.",
+        )
+    } else {
+        tr(
+            "Cards passed to the active miner. An excluded card is not tuned and does not mine.",
+            "Карты, передаваемые активному майнеру. Исключённая карта не разгоняется и не майнит.",
+        )
+    };
+    app.total_gpus.set_tooltip_text(Some(&card_tooltip(
+        &participation_header,
+        &participation_lines,
+    )));
     app.total_power.set_subtitle(&format!(
         "{} W",
         status
@@ -5361,8 +5453,8 @@ fn apply_status(app: &Rc<App>, status: Status) {
     // where the reader can check how the aggregate was formed.
     app.total_power.set_tooltip_text(Some(&card_tooltip(
         &tr(
-            "Whole rig: power.draw summed over every detected card, including disabled ones.",
-            "Весь риг: power.draw, просуммированный по всем найденным картам, включая отключённые.",
+            "Whole rig: power.draw summed over every detected card, including excluded ones.",
+            "Весь риг: power.draw, просуммированный по всем найденным картам, включая исключённые.",
         ),
         &power_lines,
     )));
@@ -5382,8 +5474,8 @@ fn apply_status(app: &Rc<App>, status: Status) {
         .collect();
     app.total_temp.set_tooltip_text(Some(&card_tooltip(
         &tr(
-            "Hottest card's temperature.gpu, not an average.",
-            "temperature.gpu самой горячей карты, не среднее.",
+            "Hottest card's temperature.gpu, not an average; excluded cards still count.",
+            "temperature.gpu самой горячей карты, не среднее; исключённые карты тоже учитываются.",
         ),
         &temp_lines,
     )));
@@ -5483,8 +5575,16 @@ fn apply_status(app: &Rc<App>, status: Status) {
     }
 
     let signature = format!(
-        "{:?}|{}",
+        "{:?}|{}|{}|{}|{}",
         app.config.borrow().gpu_profile(),
+        status.state.running,
+        status.state.external,
+        status
+            .participation
+            .iter()
+            .map(|card| format!("{}:{}:{}", card.index, card.enabled, card.mining))
+            .collect::<Vec<_>>()
+            .join("|"),
         status
             .gpus
             .iter()
@@ -5505,7 +5605,7 @@ fn apply_status(app: &Rc<App>, status: Status) {
     );
     if *app.gpu_sig.borrow() != signature {
         *app.gpu_sig.borrow_mut() = signature;
-        refresh_gpu_cards(app, &status.gpus);
+        refresh_gpu_cards(app, &status);
     }
     update_sparklines(app);
     *app.status.borrow_mut() = Some(status);

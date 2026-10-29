@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::catalog;
-use crate::config::Config;
+use crate::config::{Config, GpuProfile};
 use crate::i18n::tr;
 use crate::minerapi::{self, MinerStats};
 use crate::nvidia::{self, GpuStats};
@@ -53,6 +53,18 @@ pub struct TotalView {
     pub gpus_total: u32,
 }
 
+/// One card's role in the applied session. `enabled` is the profile switch;
+/// `mining` is true only while this card is part of a running session that
+/// Trommel owns (not an external miner, whose device set is unknown).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct GpuParticipation {
+    pub index: u32,
+    pub uuid: String,
+    pub name: String,
+    pub enabled: bool,
+    pub mining: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct OcView {
     /// Tuning from the current snapshot was applied (or an apply was started).
@@ -84,6 +96,9 @@ pub struct Status {
     pub preset: Option<String>,
     pub miner_info: MinerInfo,
     pub gpus: Vec<GpuStats>,
+    /// Explicit role of every detected card in the applied profile/session.
+    #[serde(default)]
+    pub participation: Vec<GpuParticipation>,
     /// First GPU, kept for older clients.
     pub gpu: Option<GpuStats>,
     pub gpu_error: Option<String>,
@@ -165,16 +180,83 @@ fn enabled_gpu_warning(cfg: &Config, gpus: &[GpuStats]) -> Option<String> {
         return None;
     }
     Some(tr(
-        "No GPU is enabled in the active profile",
-        "В активном профиле не включено ни одной видеокарты",
+        "No GPU is selected for mining",
+        "Ни одна видеокарта не выбрана для майнинга",
     ))
+}
+
+/// Build the per-card role list. `mining` belongs to the running session, not
+/// the draft: a switch change must not make a card look idle before Apply.
+fn participation_view(
+    profile: Option<&GpuProfile>,
+    gpus: &[GpuStats],
+    running_ours: bool,
+) -> Vec<GpuParticipation> {
+    gpus.iter()
+        .map(|gpu| {
+            let enabled = profile
+                .map(|profile| profile.tuning_for(&gpu.uuid).enabled)
+                .unwrap_or(true);
+            GpuParticipation {
+                index: gpu.index,
+                uuid: gpu.uuid.clone(),
+                name: gpu.name.clone(),
+                enabled,
+                mining: enabled && running_ours,
+            }
+        })
+        .collect()
+}
+
+/// User-facing notes for a partial participation: which cards are excluded
+/// and whether the selected miner can honour that at all.
+fn participation_warnings(cfg: &Config, gpus: &[GpuStats]) -> Vec<String> {
+    let Some(profile) = cfg.gpu_profile() else {
+        return Vec::new();
+    };
+    let excluded: Vec<&GpuStats> = gpus
+        .iter()
+        .filter(|gpu| !profile.tuning_for(&gpu.uuid).enabled)
+        .collect();
+    if excluded.is_empty() || excluded.len() == gpus.len() {
+        return Vec::new();
+    }
+    let en = excluded
+        .iter()
+        .map(|gpu| format!("GPU #{}", gpu.index))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ru = excluded
+        .iter()
+        .map(|gpu| format!("карта #{}", gpu.index))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut warnings = vec![tr(
+        &format!("Excluded from mining: {en}"),
+        &format!("Исключены из майнинга: {ru}"),
+    )];
+    if let Some(preset) = cfg.preset() {
+        if !crate::miners::supports_device_selection(&preset.miner) {
+            warnings.push(tr(
+                &format!(
+                    "The selected miner ({}) cannot choose GPUs; enable every card or choose a miner that documents device selection",
+                    preset.miner
+                ),
+                &format!(
+                    "Выбранный майнер ({}) не умеет выбирать видеокарты; включите все карты или выберите майнер с поддержкой выбора устройств",
+                    preset.miner
+                ),
+            ));
+        }
+    }
+    warnings
 }
 
 /// Rig power: `power.draw` summed over every detected card.
 ///
-/// Cards switched off in the active profile still appear (an idle card draws
-/// power), and a card whose reading is `N/A` is skipped, so the sum can be
-/// lower than a wall meter by that card's draw.
+/// Cards excluded from mining still appear (an idle card draws power), and a
+/// card whose reading is `N/A` is skipped, so the sum can be lower than a wall
+/// meter by that card's draw.
 fn total_power(gpus: &[GpuStats]) -> Option<f64> {
     gpus.iter()
         .filter_map(|gpu| gpu.power_w)
@@ -248,14 +330,9 @@ impl Status {
             .map(|p| p.default.temp_limit_c)
             .unwrap_or_else(default_temp_limit);
         let gpus_total = gpus.len() as u32;
-        let gpus_enabled = gpus
-            .iter()
-            .filter(|gpu| {
-                profile
-                    .map(|p| p.tuning_for(&gpu.uuid).enabled)
-                    .unwrap_or(true)
-            })
-            .count() as u32;
+        let running_ours = state.running && !state.external;
+        let participation = participation_view(profile, &gpus, running_ours);
+        let gpus_enabled = participation.iter().filter(|card| card.enabled).count() as u32;
         let power = total_power(&gpus);
         let temp_max = hottest_gpu(&gpus).and_then(|gpu| gpu.temp_c);
         let hashrate = miner.primary();
@@ -337,12 +414,8 @@ impl Status {
                 warnings.push(warning);
             }
         }
-        warnings.extend(lock_warnings(
-            cfg,
-            &gpus,
-            state.running && !state.external,
-            state.uptime_s(),
-        ));
+        warnings.extend(participation_warnings(cfg, &gpus));
+        warnings.extend(lock_warnings(cfg, &gpus, running_ours, state.uptime_s()));
         if let Some(warning) = temp_warning(&gpus, temp_limit) {
             warnings.push(warning);
         }
@@ -376,6 +449,7 @@ impl Status {
             preset: cfg.active_preset.clone(),
             miner_info,
             gpus,
+            participation,
             gpu,
             gpu_error,
             total: TotalView {
@@ -478,6 +552,7 @@ mod tests {
             "\"state\"",
             "\"gpu\"",
             "\"gpus\"",
+            "\"participation\"",
             "\"miner\"",
             "\"miner_info\"",
             "\"pool\"",
@@ -649,6 +724,85 @@ mod tests {
     fn tying_cards_report_the_lowest_index() {
         let gpus = [card(0, Some(70), None), card(1, Some(70), None)];
         assert_eq!(hottest_gpu(&gpus).map(|gpu| gpu.index), Some(0));
+    }
+
+    fn excluded_config(uuid: &str) -> Config {
+        let mut cfg = Config::default();
+        cfg.gpu_profiles
+            .get_mut("balanced")
+            .unwrap()
+            .per_gpu
+            .insert(
+                uuid.to_string(),
+                crate::config::GpuTuning {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
+        cfg
+    }
+
+    #[test]
+    fn participation_marks_excluded_cards_and_only_mining_while_ours() {
+        let cfg = excluded_config("GPU-1");
+        let gpus = [
+            card(0, Some(60), Some(300.0)),
+            card(1, Some(55), Some(130.0)),
+        ];
+        let view = participation_view(cfg.gpu_profile(), &gpus, true);
+        assert!(view[0].enabled && view[0].mining, "{view:?}");
+        assert!(!view[1].enabled && !view[1].mining, "{view:?}");
+
+        // Stopped: the card stays enabled but is not mining.
+        let stopped = participation_view(cfg.gpu_profile(), &gpus, false);
+        assert!(stopped[0].enabled && !stopped[0].mining, "{stopped:?}");
+
+        // External miner: Trommel does not know its device set, so no card is
+        // claimed as mining by this session.
+        let external = participation_view(cfg.gpu_profile(), &gpus, false);
+        assert!(external.iter().all(|card| !card.mining), "{external:?}");
+    }
+
+    #[test]
+    fn participation_warning_names_the_excluded_card() {
+        let cfg = excluded_config("GPU-1");
+        let gpus = [card(0, None, None), card(1, None, None)];
+        let warnings = participation_warnings(&cfg, &gpus);
+        assert!(
+            warnings.iter().any(|warning| warning.contains("#1")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().all(|warning| !warning.contains("#0")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn participation_warning_names_an_unsupported_miner() {
+        let mut cfg = excluded_config("GPU-1");
+        cfg.preset_mut().unwrap().miner = "private-build".into();
+        let gpus = [card(0, None, None), card(1, None, None)];
+        let warnings = participation_warnings(&cfg, &gpus);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("private-build")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn an_all_excluded_rig_does_not_repeat_the_warning() {
+        let mut cfg = excluded_config("GPU-1");
+        cfg.gpu_profiles
+            .get_mut("balanced")
+            .unwrap()
+            .default
+            .enabled = false;
+        let gpus = [card(0, None, None), card(1, None, None)];
+        assert!(participation_warnings(&cfg, &gpus).is_empty());
+        assert!(enabled_gpu_warning(&cfg, &gpus).is_some());
     }
 
     #[test]

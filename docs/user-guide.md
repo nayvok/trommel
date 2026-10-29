@@ -29,10 +29,11 @@ The dashboard shows **Quick setup** until a wallet and an installed miner are
 ready. It opens a three-step wizard for a rig with one to three cards:
 
 1. **Cards** — every detected GPU has a switch and its own power limit. Untick a
-   card to leave it untouched. **Apply 80 %** sets 80 % of each ticked card's
-   stock limit, expands the rows and writes the applied watts back into them;
-   **Use auto** clears the limit. This is a safe start with clock locks off, not
-   a promise of maximum hashrate.
+   card to exclude it from mining: it is not passed to the miner and is not
+   tuned. **Apply 80 %** sets 80 % of each ticked card's stock limit, expands
+   the rows and writes the applied watts back into them; **Use auto** clears the
+   limit. This is a safe start with clock locks off, not a promise of maximum
+   hashrate.
 2. **Miner** — pick a miner and version. **Install…** opens the shared install
    dialog: download a catalogue version, type a version newer than the catalogue,
    or import a local binary. The version is installed once for every preset;
@@ -58,11 +59,12 @@ the error is shown.
   breakdown.
 - Every GPU is a card with live power, core/memory clocks, temperature, fan and
   utilisation in value bubbles, plus a switch that includes the card in the
-  active profile. A single-GPU rig uses one full-width card; with two or more
+  mining session. A single-GPU rig uses one full-width card; with two or more
   cards each keeps the compact tile. Each bubble ends with a sparkline of the
   last five minutes; it fills while the window is open (hover it for the
   observed minimum and maximum). Click **Tune** to edit its power limit and
-  clock locks.
+  clock locks. A card chip says **mining** or **excluded**; Totals repeats the
+  count as “N of M”.
 - Below the cards: rig power, maximum temperature, accepted/rejected shares,
   pool balance, the configured pool endpoint with its fee, and warnings. Power
   is `power.draw` summed over every detected card, including the ones switched
@@ -72,11 +74,38 @@ the error is shown.
   the pool row still names the configured endpoint.
 - **Start** in the dashboard hero card applies your edited draft before
   starting. If the wallet or miner is missing, it opens Quick setup instead of
-  failing with a toast. It is disabled while every detected GPU is switched off;
-  the warning row explains why. While mining, the same button reads **Stop**.
+  failing with a toast. It is disabled while every detected GPU is excluded from
+  mining; the warning row explains why. While mining, the same button reads **Stop**.
 - Action errors show a **Details** button. The dialog keeps the full message
   selectable and offers **Copy**, so a long daemon error does not disappear in a
   truncated toast.
+
+### Excluding a GPU
+
+Turn a card's switch off to exclude it from the miner. An excluded card is
+**not** passed to the miner, gets no power or clock tuning, and is returned to
+its stock settings if an earlier restore-off session left tuning on it. The card
+stays visible with its live temperature, power and fan readings and is marked
+**excluded**; Totals shows how many of the detected cards are mining.
+
+The exclusion is handed to the miner through a flag documented by that miner:
+
+| Miner | Flag |
+| --- | --- |
+| WildRig Multi | `--gpu-list` |
+| SRBMiner-MULTI | `--gpu-id` |
+| OneZeroMiner | `--devices` |
+
+If the selected miner has no documented device-selection flag, Start refuses
+when a card is excluded instead of quietly mining on every card. Enable all
+cards or switch to a miner that supports device selection. A custom/imported
+miner id has no catalogue capability, so it can only run with every card
+enabled.
+
+The device numbers are the `nvidia-smi` indices shown as `GPU #N` on the cards.
+On a rig whose miner enumerates devices in a different order, verify the result
+with a benchmark. Excluding or re-including a card while mining uses the normal
+Apply and restart / Apply and stop dialog.
 
 ## Presets and installed miners
 
@@ -264,5 +293,9 @@ review the diff. For MCP-aware agents, run `trommel mcp` (read-only) or
   Run `./scripts/check-polkit.sh` and reinstall the rule.
 - **Start says the miner is missing** — install the referenced version or switch
   the preset to an installed one; installs are global, not per preset.
+- **Start refuses because the miner cannot choose GPUs** — a card is excluded
+  but the selected miner has no documented device flag. Enable every card or
+  choose a miner that supports device selection; Trommel does not fall back to
+  running on all cards.
 - **No pool balance** — the pool API is cached for a minute and backs off after
   failures; only PearlHash has an account API adapter.

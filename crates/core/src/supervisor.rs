@@ -60,6 +60,10 @@ pub struct Supervisor {
     /// Give the miner time to load the GPU; stop retrying after this.
     verify_until: Option<Instant>,
     verified: bool,
+    /// `nvidia-smi` indices passed to the miner when a detected card is
+    /// excluded. `None` means the miner's default (all devices) is correct.
+    /// Kept for crash restarts, which must use the same device set.
+    device_indices: Option<Vec<u32>>,
     pub state: State,
     pub log_path: PathBuf,
 }
@@ -148,6 +152,7 @@ impl Supervisor {
             verify_at,
             verify_until,
             verified: false,
+            device_indices: None,
             state,
             log_path: paths::log_path(),
         }
@@ -235,12 +240,21 @@ impl Supervisor {
             anyhow::anyhow!(tr("GPU query failed:", "Ошибка опроса GPU:") + " " + &e.to_string())
         })?;
         let profile = cfg.gpu_profile().cloned().unwrap_or_default();
-        if !gpus.iter().any(|gpu| profile.tuning_for(&gpu.uuid).enabled) {
+        let participating: Vec<String> = gpus
+            .iter()
+            .filter(|gpu| profile.tuning_for(&gpu.uuid).enabled)
+            .map(|gpu| gpu.uuid.clone())
+            .collect();
+        if participating.is_empty() {
             anyhow::bail!(tr(
-                "No GPU is enabled in the active profile",
-                "В активном профиле не включено ни одной видеокарты"
+                "No GPU is selected for mining",
+                "Ни одна видеокарта не выбрана для майнинга"
             ));
         }
+        // Validate the device capability before touching a card: an excluded
+        // card may not be silently left mining because the miner has no
+        // documented way to select devices.
+        let device_indices = miners::device_plan(cfg, preset, &gpus)?;
 
         // Only cards that actually ask for a change are touched. An enabled
         // card with no power/clock values is not a tuning session and needs
@@ -257,6 +271,15 @@ impl Supervisor {
         // `trommel emergency-stop`. The lock is held across the snapshot write
         // and the whole apply/rollback loop.
         let _oc_lock = oc::acquire_lock()?;
+
+        // A card excluded now may still carry tuning from an earlier session
+        // on this boot (restore-on-stop was off). It must not stay overclocked
+        // while it is not mining, so put it back before the new session starts.
+        if let Some(mut snapshot) = oc::current_boot_snapshot() {
+            if snapshot.applied {
+                restore_excluded_cards_locked(&mut snapshot, &participating)?;
+            }
+        }
 
         if targets.is_empty() {
             // A stock profile must really be stock: if a previous session left
@@ -281,7 +304,7 @@ impl Supervisor {
                     oc::clear_snapshot();
                 }
             }
-            return self.spawn_and_record(cfg);
+            return self.spawn_and_record(cfg, device_indices.as_deref());
         }
 
         let mut snapshot = match oc::current_boot_snapshot() {
@@ -330,7 +353,7 @@ impl Supervisor {
             }
         }
 
-        if let Err(err) = self.spawn(cfg) {
+        if let Err(err) = self.spawn(cfg, device_indices.as_deref()) {
             match rollback_locked(&snapshot, &applied) {
                 Ok(()) => oc::clear_snapshot(),
                 Err(rollback_err) => {
@@ -339,6 +362,7 @@ impl Supervisor {
             }
             return Err(err);
         }
+        self.device_indices = device_indices;
 
         self.state.running = true;
         self.state.external = false;
@@ -361,9 +385,10 @@ impl Supervisor {
         Ok(())
     }
 
-    fn spawn_and_record(&mut self, cfg: &Config) -> anyhow::Result<()> {
+    fn spawn_and_record(&mut self, cfg: &Config, devices: Option<&[u32]>) -> anyhow::Result<()> {
         let preset = cfg.preset().cloned();
-        self.spawn(cfg)?;
+        self.spawn(cfg, devices)?;
+        self.device_indices = devices.map(|indices| indices.to_vec());
         // No tuning was applied, so there is nothing to verify.
         self.verify_at = None;
         self.verify_until = None;
@@ -410,6 +435,7 @@ impl Supervisor {
         self.verify_at = None;
         self.verify_until = None;
         self.verified = true;
+        self.device_indices = None;
 
         // An external miner is not ours: Stop/shutdown must leave it alone,
         // and its power/clocks were never snapshotted by this process.
@@ -499,6 +525,7 @@ impl Supervisor {
             }
             self.state.running = false;
             self.state.started_at = None;
+            self.device_indices = None;
             let message = format!(
                 "{} ({code_text}) — {} ({max}). {}",
                 tr("Miner exited", "Майнер завершился"),
@@ -527,6 +554,7 @@ impl Supervisor {
 
         self.state.running = false;
         self.state.started_at = None;
+        self.device_indices = None;
         self.state.last_error = Some(format!(
             "{} ({code_text}) — {}",
             tr("Miner exited", "Майнер завершился"),
@@ -580,6 +608,7 @@ impl Supervisor {
             // A crash that is waiting for its backoff must not be mistaken for
             // a phantom state: `restart_at` means the next spawn is scheduled.
             let restore = restore_stock(cfg);
+            self.device_indices = None;
             self.state = State::default();
             if let Err(err) = restore {
                 self.state.last_error = Some(err.to_string());
@@ -601,7 +630,8 @@ impl Supervisor {
         if let Some(at) = self.restart_at {
             if Instant::now() >= at && self.child.is_none() {
                 self.restart_at = None;
-                match self.spawn(cfg) {
+                let devices = self.device_indices.clone();
+                match self.spawn(cfg, devices.as_deref()) {
                     Ok(()) => {
                         self.schedule_verify();
                         events.push(Event::Started(self.state.miner_pid.unwrap_or(0)));
@@ -725,7 +755,7 @@ impl Supervisor {
         events
     }
 
-    fn spawn(&mut self, cfg: &Config) -> anyhow::Result<()> {
+    fn spawn(&mut self, cfg: &Config, devices: Option<&[u32]>) -> anyhow::Result<()> {
         let preset = cfg
             .preset()
             .ok_or_else(|| anyhow::anyhow!(tr("No active preset", "Нет активного пресета")))?;
@@ -748,7 +778,7 @@ impl Supervisor {
             .open(&self.log_path)?;
         let log_err = log.try_clone()?;
 
-        let args = miners::build_args(cfg, preset, &self.log_path)?;
+        let args = miners::build_args_with_devices(cfg, preset, &self.log_path, devices)?;
         let mut command = Command::new(&binary);
         command
             .args(&args)
@@ -757,6 +787,13 @@ impl Supervisor {
             .stderr(Stdio::from(log_err));
         if let Some(dir) = binary.parent() {
             command.current_dir(dir);
+        }
+        // `--gpu-list`/`--gpu-id`/`--devices` use the miner's own device order.
+        // For CUDA miners the default order can be "fastest first"; PCI order
+        // makes it match the `nvidia-smi` indices shown on the cards. An
+        // explicit preset env still wins.
+        if devices.is_some() && !preset.env.contains_key("CUDA_DEVICE_ORDER") {
+            command.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
         }
         for (key, value) in &preset.env {
             command.env(key, value);
@@ -811,6 +848,65 @@ fn rollback_locked(snapshot: &OcSnapshot, uuids: &[String]) -> anyhow::Result<()
         Some(err) => Err(err),
         None => Ok(()),
     }
+}
+
+/// Put back a card that is no longer participating but still carries tuning
+/// from an earlier session in this boot (restore-on-stop was off).
+///
+/// The snapshot is rewritten without that card, so Stop/emergency-stop only
+/// restore the cards the current session actually touched. A failed restore
+/// aborts the start and keeps the record for a retry.
+fn restore_excluded_cards_locked(
+    snapshot: &mut OcSnapshot,
+    participating: &[String],
+) -> anyhow::Result<()> {
+    // Old snapshots had no `applied_gpus` list, which means "all cards".
+    // Materialise it now so removing one excluded card cannot erase the
+    // restore record for the cards that stay in the session.
+    if snapshot.applied_gpus.is_empty() {
+        snapshot.applied_gpus = snapshot.gpus.iter().map(|gpu| gpu.uuid.clone()).collect();
+    }
+    let stale: Vec<String> = snapshot
+        .restore_gpus()
+        .into_iter()
+        .filter(|gpu| !participating.iter().any(|uuid| uuid == &gpu.uuid))
+        .map(|gpu| gpu.uuid.clone())
+        .collect();
+    if stale.is_empty() {
+        return Ok(());
+    }
+    for uuid in &stale {
+        let Some(gpu) = snapshot.for_uuid(uuid) else {
+            continue;
+        };
+        if let Err(err) = oc::restore_gpu_locked(gpu, RestoreMode::Snapshot) {
+            oc::record_error(&err.to_string());
+            anyhow::bail!(
+                "{} #{}: {err}",
+                tr(
+                    "An excluded GPU still had applied settings and restoring it failed:",
+                    "У исключённой карты остались применённые настройки, вернуть сток не удалось:"
+                ),
+                gpu.index
+            );
+        }
+        log_line(&format!(
+            "excluded gpu #{}: restored its previous settings before the new session",
+            gpu.index
+        ));
+    }
+    snapshot
+        .applied_gpus
+        .retain(|uuid| !stale.iter().any(|removed| removed == uuid));
+    for uuid in &stale {
+        snapshot.applied_tuning.remove(uuid);
+    }
+    if snapshot.applied_gpus.is_empty() {
+        oc::clear_snapshot();
+    } else {
+        oc::save_snapshot(snapshot)?;
+    }
+    Ok(())
 }
 
 fn restore_with_snapshot_locked(

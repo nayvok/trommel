@@ -21,8 +21,9 @@ It should feel like a quiet system utility:
   Advanced controls exist but do not compete with the first run.
 - **One place per job.** Miner installation has one dialog; a preset has one
   editor; navigation is one view switcher in the header bar.
-- **No lies.** A disabled control says why; a failed restore is reported; a
-  fee that cannot change is shown read-only; an unapplied draft is visible.
+- **No lies.** A disabled control says why; an excluded card is never shown as
+  mining; a failed restore is reported; a fee that cannot change is shown
+  read-only; an unapplied draft is visible.
 
 ## Platform foundations
 
@@ -123,9 +124,10 @@ Every coloured value has a word next to it (“installed”, “not installed”
 - Dialogs own errors they caused (installer, editor, tuning); a failed
   background action surfaces a toast with a **Details** button. The details
   window keeps the full text selectable and copyable.
-- The dashboard GPU card is not clickable: only **Tune** and its include switch
-  are actionable, and a sparkline only adds a tooltip, so the card itself has no
-  hover treatment.
+- The dashboard GPU card is not clickable: only **Tune** and its participation
+  switch are actionable, and a sparkline only adds a tooltip, so the card itself
+  has no hover treatment. Turning the switch off is an applied change: while
+  mining it opens the Apply alert, and Cancel restores the switch.
 - Dashboard **Start** is disabled while every detected GPU is off; the
   warnings row and the button tooltip explain it.
 - No spinners for work that completes in under a frame; the Start button changes
@@ -188,9 +190,12 @@ Every coloured value has a word next to it (“installed”, “not installed”
   aligned with the metadata line: the brightest control of the app is anchored
   to the card it acts on instead of floating in the header.
 - GPU cards: title (name + index), a switch that includes the card in the
-  active profile, six value bubbles (power, core, memory, temperature, fan,
-  load; the configured target/lock is a small hint and turns hot when the live
-  value differs), a custom/default chip and a **Tune** button. Each bubble ends
+  active **mining session** (off = excluded: not passed to the miner, not
+  tuned), six value bubbles (power, core, memory, temperature, fan, load; the
+  configured target/lock is a small hint and turns hot when the live value
+  differs), a **mining**/**excluded** chip, a custom/default chip and a
+  **Tune** button. The participation chip describes the applied session, not
+  the draft switch; after a switch change it keeps saying `mining` until Apply. Each bubble ends
   with a **sparkline** on the bubble floor: the metric's last five minutes as a
   thin accent line over a soft accent wash, rounded with the bubble. The wash
   reaches the rounded floor and the plot keeps only a 2 px margin, so the graph
@@ -200,11 +205,12 @@ Every coloured value has a word next to it (“installed”, “not installed”
   the daemon status. A one-GPU rig uses a single full-width card with a 3×2
   bubble grid; 2+ cards go into a wrap box and split the row evenly (240 px
   minimum per card). Core and memory clocks are labelled separately.
-- Aggregate rows: rig power, max temperature, accepted and rejected shares,
-  pool balance, the configured pool endpoint with its fee, and warnings. Power
-  sums `power.draw` over every detected card (a card switched off in the profile
-  still counts, since it still draws) and the temperature is the hottest card's
-  reading. Both rows carry a tooltip with one line per card, so a two-GPU
+- Aggregate rows: cards (`1 of 2 mining`, or `selected` while stopped),
+  rig power, max temperature, accepted and rejected shares, pool balance, the
+  configured pool endpoint with its fee, and warnings. Power sums `power.draw`
+  over every detected card (an excluded card still counts, since it still
+  draws) and the temperature is the hottest card's reading. The cards, power
+  and temperature rows carry a tooltip with one line per card, so a two-GPU
   aggregate can be checked without opening the JSON. J/TH stays in the status
   JSON for agents, but the dashboard does not show an efficiency row for now.
 - When stopped, show **numeric placeholders** (`0 TH/s`, `0.000 PRL` or `0 PRL`
@@ -294,7 +300,7 @@ Groups, in order:
 
 Rules:
 
-- The dashboard GPU include switch and the tuning dialog apply immediately
+- The dashboard GPU participation switch and the tuning dialog apply immediately
   (draft + apply flow); Cancel in the restart/stop alert must restore the switch
   and the dirty banner.
 - When applied GPU settings are still on the cards while the miner is stopped,
@@ -329,7 +335,7 @@ Three steps, each with a status line and a footer carrying Cancel/Back on the
 left and Next/Start mining on the right; the header shows the wizard title and
 the current step as its subtitle:
 
-1. **Cards** — each detected card: include switch, its own power limit, stock
+1. **Cards** — each detected card: participation switch, its own power limit, stock
    limit in the subtitle. **Apply 80 %** fills the ticked cards, expands them
    and writes the resulting watts into each row; **Use auto** clears the limit.
    A card without a tick is not touched.
@@ -363,6 +369,7 @@ profile (this prevented a 300 W default from being applied to a 165 W card).
 | No wallet / no miner | Start opens Quick setup; dashboard offers the same wizard |
 | Miner stopped | Numeric placeholders, configured endpoint still named |
 | Miner running | Live values, uptime, fee breakdown, warnings; Apply requires the alert |
+| GPU excluded | Chip `excluded`, live temperature/power still visible, Totals counts it out; Start refuses when the miner cannot select devices |
 | External miner | “mining (started manually)” pill in warning colour; Start explains that the external process must be stopped |
 | Missing miner install | Install state in warning colour, Start blocked, install dialog offered |
 | Lock not honoured | A warning with requested and actual MHz |

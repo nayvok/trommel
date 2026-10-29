@@ -55,6 +55,11 @@ trommel config apply /tmp/trommel-proposed.json --restart
 - `config diff` prints `<class>: <reasons>`, where class is `None`, `Live` or
   `RestartRequired`. A running miner with `RestartRequired` must go through
   `--restart` or `--stop`; a plain apply is rejected by the daemon.
+- `GpuTuning.enabled = false` excludes a card from the mining session, not just
+  from tuning: the miner is started with the participating `nvidia-smi` indices
+  only and the excluded card is not tuned. Changing participation is a restart
+  change. A partial rig on a miner without a documented device flag is refused
+  with an explicit error; do not “fix” it by removing the exclusion silently.
 - `config apply` saves the file first and then asks the daemon. If no daemon is
   running it prints “config saved; daemon is not running”; the change takes
   effect on the next start, not silently now.
@@ -106,7 +111,8 @@ human text. `status` and `start/stop/toggle` connect through D-Bus and start
 | `state.uptime_s`, `state.restarts` | Current process uptime and consecutive restart count; the budget is five |
 | `miner_info` | Miner id/name/version, install/verified flags, fee breakdown |
 | `gpus[]` | Per-card live values and static limits |
-| `total` | Aggregate hashrate/power/efficiency/temperature; power sums every detected card, temperature is the hottest card |
+| `participation[]` | One entry per detected card: `uuid`, `index`, `name`, `enabled` (applied profile switch) and `mining` (part of the running session Trommel owns). The dashboard chip is this list |
+| `total` | Aggregate hashrate/power/efficiency/temperature; power sums every detected card, temperature is the hottest card; `gpus_enabled` counts participating cards and `gpus_total` counts detected cards |
 | `miner` | Hashrate windows, accepted/rejected/stale, `source` (`api`/`log`) |
 | `pool` | Cached pool statistics when mining |
 | `oc` | Snapshot availability, `applied`/`needs_restore`, stale flag, restore-on-stop, last OC error and target summary |
@@ -199,6 +205,9 @@ poll; `Status()` returns the last snapshot.
 - Treat a config file write as an applied config. The daemon owns the live
   config; use Apply.
 - Add a bundled miner binary or a checksum/URL that was not actually verified.
+- Set a card's `enabled` to `false` on a miner that cannot select devices, or
+  add `--gpu-list`/`--gpu-id`/`--devices` to `extra_args` to work around the
+  refusal. Start and the agent must report the unsupported combination instead.
 
 ## A good agent loop
 
