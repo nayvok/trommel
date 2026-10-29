@@ -5,6 +5,17 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+### Changed
+
+- **Release hardening (B5), scope frozen before implementation.** CI builds the
+  CLI-only target, runs the GUI-feature unit tests, checks the declared MSRV,
+  builds and install-validates the `.deb` on pull requests, runs both UI smoke
+  suites headlessly under Xvfb and shares one e2e diagnostics script. The
+  release workflow verifies the tag against the workspace version and the
+  bundle contents, and `SHA256SUMS` covers `trommel-install.sh`. Packaging gains
+  a full layout check plus an install/upgrade/remove test; the docs drop the
+  stale 0.6.x, 1.80 and CI claims. No user-facing feature or schema change.
+
 ## [0.7.0] - 2026-10-29
 
 ### Added
