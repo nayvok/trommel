@@ -3765,18 +3765,21 @@ fn miner_install_dialog(
 
     let page = adw::PreferencesPage::new();
 
+    // Two groups: what to install, then how. The download fields sit in an
+    // expander because a catalogue version fills them anyway, and the dialog
+    // has to fit a 760 px window without scrolling away its own footer.
     let version_group = adw::PreferencesGroup::builder()
         .title(tr("Version", "Версия"))
         .description(tr(
-            "Miners are updated often. Pick a catalogue version, or type the version name of a build you downloaded upstream.",
-            "Майнеры часто обновляются. Выберите версию из каталога или введите название версии сборки, скачанной самостоятельно.",
+            "Pick a catalogue build, or type the name of a build you downloaded upstream.",
+            "Выберите сборку из каталога или введите название скачанной вручную.",
         ))
         .build();
     let version_combo = adw::ComboRow::builder()
         .title(tr("Catalogue version", "Версия из каталога"))
         .subtitle(tr(
-            "Fills the URL and checksum",
-            "Подставляет ссылку и контрольную сумму",
+            "Fills the URL and SHA-256",
+            "Подставляет ссылку и SHA-256",
         ))
         .model(&string_list(
             &choices
@@ -3795,30 +3798,38 @@ fn miner_install_dialog(
         .title(tr("Version name", "Название версии"))
         .text(&version)
         .build();
-    let state_row = adw::ActionRow::builder()
+    version_group.add(&version_combo);
+    version_group.add(&version_entry);
+    page.add(&version_group);
+
+    let install_group = adw::PreferencesGroup::builder()
         .title(tr("Installation", "Установка"))
+        .description(tr(
+            "One install serves every preset. HTTPS only; a SHA-256 is checked when the catalogue lists one.",
+            "Одна установка служит всем пресетам. Только HTTPS; SHA-256 сверяется, если он указан в каталоге.",
+        ))
+        .build();
+    let state_row = adw::ActionRow::builder()
+        .title(tr("State", "Состояние"))
         .build();
     let state_label = label("", &["caption"]);
     state_row.add_suffix(&state_label);
-    version_group.add(&version_combo);
-    version_group.add(&version_entry);
-    version_group.add(&state_row);
+    install_group.add(&state_row);
     // Importing a local binary is the second source for the same install. As a
-    // row next to the installation state it stays readable at any window width;
-    // as a third footer button it pushed the primary action past the dialog
-    // edge on narrow windows.
+    // row it stays readable at any window width; as a footer button it pushed
+    // the primary action past the dialog edge on narrow windows.
     let import = adw::ActionRow::builder()
         .title(tr("Import binary", "Импортировать бинарник"))
         .subtitle(tr(
-            "Install a binary you already have on disk",
-            "Установить бинарник, который уже есть на диске",
+            "Install a binary from disk",
+            "Установить бинарник с диска",
         ))
         .activatable(true)
         .build();
     let import_icon = gtk::Image::from_icon_name("document-open-symbolic");
     import_icon.add_css_class("dim-label");
     import.add_suffix(&import_icon);
-    version_group.add(&import);
+    install_group.add(&import);
     // The upstream link belongs to the version it documents, not to the window
     // chrome: an activatable row beats a stray icon in the header.
     if !def.source_url.is_empty() {
@@ -3836,17 +3847,8 @@ fn miner_install_dialog(
             let _ =
                 gio::AppInfo::launch_default_for_uri(&source_url, None::<&gio::AppLaunchContext>);
         });
-        version_group.add(&release);
+        install_group.add(&release);
     }
-    page.add(&version_group);
-
-    let source_group = adw::PreferencesGroup::builder()
-        .title(tr("Download", "Загрузка"))
-        .description(tr(
-            "HTTPS only. A SHA-256 is checked when provided; archives are extracted without path escapes.",
-            "Только HTTPS. SHA-256 проверяется, если указан; архивы распаковываются без выхода за каталог.",
-        ))
-        .build();
     let url_entry = adw::EntryRow::builder()
         .title("URL")
         .text(
@@ -3863,10 +3865,13 @@ fn miner_install_dialog(
                 .unwrap_or_default(),
         )
         .build();
+    // The expander subtitle carries the URL, so tucking the fields away hides
+    // nothing the user needs before pressing the primary action.
     let details = adw::ExpanderRow::builder()
-        .title(tr("Archive details", "Параметры архива"))
-        .subtitle(tr("binary, tar.gz or zip", "binary, tar.gz или zip"))
+        .title(tr("Download source", "Источник загрузки"))
+        .subtitle(tr("URL, checksum and archive", "URL, сумма и архив"))
         .build();
+    details.set_subtitle_lines(1);
     let archive_entry = adw::EntryRow::builder()
         .title(tr("Archive", "Архив"))
         .text(
@@ -3883,12 +3888,28 @@ fn miner_install_dialog(
                 .unwrap_or_else(|| "wildrig-multi".into()),
         )
         .build();
+    details.add_row(&url_entry);
+    details.add_row(&sha_entry);
     details.add_row(&archive_entry);
     details.add_row(&binary_entry);
-    source_group.add(&url_entry);
-    source_group.add(&sha_entry);
-    source_group.add(&details);
-    page.add(&source_group);
+    install_group.add(&details);
+    page.add(&install_group);
+    {
+        let details = details.clone();
+        let url_row = url_entry.clone();
+        let refresh = move || {
+            let url = url_row.text();
+            let url = url.trim();
+            if url.is_empty() {
+                details.set_subtitle(&tr("URL, checksum and archive", "URL, сумма и архив"));
+            } else {
+                details.set_subtitle(url);
+            }
+        };
+        refresh();
+        let refresh = Rc::new(refresh);
+        url_entry.connect_notify_local(Some("text"), move |_, _| refresh());
+    }
 
     let footer = dialog_footer();
     let status = label("", &["caption", "dim-label"]);
@@ -3897,8 +3918,10 @@ fn miner_install_dialog(
     // Long download/import messages must not widen the footer: ellipsize them
     // and keep the full text in the tooltip (set_status_text does that).
     status.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    // A short label keeps the footer on one line down to the smallest window;
+    // the dialog title already says the action installs a miner.
     let download = gtk::Button::builder()
-        .label(tr("Download and install", "Скачать и установить"))
+        .label(tr("Install", "Установить"))
         .css_classes(["suggested-action", "pill"])
         .build();
     footer.append(&cancel);
@@ -3929,10 +3952,10 @@ fn miner_install_dialog(
                     state_label.set_css_classes(&["caption", "success"]);
                 }
                 None => {
-                    state_row.set_subtitle(&tr(
-                        "Not installed; one installation is shared by every preset.",
-                        "Не установлен; одна установка доступна всем пресетам.",
-                    ));
+                    // The group description already explains that one install
+                    // serves every preset; repeating it here just made the row
+                    // taller than its neighbours.
+                    state_row.set_subtitle("");
                     state_label.set_text(&tr("not installed", "не установлен"));
                     state_label.set_css_classes(&["caption", "warning"]);
                 }
@@ -4173,7 +4196,7 @@ fn miner_install_dialog(
                 Ok(Err(error)) => {
                     set_status_text(&status, &error, "error");
                     button.set_sensitive(true);
-                    button.set_label(&tr("Download and install", "Скачать и установить"));
+                    button.set_label(&tr("Install", "Установить"));
                     glib::ControlFlow::Break
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
@@ -4837,12 +4860,16 @@ fn gpu_stat(
         hint_label.set_tooltip_text(Some(hint));
         body.append(&hint_label);
     }
+    // A grid row is as tall as its tallest tile, and a row-mate that carries a
+    // hint line is taller than a tile without one. Give the leftover height to
+    // the text body, not to the holder: the holder then keeps its natural
+    // height and every graph in the row keeps the same height and still ends on
+    // the tile floor. Letting the holder expand instead left the chart pinned
+    // to the top of the extra space.
+    body.set_vexpand(true);
     box_.append(&body);
     if let Some(spark) = spark {
-        // The holder absorbs the leftover height of the grid row, so every
-        // graph sits on the bottom edge even when a tile has no hint line.
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        holder.set_vexpand(true);
         holder.set_margin_top(4);
         holder.append(&spark);
         box_.append(&holder);

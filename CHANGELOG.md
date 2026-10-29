@@ -24,10 +24,18 @@ Changelog; versions use SemVer.
 - **Default window narrowed to 880 × 760.** The one-line view switcher holds in
   Russian down to about 850 px, so the window opens a hundred pixels narrower
   without falling back to the stacked labels or the bottom bar.
-- **Miner install: import moved into the version group.** “Import binary” is a
-  row next to the installation state instead of a third footer button, so a
-  narrow dialog keeps **Cancel**, the status line and the primary action inside
-  its edge; long status messages ellipsize and keep the full text in a tooltip.
+- **Miner install: two groups and a shorter primary action.** Version and
+  installation are separate groups; **Import binary** is a row instead of a
+  third footer button, and the URL, checksum, archive and binary fields sit in a
+  **Download source** expander whose subtitle shows the URL. The footer keeps
+  **Cancel**, the status line and a plain **Install** button, so it fits a
+  400 px window; long status messages ellipsize and keep the full text in a
+  tooltip. The dialog no longer needs to scroll to reach its own footer.
+- **GPU card charts share one floor.** A grid row gives its leftover height to
+  the tile's text block instead of the chart holder, so a chart stays 24 px tall
+  and ends on the bubble floor even when a neighbour in the same row carries a
+  hint line. The temperature chart was the visible case: it stopped a line
+  short of the bottom edge.
 - **Sparklines reach the bubble edges.** The wash is over-drawn to the last
   pixel and the plot keeps only a 2 px bottom margin, so the graph sits on the
   bubble floor instead of floating above it or being clipped before the right

@@ -127,6 +127,11 @@ setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
 DAEMON_PID=$!
 sleep 2
 
+# Set ONLY=substring to regenerate just the matching images while iterating;
+# a full run leaves it empty.
+ONLY="${ONLY:-}"
+wanted() { [ -z "$ONLY" ] || case "$(basename "$1")" in *"$ONLY"*) true ;; *) false ;; esac; }
+
 configure() {
   local language="$1" simple="$2"
   python3 - "$WORK" "$language" "$simple" <<'PY'
@@ -145,6 +150,7 @@ PY
 
 shot() {
   local theme="$1" language="$2" page="$3" target="$4" simple="${5:-1}" scroll="${6:-}" height="${7:-}"
+  wanted "$target" || return 0
   configure "$language" "$simple"
   if [ -n "$scroll" ]; then export TROMMEL_SCREENSHOT_SCROLL="$scroll"; else unset TROMMEL_SCREENSHOT_SCROLL; fi
   if [ -n "$height" ]; then export TROMMEL_WINDOW_HEIGHT="$height"; else unset TROMMEL_WINDOW_HEIGHT; fi
@@ -164,6 +170,7 @@ shot() {
 
 tune_shot() {
   local theme="$1" language="$2" target="$3"
+  wanted "$target" || return 0
   configure "$language" 0
   local attempt
   for attempt in 1 2; do
@@ -178,6 +185,7 @@ tune_shot() {
 
 preset_shot() {
   local theme="$1" language="$2" target="$3"
+  wanted "$target" || return 0
   configure "$language" 1
   local attempt
   for attempt in 1 2; do
@@ -192,6 +200,7 @@ preset_shot() {
 
 install_shot() {
   local theme="$1" language="$2" target="$3"
+  wanted "$target" || return 0
   configure "$language" 1
   local attempt
   for attempt in 1 2; do
@@ -206,6 +215,7 @@ install_shot() {
 
 wizard_shot() {
   local theme="$1" language="$2" target="$3" step="${4:-0}"
+  wanted "$target" || return 0
   configure "$language" 1
   local attempt
   for attempt in 1 2; do

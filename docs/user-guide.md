@@ -106,7 +106,8 @@ the Miners page, the preset editor and the wizard:
 ![Miner installation](images/miner-install-en-dark.png)
 
 - pick a catalogue version or type your own version name;
-- download from an HTTPS URL (optional SHA-256; `tar.gz`, `zip` or a raw binary);
+- press **Install** to download it over HTTPS (open **Download source** to
+  change the URL, add a SHA-256, or pick `tar.gz`, `zip` or a raw binary);
 - or import a local executable.
 
 Imported builds are copied into Trommel's managed store, so moving or deleting

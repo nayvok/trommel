@@ -250,19 +250,25 @@ Every coloured value has a word next to it (“installed”, “not installed”
 ### Miner install (modal, single source)
 
 Owns the whole install flow for the Miners page, the preset editor and the
-wizard:
+wizard. Two groups, in order:
 
-- version list from the catalogue **plus** already-installed custom builds;
-- editable version name, so a newer upstream build can be installed before the
-  catalogue knows it;
-- HTTPS URL, optional SHA-256, archive kind (`tar.gz`, `zip`, raw) and binary
-  name;
-- **Import binary** row for a local executable (the footer keeps only
-  **Cancel** and the primary action, so it also fits a 400 px window);
-- a **Release page** row in the version group, the HTTPS-only/SHA-256 note and
-  the error or success message; there is no separate “verified” badge in the
-  dialog;
-- errors stay in the dialog; success toasts and refreshes the caller.
+1. **Version** — version list from the catalogue **plus** already-installed
+   custom builds, and an editable version name, so a newer upstream build can
+   be installed before the catalogue knows it.
+2. **Installation** — the state row (installed path, or “not installed”),
+   **Import binary** for a local executable, **Release page** when the
+   catalogue lists a homepage, and a **Download source** expander holding the
+   HTTPS URL, optional SHA-256, archive kind (`tar.gz`, `zip`, raw) and binary
+   name. The expander is collapsed because a catalogue version fills those
+   fields; its subtitle shows the URL, so nothing is hidden before the primary
+   action.
+
+The group description carries the HTTPS-only/SHA-256 note; errors appear in
+the footer status and success toasts and refreshes the caller. There is no
+separate “verified” badge in the dialog. The footer keeps only **Cancel**, the
+status line and **Install**, which fits a 400 px window; the short label and the
+collapsed source rows keep the dialog inside a 760 px window without scrolling
+to its own footer.
 
 The catalogue is a convenience, not a gate. Never add a second install UI.
 

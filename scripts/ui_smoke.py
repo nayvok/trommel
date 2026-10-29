@@ -539,12 +539,20 @@ def phase_install(ui: UI) -> None:
         return
     # Let the modal window finish mapping before clicking its footer button.
     time.sleep(1.0)
-    for name in ("Cancel", "Download and install"):
+    for name in ("Cancel", "Install"):
         ui.check(ui.find(frame, "button", name) is not None, f"install button {name}")
-    # Import is a row in the Download group; it is not a push button anymore.
+    # Import is a row in the installation group; it is not a push button.
     ui.check(ui.find(frame, None, "Import binary") is not None, "install import row")
-    for name in ("Version name", "URL", "SHA-256"):
-        ui.check(ui.find(frame, "text", name) is not None, f"install field {name}")
+    ui.check(ui.find(frame, "text", "Version name") is not None, "install version field")
+    # The URL and checksum live in a collapsed expander: open it, then look for
+    # the fields inside.
+    source = ui.find(frame, None, "Download source")
+    ui.check(source is not None, "install download source row")
+    if source is not None:
+        ui.click(source, "download source")
+        time.sleep(0.7)
+        for name in ("URL", "SHA-256"):
+            ui.check(ui.find(frame, "text", name) is not None, f"install field {name}")
     ui.click_button("Cancel", frame, "install Cancel")
     closed = ui.wait(lambda: ui.frame_visible("Install miner") is None, 5.0, "closed")
     if closed is not None:
