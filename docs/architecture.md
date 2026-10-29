@@ -39,6 +39,8 @@ subcommand opens the GUI when built with `--features gui`.
 | --- | --- | --- | --- |
 | `trommeld` | desktop user | Owns config, miner child, snapshot, status; serves D-Bus | Runs as root, edits the helper, downloads without a user action |
 | `trommel` (GUI/CLI) | desktop user | Draft editing, display, command dispatch | Calls `nvidia-smi`, spawns/kills the miner, writes state |
+| `trommel guard` | desktop user | Watches the daemon PID/start time, runs emergency-stop after a crash | Touches GPUs directly, runs as root, survives a graceful disarm |
+| `trommel emergency-stop` | desktop user | Idempotent teardown: stop **our** miner, restore the snapshot | Kills an external miner, restores a stale-boot snapshot |
 | `trommel-oc` | root via `pkexec` | Applies/restores `--pl/--lgc/--lmc` for one GPU UUID | Accepts paths, shell fragments or arbitrary commands |
 | miner child | desktop user | Mining | Is managed by anything except the supervisor |
 
@@ -52,9 +54,17 @@ dialog is not killed; the per-user rule removes the prompt entirely. A missing
 rule therefore costs one authentication, not a silent failure.
 
 The daemon runs in the user session (`PartOf=graphical-session.target`) and is
-D-Bus activated on demand. It deliberately keeps the miner alive across its own
-restart: on start-up it adopts a matching process by PID (`Supervisor::new` sets
-`orphan`) instead of spawning a second miner.
+D-Bus activated on demand. It does **not** keep mining across its own restart:
+on start-up it stops an orphaned miner from the previous session, restores an
+applied snapshot and leaves mining stopped (startup recovery). Adoption no
+longer resumes mining; see [ADR 0006](adr/0006-failure-policy.md).
+
+Three independent failure nets cover the daemon: systemd (`KillMode=control-group`,
+`TimeoutStopSec=30`, `ExecStopPost=-/usr/bin/trommel emergency-stop
+--reason=service-stop`) for packaged runs, the `trommel guard` child for manual
+runs, and startup recovery on the next daemon start. They all call the same
+idempotent emergency path. The GUI is not part of this chain: killing the window
+is a no-op for mining.
 
 ## Crates and dependency direction
 
@@ -79,7 +89,7 @@ release packages always build with `gui`.
 Per-module responsibilities and key functions are listed in
 [components.md](components.md).
 
-## Configuration model (schema v2)
+## Configuration model (schema v3)
 
 `~/.config/trommel/config.json` is the single source of truth for intent. It is
 owned by the daemon once running; the GUI keeps a **draft** copy and only sends
@@ -139,29 +149,36 @@ external tools. They are descriptive, not enforced by the daemon; `Preset`
    keeps its own enable switch. Cards whose effective tuning has no power or
    clock values are not touched at all.
 4. Query all GPUs. For a profile with tuning, reuse the current-boot snapshot or
-   capture one; write it with `applied = true`, the touched UUIDs and the exact
-   applied tuning *before* the first helper call.
-5. Apply the profile per enabled card through the helper. The card is registered
-   in the rollback list *before* the call, so a partial failure restores every
-   card already touched. The power limit is read back (±1 W); a mismatch is a
-   failure.
-6. Spawn the miner with an explicit argument vector (no shell), write state,
-   schedule a one-shot clock check and clear the pool cache.
+   capture one; write it with `applied = true`, **all** target UUIDs and the
+   exact applied tuning *before* the first helper call.
+5. Apply the profile per enabled card through the helper. Every target is
+   already registered in the snapshot and in the rollback list, so a partial
+   failure restores every card that may have been touched. The power limit is
+   read back (±1 W); a mismatch is a failure.
+6. Spawn the miner with an explicit argument vector (no shell), record the
+   absolute `state.miner_path`, write state, schedule a one-shot clock check and
+   clear the pool cache.
 
-Any failure in 5–6 restores the snapshot before returning the error. If the
-rollback also fails, the snapshot is kept with `last_error`, so the UI can offer
-a retry. A profile with no tuning creates no snapshot and calls no helper.
+The whole snapshot/apply/rollback block holds the cross-process OC file lock
+(§ *OC serialization and helper lease*). Any failure in 5–6 restores the
+snapshot before returning the error. If the rollback also fails, the snapshot is
+kept with `last_error`, so the UI can offer a retry and emergency-stop can
+repeat it. A profile with no tuning creates no snapshot and calls no helper.
 Start never mines with a silently unapplied power limit.
 
 ### Stop
 
-Terminate the child (or a matching PID after a daemon restart). If
+Terminate the child (or a PID after a daemon restart) only after confirming
+that `/proc/<pid>/exe`/`cmdline` matches `state.miner_path`. An external state
+(`state.external`) is left untouched, and the state entry is cleared without a
+restore because its tuning was never ours. If
 `behavior.restore_stock_on_stop` is set and a snapshot was applied, restore the
 captured power limit, unlock the clocks, read the power back and clear the
 snapshot. On failure the snapshot is kept with `last_error` and the error is
 returned. If restore is disabled, Stop keeps the snapshot, leaves the settings
 on the cards and reports `oc.needs_restore`; it does not pretend the stock state
-was restored. State and pool cache are cleared either way.
+was restored. State and pool cache are cleared either way, and the stop path
+holds the OC lock across kill + restore.
 
 ### Clock verification
 
@@ -177,9 +194,16 @@ driver that accepts `-lmc` but ignores it, which was previously reported as
 ### Crash and restart
 
 `Supervisor::tick()` runs once per second. When the child exits unexpectedly and
-`auto_restart` is on, it schedules a restart after `restart_delay_s`, increments
-`state.restarts` and emits an event. Restart uses the same config and does not
-re-capture the stock snapshot.
+`auto_restart` is on, it schedules a restart with exponential backoff from
+`restart_delay_s` (2, 4, 8, … capped at 60 s), increments `state.restarts` and
+emits a `Crashed` event. The budget is five consecutive restarts
+(`TROMMEL_MAX_RESTARTS` overrides it for tests); when it is exhausted the
+session stops, the snapshot is restored, and an error event/notification says
+so. With `auto_restart` off the first crash stops and restores immediately.
+Every spawn resets `started_at`, so `uptime_s` is the uptime of the current
+process, not of the whole crash streak. Restart reuses the same config and does
+not re-capture the stock snapshot; the restart counter resets only on an
+explicit Start.
 
 ### Apply while mining
 
@@ -197,22 +221,86 @@ setting are live changes. On a failed start the previous config is saved back
 and a best-effort stock restore is attempted. The GUI never sends `restart` or
 `stop` without the explicit alert dialog.
 
-### External miner and daemon restart
+### External miner and PID ownership
 
-`state::find_external_miner()` scans `/proc` for known miner binaries and for
-shell scripts whose first argument is a known miner. It ignores the command line
-as a whole, because config JSON can contain miner names. `TROMMEL_NO_EXTERNAL_SCAN=1`
-is a test isolation hook. A daemon restart does not kill the miner: the state
-file records the PID, `Supervisor::new` marks it orphaned and `tick()` monitors
-it by PID.
+`state::find_external_miner(cfg, exclude_pid)` scans `/proc` for the catalogue
+names and for the directory/binary basenames of every entry in
+`miner_installs`, plus shell scripts whose first argument has one of those
+names. It ignores the command line as a whole because config JSON can contain
+miner names, and it always skips the caller's PID and `exclude_pid`.
+`TROMMEL_NO_EXTERNAL_SCAN=1` is a test isolation hook.
+
+`state.miner_path` is the absolute binary path recorded by the supervisor when
+it spawns the miner. `State::miner_alive()` and `pid_matches_binary(pid, path)`
+compare `/proc/<pid>/exe` (and the interpreter argument for a `#!` script). A
+PID whose executable does not match the saved path is **not** signalled: PID
+reuse and custom binary names make the old “known miner name” check unsafe. Old
+state files without `miner_path` fall back to the legacy name heuristic for one
+migration window.
+
+### Startup recovery and emergency-stop
+
+`trommel emergency-stop --reason=…` is the same idempotent teardown used by
+systemd, the guard, startup recovery and manual runs:
+
+1. take the OC file lock (bounded wait) and drop a snapshot from another boot;
+2. wait up to 10 s for an in-flight helper, then terminate helpers carrying the
+   dead daemon's lease before touching the cards;
+3. stop only the miner recorded in state when its PID still matches
+   `miner_path`; an external miner is left alive and unclaimed;
+4. clear state only after the miner is gone; restore a current-boot snapshot
+   with `applied = true` through `RestoreMode::Snapshot` with a 20 s helper
+   timeout; clear the snapshot only after every card restored.
+
+A failed restore keeps the snapshot + `last_error`, logs the reason and exits
+non-zero. A second call is safe. Startup recovery is the same routine with
+`--reason=startup`, run by `trommeld` before it owns the D-Bus name: it stops an
+orphaned miner from the previous session, restores stock and leaves mining
+stopped. It never resumes mining. `trommel emergency-stop` is hidden from the
+CLI help on purpose: it is an operator/automation command, not a normal Stop.
+
+### Shutdown, lost session bus and guard
+
+On SIGTERM/SIGINT the daemon disarms the guard, calls
+`Supervisor::shutdown(&cfg)` (force restore, 20 s helper timeout) and exits.
+`systemd` runs `ExecStopPost` afterwards, so a failed restore is retried outside
+the process; `KillMode=control-group` also removes the guard. The daemon selects
+on `connection.closed()`: losing the session bus is a shutdown reason, not a
+reason to keep mining unattended.
+
+For manual runs the daemon spawns `trommel guard` in its own session (`setsid`).
+The guard watches the daemon PID **and** its `/proc` start time. If the daemon
+disappears without writing the matching `guard.disarm` token, the guard runs
+`emergency-stop --reason=guard` and exits. A graceful shutdown disarms the guard
+before the potentially long restore, so a normal stop cannot trigger a second
+restore. A new daemon terminates a stale guard left by the previous session
+after startup recovery.
+
+### OC serialization and helper lease
+
+Every apply/restore/emergency block holds an advisory `flock` on
+`~/.local/state/trommel/oc.lock`. The lock is per process; a nested acquisition
+is rejected instead of deadlocking, and `trommel`, `trommeld` and emergency-stop
+serialize across processes. This prevents a stale apply from landing after an
+emergency restore.
+
+The helper also receives `--lease-pid <daemon-pid> --lease-start
+<starttime>` (field 22 of `/proc/<pid>/stat`). Both numbers are validated by the
+Rust side and by the Bash helper; the helper checks the lease **before its first
+`nvidia-smi` mutation** and aborts when the process is gone or its start time
+changed. The daemon writes `oc-lease.json` with the spawned `pkexec`/helper PID
+so emergency-stop can wait for or terminate it. A queued pkexec authorization
+therefore cannot tune a card that is being restored.
 
 ### Benchmark
 
-`RunBenchmark` stops the miner if needed, runs each requested miner for the
-given duration (30–3600 s), records raw and effective hashrate with fees, saves
-the report under `~/.local/state/trommel/bench/`, restarts the previous miner
-if it was running and returns the JSON report. Benchmarks are sequential by
-design: one miner at a time is an invariant.
+`RunBenchmark` first refuses when an external miner is running or when the
+running miner is not owned by this session; it never calls `Supervisor::stop`
+to take a process it does not own. It then stops our miner if needed, runs each
+requested miner for the given duration (30–3600 s), records raw and effective
+hashrate with fees, saves the report under `~/.local/state/trommel/bench/`,
+restarts the previous miner if it was running and returns the JSON report.
+Benchmarks are sequential by design: one miner at a time is an invariant.
 
 ## Status contract
 
@@ -250,8 +338,9 @@ compare `contract_version` rather than the app version.
 - `oc::snapshot()` reads per-card power limits (`power.limit`,
   `power.default_limit`, min/max), clocks and identity, plus the kernel boot id.
 - `OcSnapshot` also records `applied`, `applied_gpus`, `applied_tuning` and
-  `last_error`. A snapshot is written with `applied = true` before the first
-  helper call, so a crash halfway still leaves a restorable record.
+  `last_error`. A snapshot is written with `applied = true` and **every** target
+  UUID before the first helper call, so a crash halfway still leaves a record
+  that restores all registered cards, including a partially applied one.
 - The snapshot is stored at `~/.local/state/trommel/oc-snapshot.json`. A
   snapshot from another boot is deleted when the daemon starts and is never
   used by Stop/Restore; Start captures a fresh one.
@@ -280,10 +369,14 @@ Miner binaries are never committed or bundled. Two paths install them:
 `download::install` (HTTPS, ≤512 MiB, optional SHA-256, `tar.gz`/`zip`/raw
 extraction with absolute-path and `..` rejection, executable check, atomic move
 into `~/.local/share/trommel/miners/<miner>/<version>/`) and
-`download::import_binary` (copy a local executable into the same store). A
+`download::import_binary` (copy a local executable into the same store). Before
+any network request or write, `miner`, `version` and `binary` must each be one
+safe path component: non-empty, not `.`/`..`, and free of `/`, `\` and NUL. A
 running daemon receives the updated config immediately after either command, so
 a newly installed version is usable without a restart. Installs are global; a
-preset only references `miner@version`.
+preset only references `miner@version`. The absolute installed path becomes
+`state.miner_path` when the supervisor starts it, so custom file names are
+stopped correctly.
 
 ## Pool and miner statistics
 
@@ -302,8 +395,17 @@ preset only references `miner@version`.
 - `Engine` holds `Inner { cfg, sup, status, last_report }` behind an async
   `Mutex`. Every D-Bus method takes it; blocking work (`nvidia-smi`, helper,
   spawn) runs in `spawn_blocking`/`block_in_place`.
+- GPU mutations are additionally serialized across processes by the OC
+  `flock`; within a process a nested acquisition is an error. A shutdown tries
+  the engine lock for 5 s and otherwise leaves the teardown to `ExecStopPost` /
+  the guard instead of waiting for a polkit dialog.
 - The daemon runs two async loops: the status refresher (poll interval, or an
-  on-demand refresh after supervisor events) and the 1 s supervisor tick.
+  on-demand refresh after supervisor events) and the 1 s supervisor tick. A
+  third select arm watches SIGTERM/SIGINT and `connection.closed()`.
+- The guard is a separate process, not a thread: it must survive a `SIGKILL` of
+  the daemon. It is started with `setsid` and writes `guard.pid`; shutdown writes
+  `guard.disarm` with the exact daemon PID/start time before restoring, so a
+  new daemon is never mistaken for the one the guard watched.
 - The GUI owns a separate thread with a small tokio runtime and a
   command/event channel (`Cmd`/`Ev`). GTK state is only touched on the main
   thread; D-Bus results arrive as `Ev::Status/Config/Error/...`.
@@ -353,8 +455,12 @@ long-lived process, so it owns this path; there is no shell extension.
 
 | Path | Contents |
 | --- | --- |
-| `~/.config/trommel/config.json` | Applied config (schema v2) |
-| `~/.local/state/trommel/state.json` | Running state, PID, preset, restart count |
+| `~/.config/trommel/config.json` | Applied config (schema v3) |
+| `~/.local/state/trommel/state.json` | Running state, PID, `miner_path`, preset, restart count |
+| `~/.local/state/trommel/oc.lock` | Cross-process OC `flock` |
+| `~/.local/state/trommel/oc-lease.json` | Daemon/helper PID + start-time lease |
+| `~/.local/state/trommel/guard.pid` | Guard PID/start time and the daemon it watches |
+| `~/.local/state/trommel/guard.disarm` | Disarm token written by a graceful daemon |
 | `~/.local/state/trommel/miner.log` | Miner stdout/stderr |
 | `~/.local/state/trommel/daemon.log` | Daemon event log |
 | `~/.local/state/trommel/oc-snapshot.json` | Per-boot stock snapshot |

@@ -4,7 +4,7 @@
 //! blocking contexts.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -78,12 +78,58 @@ fn verify_delay() -> Duration {
         .unwrap_or(Duration::from_secs(15))
 }
 
+/// Consecutive restart budget. `TROMMEL_MAX_RESTARTS` is a test hook; the
+/// product default is five, per ADR 0006.
+fn max_restarts() -> u32 {
+    std::env::var("TROMMEL_MAX_RESTARTS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .map(|value| value.clamp(1, 50))
+        .unwrap_or(5)
+}
+
+/// Exponential backoff from `restart_delay_s`, capped at 60 s.
+fn restart_delay_s(cfg: &Config, restart: u32) -> u64 {
+    let base = cfg.behavior.restart_delay_s.max(1);
+    let exponent = restart.saturating_sub(1).min(6);
+    base.saturating_mul(1u64 << exponent).min(60)
+}
+
 impl Supervisor {
+    /// Supervisor for tests and tools that have no config at hand.
     pub fn new() -> Self {
-        let mut state = State::load().normalize();
+        Self::build(None)
+    }
+
+    /// The daemon entry point: knows the active preset's binary, so old state
+    /// files (and restarts) can resolve `state.miner_path`.
+    pub fn with_config(cfg: &Config) -> Self {
+        Self::build(Some(cfg))
+    }
+
+    fn build(cfg: Option<&Config>) -> Self {
+        let mut state = State::load();
+        if state.miner_path.is_none() {
+            if let Some(cfg) = cfg {
+                // Prefer the miner recorded in state over the current preset:
+                // the active preset may have changed while the daemon was down.
+                let from_state = state
+                    .miner
+                    .as_deref()
+                    .zip(state.miner_version.as_deref())
+                    .and_then(|(miner, version)| cfg.install(miner, version))
+                    .map(|install| install.path.clone());
+                let from_preset = cfg
+                    .preset()
+                    .and_then(|preset| cfg.install(&preset.miner, &preset.miner_version))
+                    .map(|install| install.path.clone());
+                state.miner_path = from_state.or(from_preset);
+            }
+        }
+        let mut state = state.normalize();
         // The daemon restarted while a miner it spawned is still alive. We
-        // lost the Child handle, so monitor/adopt it by PID; otherwise its
-        // death would never be noticed and Stop would not know it is ours.
+        // lost the Child handle, so monitor it by PID until shutdown/startup
+        // recovery stops it; adoption never resumes mining.
         if state.running && !state.external && state.miner_alive() {
             state.orphan = true;
         }
@@ -111,6 +157,13 @@ impl Supervisor {
         self.child.is_some() || self.state.running
     }
 
+    /// `true` when the live miner is ours (not an external/legacy process).
+    pub fn owns_miner(&self) -> bool {
+        self.state.running
+            && !self.state.external
+            && (self.child.is_some() || self.state.miner_alive())
+    }
+
     /// Start the miner: snapshot stock, apply the GPU profile, spawn.
     pub fn start(&mut self, cfg: &Config) -> anyhow::Result<()> {
         if self.child.is_some() || self.state.miner_alive() {
@@ -133,7 +186,7 @@ impl Supervisor {
         }
         // Never spawn a second miner next to a script/manual one. We do not
         // kill it either: stopping an external process is the user's call.
-        if let Some(pid) = state::find_external_miner() {
+        if let Some(pid) = state::find_external_miner(cfg, None) {
             anyhow::bail!(
                 "{} {} — {}",
                 tr(
@@ -200,6 +253,11 @@ impl Supervisor {
             })
             .collect();
 
+        // Serialize every mutation of the cards with `trommel oc restore` and
+        // `trommel emergency-stop`. The lock is held across the snapshot write
+        // and the whole apply/rollback loop.
+        let _oc_lock = oc::acquire_lock()?;
+
         if targets.is_empty() {
             // A stock profile must really be stock: if a previous session left
             // applied settings behind (restore-on-stop was off), put the
@@ -207,7 +265,9 @@ impl Supervisor {
             if let Some(snapshot) = oc::current_boot_snapshot() {
                 if snapshot.applied {
                     log_line("stock profile: restoring the previous applied snapshot first");
-                    if let Err(err) = restore_with_snapshot(&snapshot, RestoreMode::Snapshot) {
+                    if let Err(err) =
+                        restore_with_snapshot_locked(&snapshot, RestoreMode::Snapshot, None)
+                    {
                         oc::record_error(&err.to_string());
                         anyhow::bail!(
                             "{} {err}",
@@ -255,8 +315,8 @@ impl Supervisor {
             // --lgc and --lmc in order, so a failure halfway must restore this
             // card as well, not just the previous ones.
             applied.push(gpu.uuid.clone());
-            if let Err(err) = oc::apply_tuning(gpu, tuning) {
-                match rollback(&snapshot, &applied) {
+            if let Err(err) = oc::apply_tuning_locked(gpu, tuning) {
+                match rollback_locked(&snapshot, &applied) {
                     Ok(()) => oc::clear_snapshot(),
                     Err(rollback_err) => {
                         oc::record_error(&format!("{err}; rollback failed: {rollback_err}"))
@@ -271,7 +331,7 @@ impl Supervisor {
         }
 
         if let Err(err) = self.spawn(cfg) {
-            match rollback(&snapshot, &applied) {
+            match rollback_locked(&snapshot, &applied) {
                 Ok(()) => oc::clear_snapshot(),
                 Err(rollback_err) => {
                     oc::record_error(&format!("{err}; rollback failed: {rollback_err}"))
@@ -331,20 +391,54 @@ impl Supervisor {
 
     /// Stop the miner and restore the snapshot (when enabled).
     pub fn stop(&mut self, cfg: &Config) -> anyhow::Result<()> {
-        self.stop_internal(cfg, false)
+        self.stop_internal(cfg, false, None)
     }
 
-    fn stop_internal(&mut self, cfg: &Config, force_restore: bool) -> anyhow::Result<()> {
+    /// Graceful daemon shutdown: stop only our miner and force a snapshot
+    /// restore with a short helper timeout, so systemd's stop window is enough.
+    pub fn shutdown(&mut self, cfg: &Config) -> anyhow::Result<()> {
+        self.stop_internal(cfg, true, Some(Duration::from_secs(20)))
+    }
+
+    fn stop_internal(
+        &mut self,
+        cfg: &Config,
+        force_restore: bool,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<()> {
         self.restart_at = None;
         self.verify_at = None;
         self.verify_until = None;
         self.verified = true;
+
+        // An external miner is not ours: Stop/shutdown must leave it alone,
+        // and its power/clocks were never snapshotted by this process.
+        if self.state.external {
+            log_line("stop: external miner left untouched");
+            self.state = State::default();
+            State::clear_file();
+            crate::pool::invalidate_cache();
+            return Ok(());
+        }
+
+        // Do not terminate anything until the OC lock is ours: an emergency
+        // stop or a restore in another process must never interleave with the
+        // kill/restore sequence here.
+        let _oc_lock = oc::acquire_lock()?;
+
         if let Some(mut child) = self.child.take() {
+            let child_pid = child.id();
             terminate(&mut child);
             let _ = child.wait();
+            log_line(&format!("miner stopped pid={child_pid}"));
         } else if let Some(pid) = self.state.miner_pid {
-            if state::pid_matches_miner(pid) {
+            if miner_is_ours(&self.state, pid) {
                 terminate_pid(pid);
+                log_line(&format!("orphan miner stopped pid={pid}"));
+            } else {
+                log_line(&format!(
+                    "state PID {pid} does not match the saved binary; not signalling it"
+                ));
             }
         }
 
@@ -355,7 +449,8 @@ impl Supervisor {
                     if force_restore && !cfg.behavior.restore_stock_on_stop {
                         log_line("oc restore forced after a failed clock check");
                     }
-                    let result = restore_with_snapshot(&snapshot, RestoreMode::Snapshot);
+                    let result =
+                        restore_with_snapshot_locked(&snapshot, RestoreMode::Snapshot, timeout);
                     if let Err(ref err) = result {
                         oc::record_error(&err.to_string());
                     }
@@ -374,6 +469,77 @@ impl Supervisor {
         reset_result
     }
 
+    /// The miner exited without a Stop request.
+    ///
+    /// Bounded restart: at most [`max_restarts`] consecutive restarts with an
+    /// exponential backoff from `restart_delay_s`, capped at 60 s. When the
+    /// budget is exhausted (or auto-restart is off) the session stops, the
+    /// snapshot is restored and an error notification is emitted. The restart
+    /// counter resets only on an explicit Start.
+    fn handle_unexpected_exit(&mut self, cfg: &Config, code: Option<i32>, events: &mut Vec<Event>) {
+        let code_text = code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
+        if cfg.behavior.auto_restart && self.state.running {
+            let max = max_restarts();
+            if self.state.restarts < max {
+                self.state.restarts += 1;
+                let delay = restart_delay_s(cfg, self.state.restarts);
+                self.state.last_error = Some(format!(
+                    "{} ({code_text}) — {} {delay} {}",
+                    tr("Miner exited", "Майнер завершился"),
+                    tr("restarting in", "перезапуск через"),
+                    tr("s", "с")
+                ));
+                let _ = self.state.save();
+                self.restart_at = Some(Instant::now() + Duration::from_secs(delay));
+                events.push(Event::Crashed {
+                    code,
+                    restart_in: delay,
+                });
+                return;
+            }
+            self.state.running = false;
+            self.state.started_at = None;
+            let message = format!(
+                "{} ({code_text}) — {} ({max}). {}",
+                tr("Miner exited", "Майнер завершился"),
+                tr(
+                    "auto-restart budget exhausted",
+                    "лимит автоперезапусков исчерпан"
+                ),
+                tr(
+                    "Mining stopped and the stock GPU state was restored.",
+                    "Майнинг остановлен, настройки GPU возвращены в сток."
+                )
+            );
+            self.state.last_error = Some(message.clone());
+            if let Err(err) = restore_stock(cfg) {
+                self.state.last_error = Some(format!("{message}; {err}"));
+                events.push(Event::Error(
+                    self.state.last_error.clone().unwrap_or_default(),
+                ));
+            } else {
+                events.push(Event::Error(message));
+            }
+            let _ = self.state.save();
+            events.push(Event::Stopped { code });
+            return;
+        }
+
+        self.state.running = false;
+        self.state.started_at = None;
+        self.state.last_error = Some(format!(
+            "{} ({code_text}) — {}",
+            tr("Miner exited", "Майнер завершился"),
+            tr("auto-restart is off", "автоперезапуск выключен")
+        ));
+        if let Err(err) = restore_stock(cfg) {
+            self.state.last_error = Some(format!("{}; {err}", text_of(&self.state)));
+            events.push(Event::Error(err.to_string()));
+        }
+        let _ = self.state.save();
+        events.push(Event::Stopped { code });
+    }
+
     pub fn tick(&mut self, cfg: &Config) -> Vec<Event> {
         let mut events = Vec::new();
 
@@ -382,43 +548,9 @@ impl Supervisor {
                 Ok(Some(status)) => {
                     let code = status.code();
                     self.state.miner_pid = None;
+                    self.state.miner_path = None;
                     self.verify_at = None;
-                    if cfg.behavior.auto_restart && self.state.running {
-                        self.state.restarts += 1;
-                        self.state.last_error = Some(format!(
-                            "{} ({}) — {} {} {}",
-                            tr("Miner exited", "Майнер завершился"),
-                            code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()),
-                            tr("restarting in", "перезапуск через"),
-                            cfg.behavior.restart_delay_s.max(1),
-                            tr("s", "с")
-                        ));
-                        let _ = self.state.save();
-                        self.restart_at = Some(
-                            Instant::now()
-                                + Duration::from_secs(cfg.behavior.restart_delay_s.max(1)),
-                        );
-                        events.push(Event::Crashed {
-                            code,
-                            restart_in: cfg.behavior.restart_delay_s.max(1),
-                        });
-                    } else {
-                        self.state.running = false;
-                        self.state.started_at = None;
-                        self.state.last_error = Some(format!(
-                            "{} ({}) — {}",
-                            tr("Miner exited", "Майнер завершился"),
-                            code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()),
-                            tr("auto-restart is off", "автоперезапуск выключен")
-                        ));
-                        if let Err(err) = restore_stock(cfg) {
-                            self.state.last_error =
-                                Some(format!("{}; {err}", text_of(&self.state)));
-                            events.push(Event::Error(err.to_string()));
-                        }
-                        let _ = self.state.save();
-                        events.push(Event::Stopped { code });
-                    }
+                    self.handle_unexpected_exit(cfg, code, &mut events);
                 }
                 Ok(None) => self.child = Some(child),
                 Err(err) => {
@@ -440,36 +572,13 @@ impl Supervisor {
         } else if self.state.running && self.state.orphan {
             if !self.state.miner_alive() {
                 self.state.miner_pid = None;
+                self.state.miner_path = None;
                 self.state.orphan = false;
-                if cfg.behavior.auto_restart && self.state.running {
-                    self.state.restarts += 1;
-                    self.state.last_error = Some(format!(
-                        "{} — {} {} {}",
-                        tr("Miner exited", "Майнер завершился"),
-                        tr("restarting in", "перезапуск через"),
-                        cfg.behavior.restart_delay_s.max(1),
-                        tr("s", "с")
-                    ));
-                    self.restart_at = Some(
-                        Instant::now() + Duration::from_secs(cfg.behavior.restart_delay_s.max(1)),
-                    );
-                    let _ = self.state.save();
-                    events.push(Event::Crashed {
-                        code: None,
-                        restart_in: cfg.behavior.restart_delay_s.max(1),
-                    });
-                } else {
-                    self.state.running = false;
-                    self.state.started_at = None;
-                    if let Err(err) = restore_stock(cfg) {
-                        self.state.last_error = Some(format!("{}; {err}", text_of(&self.state)));
-                        events.push(Event::Error(err.to_string()));
-                    }
-                    let _ = self.state.save();
-                    events.push(Event::Stopped { code: None });
-                }
+                self.handle_unexpected_exit(cfg, None, &mut events);
             }
-        } else if self.state.running && !self.state.miner_alive() {
+        } else if self.state.running && self.restart_at.is_none() && !self.state.miner_alive() {
+            // A crash that is waiting for its backoff must not be mistaken for
+            // a phantom state: `restart_at` means the next spawn is scheduled.
             let restore = restore_stock(cfg);
             self.state = State::default();
             if let Err(err) = restore {
@@ -479,7 +588,7 @@ impl Supervisor {
             let _ = self.state.save();
             events.push(Event::Stopped { code: None });
         } else if !self.state.running {
-            if let Some(pid) = state::find_external_miner() {
+            if let Some(pid) = state::find_external_miner(cfg, None) {
                 self.state.external = true;
                 self.state.running = true;
                 self.state.miner_pid = Some(pid);
@@ -586,7 +695,7 @@ impl Supervisor {
                 )
             );
             log_line(&format!("oc verify failed: {message}"));
-            let reset = self.stop_internal(cfg, true);
+            let reset = self.stop_internal(cfg, true, None);
             self.state.last_error = Some(message.clone());
             self.state.running = false;
             let _ = self.state.save();
@@ -660,43 +769,38 @@ impl Supervisor {
                 binary.display()
             )
         })?;
+        let absolute = std::fs::canonicalize(&binary).unwrap_or_else(|_| {
+            if binary.is_absolute() {
+                binary.clone()
+            } else {
+                std::path::absolute(&binary).unwrap_or_else(|_| binary.clone())
+            }
+        });
         let pid = child.id();
         self.child = Some(child);
         self.state.miner_pid = Some(pid);
+        self.state.miner_path = Some(absolute.to_string_lossy().into_owned());
         self.state.running = true;
         self.state.external = false;
         self.state.orphan = false;
-        if self.state.started_at.is_none() {
-            self.state.started_at = Some(util::now_unix());
-        }
+        // Every spawn starts a new run: uptime is the uptime of this process,
+        // not of the whole crash/restart streak.
+        self.state.started_at = Some(util::now_unix());
         self.state.preset_id = cfg.active_preset.clone();
         self.state.miner = Some(preset.miner.clone());
         self.state.miner_version = Some(preset.miner_version.clone());
         self.state.profile = Some(preset.miner.clone());
         Ok(())
     }
-
-    /// Take over a miner that is already running (started by a script).
-    pub fn adopt_external(&mut self, cfg: &Config) -> bool {
-        let Some(pid) = state::find_external_miner() else {
-            return false;
-        };
-        self.state.external = true;
-        self.state.running = true;
-        self.state.miner_pid = Some(pid);
-        self.state.started_at = Some(util::now_unix());
-        self.state.preset_id = cfg.active_preset.clone();
-        true
-    }
 }
 
-fn rollback(snapshot: &OcSnapshot, uuids: &[String]) -> anyhow::Result<()> {
+fn rollback_locked(snapshot: &OcSnapshot, uuids: &[String]) -> anyhow::Result<()> {
     let mut first_error = None;
     for uuid in uuids {
         let Some(gpu) = snapshot.for_uuid(uuid) else {
             continue;
         };
-        if let Err(err) = oc::restore_gpu(gpu, RestoreMode::Snapshot) {
+        if let Err(err) = oc::restore_gpu_locked(gpu, RestoreMode::Snapshot) {
             log_line(&format!("oc rollback failed gpu={}: {err}", gpu.index));
             if first_error.is_none() {
                 first_error = Some(err);
@@ -709,8 +813,15 @@ fn rollback(snapshot: &OcSnapshot, uuids: &[String]) -> anyhow::Result<()> {
     }
 }
 
-fn restore_with_snapshot(snapshot: &OcSnapshot, mode: RestoreMode) -> anyhow::Result<()> {
-    let result = oc::restore_snapshot(snapshot, mode);
+fn restore_with_snapshot_locked(
+    snapshot: &OcSnapshot,
+    mode: RestoreMode,
+    timeout: Option<Duration>,
+) -> anyhow::Result<()> {
+    let result = match timeout {
+        Some(timeout) => oc::restore_snapshot_locked_with_timeout(snapshot, mode, timeout),
+        None => oc::restore_snapshot_locked(snapshot, mode),
+    };
     if let Err(ref err) = result {
         log_line(&format!("oc restore failed mode={}: {err}", mode.as_str()));
     } else {
@@ -728,11 +839,21 @@ fn restore_stock(cfg: &Config) -> anyhow::Result<()> {
     let Some(snapshot) = oc::current_boot_snapshot().filter(|snapshot| snapshot.applied) else {
         return Ok(());
     };
-    let result = restore_with_snapshot(&snapshot, RestoreMode::Snapshot);
+    let _lock = oc::acquire_lock()?;
+    let result = restore_with_snapshot_locked(&snapshot, RestoreMode::Snapshot, None);
     if let Err(ref err) = result {
         oc::record_error(&err.to_string());
     }
     result
+}
+
+/// Is `pid` the miner recorded in `state`? The saved absolute path is
+/// authoritative; old state files without it fall back to the name heuristic.
+fn miner_is_ours(state: &State, pid: u32) -> bool {
+    match state.miner_path.as_deref() {
+        Some(path) => state::pid_matches_binary(pid, Path::new(path)),
+        None => state::pid_matches_miner(pid),
+    }
 }
 
 fn text_of(state: &State) -> String {
@@ -754,13 +875,17 @@ fn terminate(child: &mut Child) {
 }
 
 /// Send SIGTERM (then SIGKILL) to a PID.
+///
+/// Liveness is checked with `/proc`, not with the miner-name heuristic: a
+/// custom binary must be stoppable by the same path-aware code that decided it
+/// belongs to us.
 pub fn terminate_pid(pid: u32) {
     let _ = Command::new("kill")
         .arg("-TERM")
         .arg(pid.to_string())
         .status();
     for _ in 0..50 {
-        if !state::pid_matches_miner(pid) {
+        if !state::pid_alive(pid) {
             return;
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -802,6 +927,19 @@ mod tests {
         .contains('5'));
         assert!(!Event::UserStopped.message().unwrap().is_empty());
         assert!(!Event::Warning("lock".into()).message().unwrap().is_empty());
+    }
+
+    #[test]
+    fn restart_backoff_is_exponential_and_capped() {
+        let mut cfg = Config::default();
+        cfg.behavior.restart_delay_s = 2;
+        assert_eq!(restart_delay_s(&cfg, 1), 2);
+        assert_eq!(restart_delay_s(&cfg, 2), 4);
+        assert_eq!(restart_delay_s(&cfg, 3), 8);
+        assert_eq!(restart_delay_s(&cfg, 6), 60);
+        assert_eq!(restart_delay_s(&cfg, 30), 60);
+        cfg.behavior.restart_delay_s = 0;
+        assert_eq!(restart_delay_s(&cfg, 1), 1);
     }
 
     #[test]

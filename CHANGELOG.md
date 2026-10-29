@@ -5,6 +5,80 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-10-29
+
+### Added
+
+- **Bounded restart with backoff (B1b).** A crashing miner is restarted at most
+  five times in a row, with an exponential delay from `restart_delay_s` capped
+  at 60 s. When the budget is exhausted the session stops, the stock snapshot is
+  restored and an error notification explains why. `started_at` is reset on
+  every spawn, so uptime is the uptime of the current process.
+
+- **A guard process for manual runs (B1b).** `trommeld` starts a hidden
+  `trommel guard` child in its own session. The guard watches the daemon PID and
+  `/proc` start time; if the daemon is SIGKILLed without disarming, the guard
+  runs the idempotent `emergency-stop`. A graceful shutdown disarms it before
+  the restore, and a new daemon terminates a stale guard after startup
+  recovery.
+
+- **Benchmark safety (B1b).** A benchmark refuses to start while an external
+  miner is running or while the live miner is not owned by this session. It no
+  longer stops a process it cannot prove is its own.
+
+### Changed
+
+- `state.miner_path` is now written on spawn; a custom-named miner is stopped by
+  its absolute path rather than by a name heuristic.
+- `TROMMEL_MAX_RESTARTS`, `TROMMEL_NO_GUARD` and `TROMMEL_GUARD_BIN` are test/
+  debugging hooks, documented in [development.md](docs/development.md).
+- GUI crash test added to the UI smoke and the e2e matrix.
+
+## [0.4.4] - 2026-10-29
+
+### Added
+
+- **Fault-tolerant session ownership (B1a).** `trommel emergency-stop` is an
+  idempotent teardown for a daemon that crashed or was SIGKILLed: it waits for
+  an in-flight GPU helper (or terminates it), stops only the miner recorded in
+  `state.json` when its PID still matches the saved binary path, restores the
+  snapshot with a short timeout, keeps the snapshot and `last_error` on failure
+  and logs the reason (`service-stop`, `guard`, `startup`, `manual`).
+
+- **Startup recovery.** A restarted daemon stops an orphaned miner from the
+  previous session, restores an applied snapshot and leaves mining stopped. It
+  no longer adopts the miner and continues mining.
+
+- **OC file lock and helper lease.** Apply, restore and emergency-stop are
+  serialized with an advisory `flock`; nested acquisition is rejected. The
+  helper receives `--lease-pid/--lease-start` (strict numeric values) and
+  aborts before its first mutation when the daemon PID/start time no longer
+  matches, so a queued polkit request cannot tune a rig that is being restored.
+
+- **Graceful shutdown and lost session bus.** SIGTERM/SIGINT and
+  `connection.closed()` stop only our miner, force a snapshot restore with a
+  short timeout and exit. systemd runs
+  `ExecStopPost=-/usr/bin/trommel emergency-stop --reason=service-stop` with
+  `KillMode=control-group` and `TimeoutStopSec=30`.
+
+- **Path-safe miner installs.** `miner`, `version` and `binary` are validated as
+  one safe path component before any network request or write; `../escape`,
+  `a/b`, empty and `.`/`..` are rejected.
+
+### Changed
+
+- `State` gained the additive `miner_path` field (old files parse unchanged).
+  `State::miner_alive`, Stop and emergency-stop compare `/proc/<pid>/exe` and
+  the script argument in `cmdline`; an external miner is never killed.
+- `find_external_miner(cfg, exclude_pid)` uses the directory/binary basenames of
+  every installed miner in addition to the catalogue names.
+- `Supervisor::with_config` resolves the active preset's binary; startup
+  recovery runs before the daemon serves D-Bus.
+- The failure policy is recorded in
+  [ADR 0005](docs/adr/0005-one-active-session.md) and
+  [ADR 0006](docs/adr/0006-failure-policy.md).
+
+
 ### Added
 
 - **Desktop notifications without the panel applet.** The daemon sends crash,

@@ -211,6 +211,11 @@ best-effort stock restore.
   snapshot and leaves the power/clocks applied; the dashboard shows a banner
   with **Restore stock** and the status warning explains why. Turning it off is
   never silent.
+- The daemon owns the session, not the window: closing or crashing the GUI never
+  stops mining. If the daemon itself is killed, the systemd unit or the guard
+  runs an emergency stop, restores the snapshot and does **not** resume mining;
+  the next start begins stopped. If the restore fails, the banner and the last
+  error stay until a retry succeeds.
 - A profile with no power/clock values touches nothing: Start needs no snapshot,
   no helper and no password, so a pure stock profile can keep restore-on-stop
   enabled.

@@ -62,7 +62,7 @@ impl Engine {
     pub fn new() -> Self {
         let cfg = Config::load_or_default();
         i18n::set_language(cfg.behavior.language);
-        let sup = Supervisor::new();
+        let sup = Supervisor::with_config(&cfg);
         let state = sup.state.clone();
         let status = Status::collect(&cfg, &state);
         let running = Arc::new(AtomicBool::new(status.state.running));
@@ -106,6 +106,24 @@ impl Engine {
 
     pub async fn cfg(&self) -> Config {
         self.inner.lock().await.cfg.clone()
+    }
+
+    /// Graceful daemon shutdown: stop only our miner and force a snapshot
+    /// restore with a short timeout. Bounded so a Start waiting for polkit
+    /// authorization cannot keep the process alive until systemd's SIGKILL;
+    /// systemd's `ExecStopPost` (or the guard) retries after the process exits.
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
+        let mut inner = match tokio::time::timeout(Duration::from_secs(5), self.inner.lock()).await
+        {
+            Ok(inner) => inner,
+            Err(_) => anyhow::bail!(
+                "an OC operation is still waiting; leaving teardown to emergency-stop"
+            ),
+        };
+        let cfg = inner.cfg.clone();
+        let result = tokio::task::block_in_place(|| inner.sup.shutdown(&cfg));
+        self.running.store(false, Ordering::Relaxed);
+        result
     }
 
     /// Non-blocking view of the config/state used by the status refresher.
@@ -279,9 +297,28 @@ impl Engine {
                 .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("request is not valid: {e}")))?
         };
 
-        let was_running = self.running.load(Ordering::Relaxed);
         let mut inner = self.inner.lock().await;
         let cfg = inner.cfg.clone();
+
+        // A benchmark spawns miners itself: it must never run next to an
+        // external miner, and it must never stop a process it does not own.
+        if inner.sup.state.external {
+            return Err(zbus::fdo::Error::Failed(
+                "an external miner is running; stop it before a benchmark".into(),
+            ));
+        }
+        if let Some(pid) = crate::state::find_external_miner(&cfg, inner.sup.state.miner_pid) {
+            return Err(zbus::fdo::Error::Failed(format!(
+                "an external miner is running (PID {pid}); stop it before a benchmark"
+            )));
+        }
+        let was_running = inner.sup.owns_miner();
+        if self.running.load(Ordering::Relaxed) && !was_running {
+            return Err(zbus::fdo::Error::Failed(
+                "the running miner is not owned by this session; refusing to stop it".into(),
+            ));
+        }
+
         let profiles = if request.profiles.is_empty() {
             crate::catalog::miners()
                 .iter()
@@ -301,16 +338,23 @@ impl Engine {
             request.profiles.clone()
         };
 
-        let report = tokio::task::block_in_place(|| {
+        let report = tokio::task::block_in_place(|| -> anyhow::Result<BenchReport> {
             if was_running {
-                let _ = inner.sup.stop(&cfg);
+                inner.sup.stop(&cfg).map_err(|err| {
+                    anyhow::anyhow!("cannot stop the miner for the benchmark: {err}")
+                })?;
             }
             let report = bench::run(&cfg, &profiles, request.seconds);
             if was_running {
-                let _ = inner.sup.start(&cfg);
+                if let Err(err) = inner.sup.start(&cfg) {
+                    crate::supervisor::log_line(&format!(
+                        "benchmark finished but the miner did not restart: {err}"
+                    ));
+                }
             }
-            report
-        });
+            Ok(report)
+        })
+        .map_err(|err| zbus::fdo::Error::Failed(err.to_string()))?;
 
         let _ = bench::save(&report);
         let json = report.to_json();

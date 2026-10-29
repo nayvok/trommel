@@ -5,12 +5,37 @@
 //! GPU UUID and numeric power/clock arguments; no paths or shell fragments.
 
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+
+#[cfg(unix)]
+extern "C" {
+    fn flock(fd: std::os::raw::c_int, operation: std::os::raw::c_int) -> std::os::raw::c_int;
+}
+
+#[cfg(unix)]
+const LOCK_EX: std::os::raw::c_int = 2;
+#[cfg(unix)]
+const LOCK_NB: std::os::raw::c_int = 4;
+#[cfg(unix)]
+const LOCK_UN: std::os::raw::c_int = 8;
+
+/// How long an apply/restore waits for another process to release the OC lock.
+const LOCK_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Acquire the cross-process GPU lock with the standard timeout.
+pub fn acquire_lock() -> anyhow::Result<OcLock> {
+    OcLock::acquire(LOCK_TIMEOUT)
+}
 
 use crate::config::GpuTuning;
 use crate::nvidia::{self, GpuStats};
@@ -42,6 +67,229 @@ fn helper_timeout() -> Duration {
         .and_then(|value| value.parse::<u64>().ok())
         .map(|ms| Duration::from_millis(ms.max(100)))
         .unwrap_or(DEFAULT_HELPER_TIMEOUT)
+}
+
+fn lock_path() -> PathBuf {
+    crate::paths::state_dir().join("oc.lock")
+}
+
+static OC_LOCK_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Cross-process serialization for every GPU mutation.
+///
+/// `trommeld`, `trommel oc restore` and `trommel emergency-stop` may all try to
+/// touch the cards; the helper must never apply a stale profile after another
+/// process restored the snapshot. The lock is an advisory `flock` on
+/// `~/.local/state/trommel/oc.lock`, held for the whole apply/restore block.
+///
+/// A second acquisition in the same process returns an error instead of
+/// deadlocking; callers that already hold the lock use the `*_locked` variants.
+pub struct OcLock {
+    file: File,
+}
+
+impl OcLock {
+    pub fn acquire(timeout: Duration) -> anyhow::Result<Self> {
+        if OC_LOCK_HELD.swap(true, Ordering::AcqRel) {
+            anyhow::bail!("nested GPU operation: this process already holds the OC lock");
+        }
+        let result = Self::acquire_file(timeout);
+        if result.is_err() {
+            OC_LOCK_HELD.store(false, Ordering::Release);
+        }
+        result
+    }
+
+    fn acquire_file(timeout: Duration) -> anyhow::Result<Self> {
+        let path = lock_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|e| anyhow::anyhow!("cannot open the OC lock {}: {e}", path.display()))?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            #[cfg(unix)]
+            {
+                let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+                if rc == 0 {
+                    return Ok(Self { file });
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                return Ok(Self { file });
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!(
+                    "another GPU operation is still running (waited {} s for the OC lock)",
+                    timeout.as_secs()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+impl Drop for OcLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        unsafe {
+            flock(self.file.as_raw_fd(), LOCK_UN);
+        }
+        OC_LOCK_HELD.store(false, Ordering::Release);
+    }
+}
+
+/// PID/start-time lease of an in-flight helper.
+///
+/// The daemon passes its own PID and `/proc/<pid>/stat` start time to the
+/// helper (`--lease-pid/--lease-start`), so a helper that was queued before a
+/// crash aborts instead of applying clocks to a rig that is being restored.
+/// The same file records the spawned `pkexec` PID, which `emergency-stop` waits
+/// for and, if necessary, terminates before restoring the snapshot.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelperLease {
+    pub daemon_pid: u32,
+    pub daemon_start: u64,
+    pub helper_pid: u32,
+    pub helper_start: u64,
+    pub created_at: u64,
+}
+
+pub fn lease_path() -> PathBuf {
+    crate::paths::state_dir().join("oc-lease.json")
+}
+
+/// `--lease-pid/--lease-start` for the current process, when `/proc` allows it.
+pub fn helper_lease_args() -> Vec<String> {
+    let pid = std::process::id();
+    match crate::state::proc_start_time(pid) {
+        Some(start) => vec![
+            "--lease-pid".into(),
+            pid.to_string(),
+            "--lease-start".into(),
+            start.to_string(),
+        ],
+        None => Vec::new(),
+    }
+}
+
+fn write_lease(lease: &HelperLease) {
+    let path = lease_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(lease) {
+        let _ = crate::config::write_atomic(&path, text.as_bytes());
+    }
+}
+
+fn clear_lease() {
+    let _ = std::fs::remove_file(lease_path());
+}
+
+pub fn load_lease() -> Option<HelperLease> {
+    let text = std::fs::read_to_string(lease_path()).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn lease_process_alive(lease: &HelperLease) -> bool {
+    lease.helper_pid != 0
+        && crate::state::proc_start_time(lease.helper_pid) == Some(lease.helper_start)
+}
+
+/// Wait for an in-flight helper to finish. Returns `true` when it is gone.
+pub fn wait_for_lease(timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match load_lease() {
+            None => return true,
+            Some(lease) if !lease_process_alive(&lease) => {
+                clear_lease();
+                return true;
+            }
+            Some(_) if Instant::now() >= deadline => return false,
+            Some(_) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
+}
+
+fn pid_has_lease(pid: u32, daemon_pid: u32, daemon_start: u64) -> bool {
+    let Ok(bytes) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+        return false;
+    };
+    let tokens: Vec<String> = String::from_utf8_lossy(&bytes)
+        .split('\0')
+        .map(str::to_string)
+        .collect();
+    let mut lease_pid = None;
+    let mut lease_start = None;
+    let mut index = 0;
+    while index + 1 < tokens.len() {
+        match tokens[index].as_str() {
+            "--lease-pid" => lease_pid = tokens[index + 1].parse::<u32>().ok(),
+            "--lease-start" => lease_start = tokens[index + 1].parse::<u64>().ok(),
+            _ => {}
+        }
+        index += 1;
+    }
+    lease_pid == Some(daemon_pid) && lease_start == Some(daemon_start)
+}
+
+fn terminate_helper_pid(pid: u32) {
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if crate::state::proc_start_time(pid).is_none() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = Command::new("kill")
+        .arg("-KILL")
+        .arg(pid.to_string())
+        .status();
+}
+
+/// Terminate a helper that outlived its daemon. Only processes carrying the
+/// exact lease marker (`--lease-pid`/`--lease-start`) are touched, so an
+/// unrelated `nvidia-smi` or a helper from another daemon is never killed.
+pub fn kill_lease_processes() -> usize {
+    let Some(lease) = load_lease() else {
+        return 0;
+    };
+    let mut victims: Vec<u32> = Vec::new();
+    if lease_process_alive(&lease) {
+        victims.push(lease.helper_pid);
+    }
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            if pid == std::process::id() || victims.contains(&pid) {
+                continue;
+            }
+            if pid_has_lease(pid, lease.daemon_pid, lease.daemon_start) {
+                victims.push(pid);
+            }
+        }
+    }
+    let count = victims.len();
+    for pid in victims {
+        terminate_helper_pid(pid);
+    }
+    clear_lease();
+    count
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -308,6 +556,7 @@ fn apply_args(gpu: &GpuStats, tuning: &GpuTuning) -> Vec<String> {
     if let Some(mem) = tuning.memory_clock_mhz {
         args.extend(["--lmc".into(), mem.to_string()]);
     }
+    args.extend(helper_lease_args());
     args
 }
 
@@ -316,7 +565,46 @@ fn reset_args(gpu: &GpuSnapshot, mode: RestoreMode) -> Vec<String> {
     if let Some(pl) = gpu.restore_power_w(mode) {
         args.extend(["--pl".into(), pl.to_string()]);
     }
+    args.extend(helper_lease_args());
     args
+}
+
+fn numeric(value: &str, flag: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .map_err(|_| format!("{flag}: «{value}» is not a number"))
+}
+
+fn validate_lease_arg(
+    flag: &str,
+    value: &str,
+    lease_pid: &mut bool,
+    lease_start: &mut bool,
+) -> Result<(), String> {
+    let number = numeric(value, flag)?;
+    match flag {
+        "--lease-pid" => {
+            if !(1..=4_194_304).contains(&number) {
+                return Err(format!("--lease-pid: {number} out of range"));
+            }
+            *lease_pid = true;
+        }
+        "--lease-start" => {
+            if !(1..=999_999_999_999_999_999).contains(&number) {
+                return Err(format!("--lease-start: {number} out of range"));
+            }
+            *lease_start = true;
+        }
+        _ => return Err(format!("unknown flag {flag}")),
+    }
+    Ok(())
+}
+
+fn validate_lease_pair(lease_pid: bool, lease_start: bool) -> Result<(), String> {
+    if lease_pid != lease_start {
+        return Err("--lease-pid and --lease-start must be passed together".into());
+    }
+    Ok(())
 }
 
 pub fn validate_apply_args(args: &[String]) -> Result<(), String> {
@@ -324,8 +612,10 @@ pub fn validate_apply_args(args: &[String]) -> Result<(), String> {
         return Err("first subcommand must be apply".into());
     }
     let mut i = 1;
-    let mut seen = 0;
+    let mut tuning_seen = 0;
     let mut gpu_seen = false;
+    let mut lease_pid = false;
+    let mut lease_start = false;
     while i < args.len() {
         let flag = args[i].as_str();
         let value = args
@@ -334,10 +624,14 @@ pub fn validate_apply_args(args: &[String]) -> Result<(), String> {
         if flag == "--gpu" {
             validate_uuid(value)?;
             gpu_seen = true;
+        } else if flag == "--lease-pid" || flag == "--lease-start" {
+            validate_lease_arg(flag, value, &mut lease_pid, &mut lease_start)?;
         } else {
-            let number: u32 = value
-                .parse()
-                .map_err(|_| format!("{flag}: «{value}» is not a number"))?;
+            let number = numeric(value, flag)?;
+            if number > u32::MAX as u64 {
+                return Err(format!("{flag}: {number} out of range"));
+            }
+            let number = number as u32;
             match flag {
                 "--pl" if (50..=1000).contains(&number) => {}
                 "--lgc" if (100..=4000).contains(&number) => {}
@@ -345,16 +639,17 @@ pub fn validate_apply_args(args: &[String]) -> Result<(), String> {
                 "--pl" | "--lgc" | "--lmc" => return Err(format!("{flag}: {number} out of range")),
                 other => return Err(format!("unknown flag {other}")),
             }
+            tuning_seen += 1;
         }
-        seen += 1;
         i += 2;
     }
     if !gpu_seen {
         return Err("--gpu <uuid> is required".into());
     }
-    if seen < 2 {
+    if tuning_seen == 0 {
         return Err("at least one tuning parameter is required".into());
     }
+    validate_lease_pair(lease_pid, lease_start)?;
     Ok(())
 }
 
@@ -364,6 +659,8 @@ pub fn validate_reset_args(args: &[String]) -> Result<(), String> {
     }
     let mut i = 1;
     let mut gpu_seen = false;
+    let mut lease_pid = false;
+    let mut lease_start = false;
     while i < args.len() {
         let flag = args[i].as_str();
         let value = args
@@ -373,6 +670,9 @@ pub fn validate_reset_args(args: &[String]) -> Result<(), String> {
             "--gpu" => {
                 validate_uuid(value)?;
                 gpu_seen = true;
+            }
+            "--lease-pid" | "--lease-start" => {
+                validate_lease_arg(flag, value, &mut lease_pid, &mut lease_start)?;
             }
             "--pl" => {
                 let pl: u32 = value
@@ -389,6 +689,7 @@ pub fn validate_reset_args(args: &[String]) -> Result<(), String> {
     if !gpu_seen {
         return Err("--gpu <uuid> is required".into());
     }
+    validate_lease_pair(lease_pid, lease_start)?;
     Ok(())
 }
 
@@ -417,8 +718,17 @@ pub fn verify_power(uuid: &str, target: u32) -> anyhow::Result<f64> {
 /// Apply a tuning profile to one GPU. Returns an error when the helper fails
 /// or when the power limit did not actually take effect.
 pub fn apply_tuning(gpu: &GpuStats, tuning: &GpuTuning) -> anyhow::Result<()> {
+    let _lock = OcLock::acquire(LOCK_TIMEOUT)?;
+    apply_tuning_locked(gpu, tuning)
+}
+
+/// Apply with the OC lock already held by the caller.
+pub fn apply_tuning_locked(gpu: &GpuStats, tuning: &GpuTuning) -> anyhow::Result<()> {
     let args = apply_args(gpu, tuning);
-    if args.len() <= 3 {
+    if !args
+        .iter()
+        .any(|arg| arg == "--pl" || arg == "--lgc" || arg == "--lmc")
+    {
         return Ok(());
     }
     validate_apply_args(&args).map_err(|e| anyhow::anyhow!(e))?;
@@ -447,6 +757,20 @@ pub fn apply_tuning(gpu: &GpuStats, tuning: &GpuTuning) -> anyhow::Result<()> {
 
 /// Restore one GPU to the snapshot (or the driver default).
 pub fn restore_gpu(snapshot: &GpuSnapshot, mode: RestoreMode) -> anyhow::Result<()> {
+    let _lock = OcLock::acquire(LOCK_TIMEOUT)?;
+    restore_gpu_locked(snapshot, mode)
+}
+
+/// Restore one GPU with the OC lock already held by the caller.
+pub fn restore_gpu_locked(snapshot: &GpuSnapshot, mode: RestoreMode) -> anyhow::Result<()> {
+    restore_gpu_locked_with_timeout(snapshot, mode, helper_timeout())
+}
+
+fn restore_gpu_locked_with_timeout(
+    snapshot: &GpuSnapshot,
+    mode: RestoreMode,
+    timeout: Duration,
+) -> anyhow::Result<()> {
     let target = snapshot.restore_power_w(mode).ok_or_else(|| {
         anyhow::anyhow!(
             "GPU {}: cannot determine the stock power limit",
@@ -461,7 +785,7 @@ pub fn restore_gpu(snapshot: &GpuSnapshot, mode: RestoreMode) -> anyhow::Result<
         mode.as_str(),
         args[1..].join(" ")
     ));
-    let output = run_helper(&args)?;
+    let output = run_helper_with_timeout(&args, timeout)?;
     verify_power(&snapshot.uuid, target).map_err(|e| {
         anyhow::anyhow!("GPU {}: stock restore was not applied: {e}", snapshot.index)
     })?;
@@ -482,13 +806,38 @@ pub fn restore_gpu(snapshot: &GpuSnapshot, mode: RestoreMode) -> anyhow::Result<
 /// failure it is kept (and the caller records the error) so a retry is
 /// possible.
 pub fn restore_snapshot(snapshot: &OcSnapshot, mode: RestoreMode) -> anyhow::Result<()> {
+    let _lock = OcLock::acquire(LOCK_TIMEOUT)?;
+    restore_snapshot_locked(snapshot, mode)
+}
+
+/// Restore with a short per-helper timeout, for shutdown and emergency paths.
+pub fn restore_snapshot_with_timeout(
+    snapshot: &OcSnapshot,
+    mode: RestoreMode,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    let _lock = OcLock::acquire(LOCK_TIMEOUT)?;
+    restore_snapshot_locked_with_timeout(snapshot, mode, timeout)
+}
+
+/// Restore with the OC lock already held by the caller.
+pub fn restore_snapshot_locked(snapshot: &OcSnapshot, mode: RestoreMode) -> anyhow::Result<()> {
+    restore_snapshot_locked_with_timeout(snapshot, mode, helper_timeout())
+}
+
+/// Restore with the lock held and an explicit helper timeout.
+pub fn restore_snapshot_locked_with_timeout(
+    snapshot: &OcSnapshot,
+    mode: RestoreMode,
+    timeout: Duration,
+) -> anyhow::Result<()> {
     let gpus = snapshot.restore_gpus();
     if gpus.is_empty() {
         anyhow::bail!("snapshot has no GPUs to restore");
     }
     let mut first_error = None;
     for gpu in gpus {
-        if let Err(err) = restore_gpu(gpu, mode) {
+        if let Err(err) = restore_gpu_locked_with_timeout(gpu, mode, timeout) {
             crate::supervisor::log_line(&format!(
                 "oc reset failed gpu={} mode={}: {err}",
                 gpu.index,
@@ -515,6 +864,10 @@ struct HelperOutput {
 }
 
 fn run_helper(args: &[String]) -> anyhow::Result<HelperOutput> {
+    run_helper_with_timeout(args, helper_timeout())
+}
+
+fn run_helper_with_timeout(args: &[String], timeout: Duration) -> anyhow::Result<HelperOutput> {
     if !helper_installed() {
         anyhow::bail!(
             "polkit helper is not installed ({}); run the installer",
@@ -540,7 +893,25 @@ fn run_helper(args: &[String]) -> anyhow::Result<HelperOutput> {
     let mut child = command
         .spawn()
         .map_err(|e| anyhow::anyhow!("cannot start OC helper: {e}"))?;
-    let timeout = helper_timeout();
+    let lease = HelperLease {
+        daemon_pid: std::process::id(),
+        daemon_start: crate::state::proc_start_time(std::process::id()).unwrap_or(0),
+        helper_pid: child.id(),
+        helper_start: crate::state::proc_start_time(child.id()).unwrap_or(0),
+        created_at: crate::util::now_unix(),
+    };
+    if lease.daemon_start != 0 && lease.helper_start != 0 {
+        write_lease(&lease);
+    }
+    let result = wait_for_helper(&mut child, timeout);
+    clear_lease();
+    result
+}
+
+fn wait_for_helper(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> anyhow::Result<HelperOutput> {
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -761,7 +1132,10 @@ mod tests {
     fn builds_reset_args() {
         let snapshot = snapshot(350.0, 350.0);
         let args = reset_args(&snapshot, RestoreMode::Snapshot);
-        assert_eq!(args, s(&["reset", "--gpu", &snapshot.uuid, "--pl", "350"]));
+        assert_eq!(
+            &args[..5],
+            &["reset", "--gpu", &snapshot.uuid, "--pl", "350"][..]
+        );
         assert!(validate_reset_args(&args).is_ok());
     }
 
@@ -840,5 +1214,92 @@ mod tests {
         assert_eq!(RestoreMode::parse("snapshot"), Some(RestoreMode::Snapshot));
         assert_eq!(RestoreMode::parse("defaults"), Some(RestoreMode::Defaults));
         assert_eq!(RestoreMode::parse("nope"), None);
+    }
+
+    #[test]
+    fn helper_lease_flags_are_validated() {
+        let args = s(&[
+            "apply",
+            "--gpu",
+            "GPU-12345678-1234-1234-1234-123456789abc",
+            "--pl",
+            "300",
+            "--lease-pid",
+            "1234",
+            "--lease-start",
+            "5678",
+        ]);
+        assert!(validate_apply_args(&args).is_ok());
+        assert!(validate_apply_args(&s(&[
+            "apply",
+            "--gpu",
+            "GPU-12345678-1234-1234-1234-123456789abc",
+            "--pl",
+            "300",
+            "--lease-pid",
+            "0",
+            "--lease-start",
+            "5678",
+        ]))
+        .is_err());
+        assert!(validate_apply_args(&s(&[
+            "apply",
+            "--gpu",
+            "GPU-12345678-1234-1234-1234-123456789abc",
+            "--pl",
+            "300",
+            "--lease-pid",
+            "abc",
+            "--lease-start",
+            "5678",
+        ]))
+        .is_err());
+        assert!(validate_apply_args(&s(&[
+            "apply",
+            "--gpu",
+            "GPU-12345678-1234-1234-1234-123456789abc",
+            "--pl",
+            "300",
+            "--lease-pid",
+            "1234",
+        ]))
+        .is_err());
+        let reset = s(&[
+            "reset",
+            "--gpu",
+            "GPU-12345678-1234-1234-1234-123456789abc",
+            "--pl",
+            "350",
+            "--lease-pid",
+            "1234",
+            "--lease-start",
+            "5678",
+        ]);
+        assert!(validate_reset_args(&reset).is_ok());
+    }
+
+    #[test]
+    fn generated_args_carry_a_lease_for_this_process() {
+        let args = apply_args(
+            &gpu(),
+            &GpuTuning {
+                power_limit_w: Some(300),
+                ..Default::default()
+            },
+        );
+        assert!(validate_apply_args(&args).is_ok());
+        assert!(args.windows(2).any(|w| w[0] == "--lease-pid"));
+        assert!(args.windows(2).any(|w| w[0] == "--lease-start"));
+    }
+
+    #[test]
+    fn nested_oc_lock_is_rejected() {
+        let root = crate::paths::state_dir();
+        let _ = std::fs::create_dir_all(&root);
+        let first = OcLock::acquire(Duration::from_secs(1)).unwrap();
+        let second = OcLock::acquire(Duration::from_secs(1));
+        assert!(second.is_err());
+        drop(first);
+        assert!(OcLock::acquire(Duration::from_secs(1)).is_ok());
     }
 }

@@ -38,7 +38,7 @@ do not move GTK types into `trommel-core` or the daemon.
 | `cargo test --workspace` | Unit tests: config/migration, args, parsers, OC validation, status, D-Bus helpers | Rust only |
 | `cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings` | No new lints, including GUI code | GTK dev libs |
 | `cargo fmt --check` | Formatting | Rust only |
-| `./scripts/e2e.sh` | Full CLI lifecycle on a private bus with fake GPU, helper and miner | Python 3, dbus |
+| `./scripts/e2e.sh` | Full CLI lifecycle on a private bus with fake GPU, helper and miner, including SIGKILL/emergency-stop, startup recovery, helper lease, partial apply, restore retry, custom binary, benchmark external guard, restart budget, guard and lost session bus | Python 3, dbus |
 | `./scripts/test-mcp.sh` | MCP protocol, read-only default, write gating, redaction | Python 3 |
 | `./scripts/ui-smoke.sh` | Critical GUI path through AT-SPI (quick setup, start/stop, settings, editor, tuning, install) | Wayland session, AT-SPI |
 | `./scripts/first-run-smoke.sh` | Pristine install: no config, no wallet, no miner, one fake GPU | Wayland session, AT-SPI |
@@ -68,6 +68,8 @@ The scripts never touch a real rig:
   its arguments and forwards them to the fake `nvidia-smi`;
 - `TROMMEL_NO_EXTERNAL_SCAN=1` stops the supervisor from adopting a real miner
   running on the same user;
+- `TROMMEL_NO_GUARD=1` keeps daemon lifetimes predictable; guard and session-bus
+  tests opt back in with `env -u`;
 - unit tests get a per-process temporary `paths` root.
 
 Never weaken this isolation to make a test pass.
@@ -102,6 +104,9 @@ Runtime/test variables used outside the GUI:
 | `TROMMEL_FAKE_GPU_STATE` | JSON state file for the fake `nvidia-smi` |
 | `TROMMEL_FAKE_MODE` | `ignore_pl`, `ignore_lmc`, `fail_rgc`, … for the fake |
 | `TROMMEL_NO_EXTERNAL_SCAN` | Disable the `/proc` external-miner scan |
+| `TROMMEL_NO_GUARD` | Do not start the guard (deterministic test daemon lifetimes) |
+| `TROMMEL_MAX_RESTARTS` | Override the consecutive restart budget (default 5) |
+| `TROMMEL_GUARD_BIN` | Path to the `trommel` binary the daemon uses for its guard |
 | `TROMMEL_SKIP_BUILD` | Test scripts reuse an existing build |
 | `TROMMEL_VERSION` | Override the version expected by `test-deb.sh` |
 
@@ -158,6 +163,14 @@ Common causes:
   45 s after a failure; a non-PearlHash pool shows configured data only.
 - **No GPU in a container** — `/dev/nvidia*` and `nvidia-smi` are host devices;
   the GUI/daemon cannot work inside a sandbox without them.
+- **Snapshot kept after a crash/stop** — the restore failed or
+  `restore_stock_on_stop` is off. Read `oc.last_error`, fix the helper/auth
+  issue and run `trommel emergency-stop` (idempotent); do not delete
+  `oc-snapshot.json` by hand.
+- **State says running but nothing mines** — a PID was reused or the binary was
+  replaced. `State::miner_alive` compares `state.miner_path`, so Stop and
+  emergency-stop refuse to signal a mismatched PID; restart the daemon to run
+  startup recovery.
 
 ## Adding a feature
 
@@ -174,6 +187,33 @@ Common causes:
    for visible interaction.
 7. Update the relevant document ([docs/README.md](README.md) says which) in the
    same commit.
+
+## Working in blocks
+
+The 0.5 roadmap is split into B0–B5 ([roadmap.md](roadmap.md#block-plan)). A
+block is the unit of review and release:
+
+1. **Branch.** `feat/<block>-<topic>` from the current mainline. Do not mix the
+   next block into the branch, even when it is tempting.
+2. **Scope freeze.** Write down the block's acceptance criteria (the roadmap row
+   and the ADRs it implements). Anything else is a follow-up, not a drive-by.
+3. **Design first.** Update or check the ADR before code; accepted ADRs are not
+   drafts. B1 is governed by [ADR 0005](adr/0005-one-active-session.md) and
+   [ADR 0006](adr/0006-failure-policy.md).
+4. **Code + tests.** Core logic in `trommel-core` with unit tests; lifecycle
+   behaviour in `scripts/e2e.sh` with the fake rig. Crash paths (SIGKILL,
+   partial apply, failed restore) need an automated test, not a comment.
+5. **Docs in the same commit.** Architecture, components, security, agents,
+   verification, changelog and the roadmap status. A feature is not done while
+   one of those still describes the old behaviour.
+6. **Screenshots.** Only regenerate them when the UI actually changed; do not
+   touch them for daemon/CLI blocks.
+7. **Package and tag.** Bump the workspace version, run
+   `./scripts/package-deb.sh && ./scripts/test-deb.sh`, then follow the release
+   checklist below. Tag `vX.Y.Z` only after the whole matrix is green.
+
+If the session runs out of time, stop after the last green sub-block, record the
+unfinished part in the roadmap and do not start the next block.
 
 ## Release checklist
 

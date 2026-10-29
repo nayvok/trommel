@@ -214,6 +214,36 @@ fi
 run_phase tune
 "$BIN/trommel" stop >/dev/null 2>&1 || true
 
+step "A GUI crash leaves mining running (ADR 0006)"
+if "$BIN/trommel" start >/dev/null 2>&1; then
+    sleep 2
+    BEFORE=$(grep -c '^reset ' "$WORK/oc.log" 2>/dev/null || true)
+    start_gui crash
+    sleep 3
+    if [ -n "$GUI_PID" ] && kill -0 "$GUI_PID" 2>/dev/null; then
+        kill -9 "$GUI_PID" 2>/dev/null || true
+        wait "$GUI_PID" 2>/dev/null || true
+        GUI_PID=""
+        sleep 2
+        if "$BIN/trommel" status --json 2>/dev/null | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if s["state"]["running"] else 1)'; then
+            pass "mining continues after SIGKILLing the GUI"
+        else
+            fail "the GUI crash stopped mining"
+        fi
+        AFTER=$(grep -c '^reset ' "$WORK/oc.log" 2>/dev/null || true)
+        if [ "$BEFORE" = "$AFTER" ]; then
+            pass "the GUI crash did not trigger a stock restore"
+        else
+            fail "the GUI crash triggered a restore"
+        fi
+    else
+        fail "the GUI did not stay up long enough to kill it"
+    fi
+    "$BIN/trommel" stop >/dev/null 2>&1 || true
+else
+    fail "could not start mining for the GUI crash check"
+fi
+
 step "Miner install dialog"
 run_phase install
 

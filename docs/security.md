@@ -10,7 +10,8 @@ trust boundaries around that. Report vulnerabilities privately; see
 | Component | Trust | Can do | Cannot do |
 | --- | --- | --- | --- |
 | `trommel` GUI/CLI | User session | Read/write its config draft, call D-Bus, download to the user store | Run root helpers directly, tune GPUs, spawn the supervisor's miner |
-| `trommeld` | User session | Own the miner, call the helper through pkexec, read `nvidia-smi`, scan `/proc` | Run as root, write outside the user's dirs, grant polkit rights |
+| `trommeld` | User session | Own the miner, call the helper through pkexec, read `nvidia-smi`, scan `/proc` | Run as root, write outside the user's dirs, grant polkit rights, kill an external miner |
+| `trommel guard` | User session | Watch the daemon PID/start time and run emergency-stop after a crash | Touch GPUs directly, run as root |
 | `trommel-oc` | Root, invoked via pkexec | One `nvidia-smi` call per GPU with numeric arguments | Accept paths, shell text, arbitrary commands, other GPUs' UUID formats |
 | Miner binary | User, third-party | Mine, bind a local API port, write its log | Be inspected or verified by Trommel beyond the executable/checksum checks |
 | Pool API | Network | Return statistics to the daemon | Control the miner, trigger a config change, see the wallet in logs (the daemon does not log it) |
@@ -24,7 +25,9 @@ do not expose the bus name on the system bus or through a socket.
 `/usr/libexec/trommel/trommel-oc` is the only privileged program.
 
 - Accepts `apply --gpu GPU-… [--pl W] [--lgc MHz] [--lmc MHz]` and
-  `reset --gpu GPU-… [--pl W]`, plus a read-only `status`.
+  `reset --gpu GPU-… [--pl W]`, plus a read-only `status`. An optional
+  `--lease-pid PID --lease-start START` pair names the daemon that queued the
+  change.
 - Validates the UUID shape (`^GPU-[0-9a-fA-F-]{8,64}$`) and ranges (power
   50–1000 W, clocks 100–4000 MHz) in both the Bash helper and
   `trommel-core::oc` before invoking it.
@@ -39,6 +42,13 @@ do not expose the bus name on the system bus or through a socket.
   missing rule costs one authentication, not a silent failure.
 - Is called one GPU at a time; the daemon rejects a second concurrent OC
   operation while one is waiting for authorization.
+- Validates the lease as strict digits and checks `/proc/<pid>/stat` field 22
+  **before its first mutation**. A helper that sat behind a polkit dialog while
+  the daemon died aborts instead of tuning a rig that is being restored.
+- Is serialized with every other apply/restore by an advisory `flock` on
+  `~/.local/state/trommel/oc.lock`, so a late helper cannot overwrite an
+  emergency restore. Nested acquisition in one process is an error, not a
+  deadlock.
 
 ## Polkit
 
@@ -60,6 +70,9 @@ do not expose the bus name on the system bus or through a socket.
 - 512 MiB limit, with connect/read/total timeouts.
 - Optional SHA-256; if absent, the install is stored as `verified: false` and
   the UI says so. Never invent a checksum.
+- `miner`, `version` and `binary` must each be a single safe path component
+  (non-empty, not `.`/`..`, no `/`, `\` or NUL) before any network request or
+  write. This blocks `../escape` and `a/b` before the archive extractor.
 - Archives (`tar.gz`, `tgz`, `zip`, raw) reject absolute paths and `..`;
   extraction is staged in a temporary directory and moved into
   `~/.local/share/trommel/miners/<id>/<version>/`.
@@ -97,13 +110,30 @@ do not expose the bus name on the system bus or through a socket.
 
 - The supervisor never spawns a second miner and never kills an external miner
   without user action; Start explains the conflict instead.
+- A PID is signalled only when `/proc/<pid>/exe`/`cmdline` matches the absolute
+  `state.miner_path` recorded at spawn. The old name-only check is used only for
+  legacy state files without a path: PIDs are reused and a custom binary has an
+  arbitrary name, so killing by name could hit an unrelated process.
+- External state is never claimed: Stop, shutdown, emergency-stop and the guard
+  leave the process alone and only clear our state entry. A benchmark refuses
+  to start while an external miner runs.
+- A GUI crash is a no-op for mining. The GUI has no kill/restore path; only the
+  daemon, systemd `ExecStopPost` and the guard own teardown. This is deliberate
+  ([ADR 0006](adr/0006-failure-policy.md)), not an omission.
+- Startup recovery stops an orphaned miner from a previous daemon and restores
+  stock before the D-Bus name is served; it does not silently resume mining.
+- A failed restore keeps `oc-snapshot.json` and `last_error`; the UI does not
+  claim the stock state was restored. Do not delete the snapshot by hand.
 - A running miner is never silently restarted: GPU/preset changes require the
   explicit Apply and restart / Apply and stop dialog.
 - Stop restores the snapshot when `restore_stock_on_stop` is on; a failed
   restore is reported and the snapshot is kept for a retry. When the setting is
   off, Stop keeps the snapshot, leaves the GPU settings applied and reports
   `oc.needs_restore` instead of claiming the stock state was restored.
-- Benchmarks stop the real miner for their duration and restart it afterwards.
+- Benchmarks stop only a miner this session owns, and only after confirming no
+  external miner is running; they restart the previous miner afterwards.
+- GPU mutations are serialized with `flock`; an in-flight helper is waited for
+  or terminated before restore.
 
 ## Packaging and sandboxing
 

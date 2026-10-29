@@ -14,16 +14,42 @@ gpu=""
 pl=""
 lgc=""
 lmc=""
+lease_pid=""
+lease_start=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --gpu) gpu="$2"; shift 2 ;;
         --pl) pl="$2"; shift 2 ;;
         --lgc) lgc="$2"; shift 2 ;;
         --lmc) lmc="$2"; shift 2 ;;
+        --lease-pid) lease_pid="$2"; shift 2 ;;
+        --lease-start) lease_start="$2"; shift 2 ;;
         *) shift ;;
     esac
 done
 [ -n "$gpu" ] || { echo "fake helper: --gpu is required" >&2; exit 2; }
+
+# Mirror the real helper's lease check: refuse to tune a rig whose daemon is
+# gone. The e2e harness relies on this to prove a late apply can not overwrite
+# an emergency restore.
+check_lease() {
+    [ -z "$lease_pid" ] && [ -z "$lease_start" ] && return 0
+    [ -n "$lease_pid" ] && [ -n "$lease_start" ] \
+        || { echo "fake helper: lease flags must be passed together" >&2; exit 3; }
+    [[ "$lease_pid" =~ ^[0-9]{1,7}$ ]] \
+        || { echo "fake helper: invalid --lease-pid" >&2; exit 3; }
+    [[ "$lease_start" =~ ^[0-9]{1,18}$ ]] \
+        || { echo "fake helper: invalid --lease-start" >&2; exit 3; }
+    [ -r "/proc/$lease_pid/stat" ] \
+        || { echo "fake helper: lease process is gone" >&2; exit 3; }
+    local stat rest start
+    stat=$(<"/proc/$lease_pid/stat")
+    rest=${stat##*') '}
+    start=$(echo "$rest" | awk '{print $20}')
+    [ "$start" = "$lease_start" ] \
+        || { echo "fake helper: lease process was replaced" >&2; exit 3; }
+}
+check_lease
 
 case "$cmd" in
     apply)

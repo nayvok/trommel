@@ -12,11 +12,13 @@ runtime.
 
 | Surface | Access | Read/write | Notes |
 | --- | --- | --- | --- |
-| Config | `~/.config/trommel/config.json` | read; write only through Apply | Schema v2; see [schemas](schema/config.schema.json) |
-| Runtime state | `~/.local/state/trommel/state.json` | read | PID, running, restarts, last error |
+| Config | `~/.config/trommel/config.json` | read; write only through Apply | Schema v3; see [schemas](schema/config.schema.json) |
+| Runtime state | `~/.local/state/trommel/state.json` | read | PID, `miner_path`, running, restarts, last error, external/orphan |
 | Miner log | `~/.local/state/trommel/miner.log` | read | Tail for hashrate/share fallback |
 | Daemon log | `~/.local/state/trommel/daemon.log` | read | Supervisor events |
-| GPU snapshot | `~/.local/state/trommel/oc-snapshot.json` | read | Per-boot stock power/clocks |
+| GPU snapshot | `~/.local/state/trommel/oc-snapshot.json` | read | Per-boot stock power/clocks, `applied`, `last_error` |
+| OC lock/lease | `~/.local/state/trommel/oc.lock`, `oc-lease.json` | read-only | Cross-process serialization and the in-flight helper |
+| Guard | `~/.local/state/trommel/guard.pid`, `guard.disarm` | read-only | Watch state for the manual-run supervisor |
 | Benchmarks | `~/.local/state/trommel/bench/*.json` | read | A/B reports |
 | Miner store | `~/.local/share/trommel/miners/<id>/<version>/` | read | Never hand-edit; use `trommel miner import/install` |
 | Status JSON | `trommel status --json` | read | The GUI/CLI contract |
@@ -59,6 +61,12 @@ trommel config apply /tmp/trommel-proposed.json --restart
 - `trommel stop` reports whether the stock snapshot was restored. If restore on
   stop is disabled, the snapshot is kept and `oc.needs_restore` is true; use
   `trommel oc restore` (an explicit action) to put the GPU back.
+- `trommel emergency-stop --reason=manual` is a hidden, idempotent teardown for
+  a daemon that is already gone or wedged. It waits for the OC lock and for an
+  in-flight helper, stops only the miner whose PID still matches
+  `state.miner_path`, restores the snapshot and keeps it on failure. Do not use
+  it as a substitute for `trommel stop` while the daemon is healthy, and never
+  delete the snapshot to “fix” a failed restore.
 - `trommel oc restore` refuses while a miner is running. Modes: `snapshot`
   (captured pre-mining limit) and `defaults` (driver default, clocks unlocked).
   The returned JSON includes per-card targets and a human message.
@@ -93,9 +101,9 @@ human text. `status` and `start/stop/toggle` connect through D-Bus and start
 | --- | --- |
 | `contract_version` | Contract revision (3); compare this, not `version` |
 | `state.running` | A miner is running (including `external`) |
-| `state.external` | The process was started outside Trommel |
-| `state.last_error` | Last supervisor/config error, if any |
-| `state.uptime_s`, `state.restarts` | Session health |
+| `state.external` | The process was started outside Trommel and is never ours to kill |
+| `state.last_error` | Last supervisor/config error, including a failed restore |
+| `state.uptime_s`, `state.restarts` | Current process uptime and consecutive restart count; the budget is five |
 | `miner_info` | Miner id/name/version, install/verified flags, fee breakdown |
 | `gpus[]` | Per-card live values and static limits |
 | `total` | Aggregate hashrate/power/efficiency/temperature; power sums every detected card, temperature is the hottest card |
@@ -178,6 +186,10 @@ poll; `Status()` returns the last snapshot.
 - Start a second miner, kill an external miner, or manually edit
   `~/.local/share/trommel/miners/`. Use Start/Stop and
   `trommel miner import/install`.
+- Kill a process by miner name or by a PID read from `state.json` without
+  checking `/proc/<pid>/exe` against `state.miner_path`; PIDs are reused.
+- Run a benchmark while an external miner is active: the daemon refuses, and
+  an agent must not work around that refusal.
 - Edit a preset's wallet in an exported config and apply it without the user
   seeing the diff.
 - Bypass the **Apply and restart / Apply and stop** decision for a running
@@ -199,4 +211,5 @@ poll; `Status()` returns the last snapshot.
 5. Show `trommel config diff` or the code diff; wait for approval before
    applying anything to a rig.
 6. Verify with `status --json` after an approved apply, and confirm that the
-   stock restore was reported correctly.
+   stock restore was reported correctly. If `oc.needs_restore` is true, report
+   it; do not claim the stock state came back until a restore succeeds.

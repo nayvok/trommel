@@ -115,4 +115,58 @@ else
     pass "memory clock range is enforced"
 fi
 
+
+# Lease validation: the helper must refuse to touch the GPU when the daemon
+# that queued the change is gone or its PID was reused.
+starttime() {
+    local stat rest
+    stat=$(<"/proc/$1/stat")
+    rest=${stat##*') '}
+    echo "$rest" | awk '{print $20}'
+}
+
+reset_state
+sleep 30 &
+LEASE_JOB=$!
+LEASE_START=$(starttime "$LEASE_JOB")
+if "$HELPER" apply --gpu "$UUID" --pl 300 --lease-pid "$LEASE_JOB" --lease-start "$LEASE_START" >/dev/null 2>"$WORK/err"; then
+    [ "$(query power.limit)" = "300.00" ] && pass "a live lease allows the change" \
+        || fail "live lease applied the wrong value"
+else
+    fail "live lease was rejected: $(cat "$WORK/err")"
+fi
+
+reset_state
+if "$HELPER" apply --gpu "$UUID" --pl 300 --lease-pid "$LEASE_JOB" --lease-start "$((LEASE_START + 1))" >/dev/null 2>"$WORK/err"; then
+    fail "apply accepted a replaced lease PID"
+else
+    grep -q "replaced" "$WORK/err" && pass "a replaced lease PID is rejected" \
+        || fail "wrong error for a replaced lease PID: $(cat "$WORK/err")"
+fi
+
+reset_state
+if "$HELPER" apply --gpu "$UUID" --pl 300 --lease-pid "$LEASE_JOB" >/dev/null 2>"$WORK/err"; then
+    fail "apply accepted a lease without a start time"
+else
+    pass "an incomplete lease is rejected"
+fi
+
+reset_state
+if "$HELPER" apply --gpu "$UUID" --pl 300 --lease-pid abc --lease-start 1 >/dev/null 2>"$WORK/err"; then
+    fail "apply accepted a non-numeric lease PID"
+else
+    pass "a non-numeric lease PID is rejected"
+fi
+
+kill "$LEASE_JOB" 2>/dev/null || true
+wait "$LEASE_JOB" 2>/dev/null || true
+
+reset_state
+if "$HELPER" reset --gpu "$UUID" --pl 350 --lease-pid 4000000 --lease-start 1 >/dev/null 2>"$WORK/err"; then
+    fail "reset accepted a lease for a dead process"
+else
+    grep -q "gone" "$WORK/err" && pass "a dead lease process is rejected" \
+        || fail "wrong error for a dead lease process: $(cat "$WORK/err")"
+fi
+
 exit "$FAILS"

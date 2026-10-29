@@ -15,6 +15,18 @@ use trommel_core::{paths, OBJECT_PATH};
 async fn main() -> anyhow::Result<()> {
     paths::ensure_dirs().ok();
 
+    // Final net after a crash: stop an orphaned miner from the previous
+    // session, restore an applied snapshot, and never resume mining. This runs
+    // before the D-Bus name is owned, so a client can not observe a rig that
+    // is halfway through recovery.
+    match trommel_core::emergency::startup_recovery() {
+        Ok(outcome) => log_line(&format!(
+            "startup: {}",
+            outcome.summary(trommel_core::emergency::Reason::Startup)
+        )),
+        Err(err) => log_line(&format!("startup recovery did not complete: {err}")),
+    }
+
     let engine = Engine::new();
     let connection = zbus::connection::Builder::session()
         .name(trommel_core::BUS_NAME)
@@ -26,6 +38,14 @@ async fn main() -> anyhow::Result<()> {
         .object_server()
         .interface::<_, Engine>(OBJECT_PATH)
         .await?;
+
+    // Independent supervisor for manual runs: it survives our SIGKILL and
+    // runs emergency-stop if we disappear without disarming it.
+    let guard_pid = trommel_core::guard::spawn_guard();
+    match guard_pid {
+        Some(pid) => log_line(&format!("guard started pid={pid}")),
+        None => log_line("guard not started (TROMMEL_NO_GUARD set or trommel not found)"),
+    }
 
     log_line("сервис запущен");
     println!(
@@ -153,14 +173,20 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
-    // Shutdown: leave the miner running (as `start-mining.sh` would); the next
-    // daemon instance adopts it as an external process.
+    // Shutdown: SIGTERM/SIGINT or a closed session bus. Stop only our miner,
+    // force a short-timeout snapshot restore, then let the guard go. A lost
+    // session bus means the control plane is gone; mining must not continue
+    // unattended.
+    let mut bus_closed = false;
     let shutdown = async {
         let mut term = signal_stream(tokio::signal::unix::SignalKind::terminate());
         let mut int = signal_stream(tokio::signal::unix::SignalKind::interrupt());
         tokio::select! {
             _ = term.recv() => {}
             _ = int.recv() => {}
+            _ = connection.closed() => {
+                bus_closed = true;
+            }
         }
     };
 
@@ -170,6 +196,25 @@ async fn main() -> anyhow::Result<()> {
         _ = refresher => {}
     }
 
+    if bus_closed {
+        log_line("сессионная шина закрыта; останавливаю майнер и возвращаю сток");
+    }
+    // Disarm before the potentially long restore so a normal shutdown cannot
+    // race the guard into a second restore.
+    trommel_core::guard::disarm_and_stop();
+    match engine.shutdown().await {
+        Ok(()) => log_line("shutdown: miner stopped and stock restore attempted"),
+        Err(err) => {
+            log_line(&format!(
+                "shutdown: graceful stop failed ({err}); running emergency-stop in-process"
+            ));
+            if let Err(emergency) =
+                trommel_core::emergency::run(trommel_core::emergency::Reason::ServiceStop)
+            {
+                log_line(&format!("shutdown: emergency-stop failed: {emergency}"));
+            }
+        }
+    }
     log_line("сервис остановлен");
     Ok(())
 }

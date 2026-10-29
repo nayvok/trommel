@@ -127,6 +127,18 @@ The temperature limit and resume value come from the active GPU profile's
   binary by hand leaves the install record and Start reports the missing binary.
 - Downloads and imports update the running daemon immediately (the CLI applies
   the new config after saving).
+- `miner`, `version` and the archive `binary` name are validated as one path
+  component each before any network request or write: non-empty, not `.`/`..`,
+  and no `/`, `\` or NUL. A version such as `1.0.0-rc1` is valid; `../escape`
+  and `a/b` are rejected.
+- A local import is copied into the managed store, so the preset keeps working
+  after the original download is moved. The installed file may have any name —
+  `my-custom-rig`, not just `wildrig-multi` — and the supervisor records its
+  absolute path as `state.miner_path`.
+- Stop, shutdown and `trommel emergency-stop` signal the miner only when
+  `/proc/<pid>/exe` (or the script argument in `cmdline`) still matches that
+  saved path. Custom binaries are therefore stopped correctly without a
+  name-based guess.
 
 ## Coins and pools
 

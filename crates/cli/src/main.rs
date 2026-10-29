@@ -88,6 +88,21 @@ enum Cmd {
         #[arg(long)]
         allow_write: bool,
     },
+    /// Internal fail-safe: stop our miner and restore the stock snapshot
+    #[command(hide = true)]
+    EmergencyStop {
+        /// Where the call came from: manual, service-stop, guard or startup
+        #[arg(long, default_value = "manual")]
+        reason: String,
+    },
+    /// Internal: watch a daemon and run emergency-stop when it disappears
+    #[command(hide = true)]
+    Guard {
+        #[arg(long)]
+        daemon_pid: u32,
+        #[arg(long)]
+        daemon_start: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -220,6 +235,11 @@ async fn main() -> anyhow::Result<()> {
                 Err(_) => Err(anyhow!("MCP server thread panicked")),
             }
         }
+        Some(Cmd::EmergencyStop { reason }) => run_emergency_stop(&reason),
+        Some(Cmd::Guard {
+            daemon_pid,
+            daemon_start,
+        }) => trommel_core::guard::run(daemon_pid, daemon_start),
         Some(Cmd::Diagnose { json }) => {
             let status = match connect().await {
                 Ok(proxy) => proxy
@@ -424,6 +444,19 @@ fn run_daemon() -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!("trommeld завершился с кодом {:?}", status.code());
     }
+    Ok(())
+}
+
+/// Idempotent fail-safe used by systemd, the guard and startup recovery.
+///
+/// Deliberately does not connect to D-Bus: the daemon is usually already gone
+/// when this runs. A non-zero exit code means the miner could not be stopped or
+/// the snapshot could not be restored; both records are kept for a retry.
+fn run_emergency_stop(reason: &str) -> anyhow::Result<()> {
+    let reason = trommel_core::emergency::Reason::parse(reason)
+        .ok_or_else(|| anyhow!("reason must be one of: service-stop, guard, startup, manual"))?;
+    let outcome = trommel_core::emergency::run(reason)?;
+    println!("{}", outcome.summary(reason));
     Ok(())
 }
 

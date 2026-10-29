@@ -13,6 +13,37 @@ use crate::config::{install_key, MinerInstall};
 
 const MAX_BYTES: u64 = 512 * 1024 * 1024;
 
+/// One path component: no separators, no NUL, not `.`/`..`.
+///
+/// Miner ids, versions and binary names come from the catalogue, the CLI and
+/// the GUI. They are joined under `miners/<miner>/<version>/`, so a `../escape`
+/// or `a/b` would write outside the managed store long before the archive
+/// extractor sees it.
+pub fn validate_component(value: &str, field: &str) -> anyhow::Result<()> {
+    if value.is_empty() {
+        anyhow::bail!("{field} must not be empty");
+    }
+    if value == "." || value == ".." {
+        anyhow::bail!("{field} must not be . or ..");
+    }
+    if value.contains('/') || value.contains('\\') || value.contains('\0') {
+        anyhow::bail!("{field} must be a single path component");
+    }
+    let path = Path::new(value);
+    let mut components = path.components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(()),
+        _ => anyhow::bail!("{field} must be a single path component"),
+    }
+}
+
+fn validate_request(req: &DownloadRequest) -> anyhow::Result<()> {
+    validate_component(&req.miner, "miner")?;
+    validate_component(&req.version, "version")?;
+    validate_component(&req.binary, "binary")?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct DownloadRequest {
     pub miner: String,
@@ -35,6 +66,7 @@ pub fn install_dir(miner: &str, version: &str) -> PathBuf {
 /// Download and install a miner. `root` is the miners directory (injectable for
 /// tests); pass `miner_root()` for normal use.
 pub fn install(req: &DownloadRequest, root: &Path) -> anyhow::Result<MinerInstall> {
+    validate_request(req)?;
     if !req.url.starts_with("https://") {
         anyhow::bail!("only HTTPS download URLs are accepted");
     }
@@ -158,6 +190,8 @@ pub fn import_binary(
     source: &Path,
     root: &Path,
 ) -> anyhow::Result<MinerInstall> {
+    validate_component(miner, "miner")?;
+    validate_component(version, "version")?;
     let source = std::fs::canonicalize(source)
         .map_err(|e| anyhow::anyhow!("cannot resolve {}: {e}", source.display()))?;
     if !source.is_file() {
@@ -299,6 +333,7 @@ pub fn install_from_bytes(
     bytes: &[u8],
     root: &Path,
 ) -> anyhow::Result<MinerInstall> {
+    validate_request(req)?;
     let staging =
         std::env::temp_dir().join(format!("trommel-test-{}-{}", req.miner, std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
@@ -389,6 +424,57 @@ mod tests {
         assert!(Path::new(&install.path).exists());
         assert!(install.verified);
         assert_eq!(install.sha256, hex_digest(b"hello"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rejects_path_traversal_components() {
+        for value in ["../escape", "a/b", "a\\b", "", ".", "..", "a\0b"] {
+            assert!(
+                validate_component(value, "miner").is_err(),
+                "{value:?} was accepted"
+            );
+        }
+        for value in ["0.51.8", "1.0.0-rc1", "wildrig-multi", "custom_v2"] {
+            assert!(
+                validate_component(value, "miner").is_ok(),
+                "{value:?} was rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn install_rejects_unsafe_components_before_writing() {
+        let root = std::env::temp_dir().join(format!("trommel-traversal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let req = DownloadRequest {
+            miner: "../escape".into(),
+            version: "1.0.0".into(),
+            url: "https://example.com/x".into(),
+            sha256: String::new(),
+            archive: "binary".into(),
+            binary: "miner".into(),
+            source_url: String::new(),
+        };
+        assert!(install_from_bytes(&req, b"\x7fELFfake", &root).is_err());
+        assert!(!root.parent().unwrap().join("escape").exists());
+        for (miner, version, binary) in [
+            ("wildrig", "../escape", "wildrig-multi"),
+            ("wildrig", "1.0.0", "a/b"),
+            ("", "1.0.0", "wildrig-multi"),
+        ] {
+            let req = DownloadRequest {
+                miner: miner.into(),
+                version: version.into(),
+                url: "https://example.com/x".into(),
+                sha256: String::new(),
+                archive: "binary".into(),
+                binary: binary.into(),
+                source_url: String::new(),
+            };
+            assert!(install_from_bytes(&req, b"\x7fELFfake", &root).is_err());
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }

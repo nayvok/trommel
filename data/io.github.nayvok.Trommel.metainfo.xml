@@ -90,6 +90,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.4.5" date="2026-10-29">
+      <description>
+        <p>Fault-tolerant mining sessions: an idempotent emergency stop, startup recovery after a daemon crash, a cross-process GPU lock and helper lease, a guard for manual runs, bounded restart with backoff, and path-based miner identity. A GUI crash no longer has any effect on mining.</p>
+        <p xml:lang="ru">Отказоустойчивые сессии: идемпотентная аварийная остановка, восстановление после краха демона, межпроцессная блокировка GPU и аренда helper-процесса, guard для ручного запуска, ограниченные перезапуски с задержкой и идентификация майнера по пути. Крах GUI больше не влияет на майнинг.</p>
+      </description>
+    </release>
     <release version="0.4.3" date="2026-10-28">
       <description>
         <p>UI polish for real use: aligned Settings action buttons, readable per-GPU cards with configured and live metrics, a clearer GPU tuning dialog, a working Cancel for the GPU switch, numeric empty states, and Start opening Quick setup on a pristine install. New lock-mismatch warnings show when the driver does not honour a configured clock lock.</p>

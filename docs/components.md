@@ -139,29 +139,47 @@ unit tests cannot read or clobber real rig state. The e2e scripts point
   `cleanup_stale_snapshot()`, `current_boot_snapshot()`, `current_boot_id()`.
 - `validate_uuid()` and `validate_apply_args()`/`validate_reset_args()` — the
   in-process mirror of the helper's checks (`GPU-…`, numeric ranges, at least
-  one tuning parameter). `--lmc` accepts the real 100–12000 MHz range.
-- `apply_tuning(gpu, tuning)` — no-op when the profile has no values; validates
-  then runs the helper and reads the power limit back (±1 W).
-- `restore_gpu(snapshot, mode)` / `restore_snapshot(snapshot, mode)` — restore
-  every applied card, verify the power limit, clear the snapshot only when every
-  restore succeeded.
+  one tuning parameter, optional `--lease-pid/--lease-start` pair). `--lmc`
+  accepts the real 100–12000 MHz range. A partial or non-numeric lease is
+  rejected.
+- `apply_tuning(gpu, tuning)` — acquires `OcLock`, then performs the no-op check,
+  validation, helper call and power read-back (±1 W). `apply_tuning_locked` is
+  the variant for callers that already hold the lock.
+- `restore_gpu(snapshot, mode)` / `restore_snapshot(snapshot, mode)` — acquire
+  the lock, restore every applied card, verify the power limit, clear the
+  snapshot only when every restore succeeded. `restore_gpu_locked` and
+  `restore_snapshot_locked` do not acquire; `restore_snapshot_with_timeout` and
+  `restore_snapshot_locked_with_timeout` accept a short helper timeout for
+  shutdown/emergency.
+- `OcLock` — advisory `flock` on `state_dir/oc.lock`; `acquire_lock()` uses the
+  15 s standard timeout and a process-global flag rejects nested acquisition
+  instead of deadlocking.
+- `HelperLease`, `load_lease()`, `wait_for_lease(timeout)`, `kill_lease_processes()`,
+  `helper_lease_args()` — the daemon writes the spawned helper/`pkexec` PID and
+  its `/proc` start time; emergency-stop waits, then terminates only processes
+  carrying the exact lease marker. The helper receives the daemon PID/start and
+  aborts before mutating when it no longer matches.
 - `verify_power()`, `runtime_lock_issues()` — synchronous power check and the
   under-load clock comparison used by the supervisor.
 - `run_helper(args)` invokes `pkexec /usr/libexec/trommel/trommel-oc …` or
   `$TROMMEL_OC_HELPER` (directly when already root), with a 180 s default
   timeout (`TROMMEL_OC_TIMEOUT_MS` for tests) and actionable errors (cancelled
-  pkexec, auth timeout, helper failure).
+  pkexec, auth timeout, helper failure). It appends the caller's lease flags,
+  writes `oc-lease.json` for the spawned helper and clears it on exit.
 
 Helper argument contract (also enforced by `polkit/trommel-oc`):
 
 ```
-trommel-oc apply --gpu GPU-xxxx [--pl W] [--lgc MHz] [--lmc MHz]
-trommel-oc reset --gpu GPU-xxxx [--pl W]
+trommel-oc apply --gpu GPU-xxxx [--pl W] [--lgc MHz] [--lmc MHz] \
+                 [--lease-pid PID --lease-start STARTTIME]
+trommel-oc reset --gpu GPU-xxxx [--pl W] [--lease-pid … --lease-start …]
 trommel-oc status --gpu GPU-xxxx
 ```
 
-Ranges: `--pl` 50–1000 W, `--lgc` 100–4000 MHz, `--lmc` 100–12000 MHz. No
-paths, no shell. `apply` waits for the power limit to read back; `reset` reports
+Ranges: `--pl` 50–1000 W, `--lgc` 100–4000 MHz, `--lmc` 100–12000 MHz;
+`--lease-pid` 1–4194304 and `--lease-start` a positive `/proc` field-22 value.
+No paths, no shell. The helper verifies the lease before its first `nvidia-smi`
+mutation. `apply` waits for the power limit to read back; `reset` reports
 failing `-rgc`/`-rmc` instead of swallowing them.
 
 ### `miners` — argument construction
@@ -186,35 +204,73 @@ arguments — no shell.
 
 - `Event::{Started, Crashed, Stopped, Error, Warning, UserStopped}`; `message()`
   produces localised notification text.
-- `Supervisor::new()` loads and normalises state; a live miner recorded before a
-  daemon restart becomes `orphan`.
+- `Supervisor::new()` is the test/tool constructor; `Supervisor::with_config(cfg)`
+  is the daemon entry point. It backfills `state.miner_path` from the active
+  preset's install before normalising, so an old state file still resolves its
+  binary. A live miner from a previous daemon is marked `orphan` until startup
+  recovery stops it; adoption never resumes mining.
 - `start(cfg)` — the Start algorithm from [architecture.md](architecture.md#start):
   external-miner guard, preset validation, effective tuning, snapshot intent,
-  per-GPU apply + power verification with rollback, spawn, state update.
-  A profile with no tuning creates no snapshot and calls no helper.
-- `stop(cfg)` — terminate child/PID, restore the applied snapshot (unless
-  disabled), clear state; propagates restore errors. With restore disabled it
-  keeps the snapshot and logs that it skipped the restore.
-- `tick(cfg) -> Vec<Event>` — one-second supervisor step: reap, auto-restart,
-  detect adoption loss, emit events, and run the one-shot clock check after the
-  GPU reaches load.
-- `adopt_external(cfg)` — records a manually started miner without taking
-  ownership of tuning.
+  per-GPU apply + power verification with rollback, spawn, state update. It
+  holds the OC lock across the whole block and records the absolute
+  `state.miner_path`. A profile with no tuning creates no snapshot and calls no
+  helper.
+- `stop(cfg) / shutdown(cfg)` — terminate only our child/PID (path-checked),
+  skip and clear external state, restore the applied snapshot (unless disabled),
+  clear state; propagates restore errors. `shutdown` forces the restore with a
+  20 s helper timeout. Both hold the OC lock.
+- `owns_miner()` — `running && !external` and a live child or path-matching PID;
+  the benchmark uses it before stopping anything.
+- `tick(cfg) -> Vec<Event>` — one-second supervisor step: reap, bounded restart
+  with backoff, detect adoption loss, emit events, and run the one-shot clock
+  check after the GPU reaches load.
+- `handle_unexpected_exit` — the bounded restart policy: up to five consecutive
+  restarts (2/4/8/… s, cap 60), then stop + restore + error; `started_at` resets
+  on every spawn.
 - `terminate_pid`, `log_line` — process helper and daemon log writer.
 
 ### `state` — runtime state file
 
-`State { running, miner_pid, started_at, restarts, last_error, external, orphan,
-preset_id, miner, miner_version, profile }` (the last is a legacy-parse field).
+`State { running, miner_pid, miner_path, started_at, restarts, last_error,
+external, orphan, preset_id, miner, miner_version, profile }` (the last is a
+legacy-parse field; `miner_path` is additive with a serde default).
 
 - `load()`, `save()`, `clear_file()`, `uptime_s()`, `miner_alive()`.
 - `normalize()` — a running flag without a matching process becomes stopped,
   including the phantom `external` state that used to make Start a no-op.
-- `pid_matches_miner(pid)` — `/proc/<pid>/exe` + command-line matching for known
-  miners; shell scripts need a `pearlhash`/`--algo` token so a config file name
-  cannot masquerade as a miner.
-- `find_external_miner()` — `/proc` scan; `TROMMEL_NO_EXTERNAL_SCAN=1` disables
-  it for test isolation.
+- `proc_start_time(pid)` / `pid_alive(pid)` — `/proc/<pid>/stat` field 22 and a
+  liveness check; the start time catches PID reuse.
+- `pid_matches_binary(pid, path)` — `/proc/<pid>/exe` plus the interpreter
+  argument for `#!` scripts. A mismatch is never treated as ours.
+- `pid_matches_miner(pid)` — legacy name heuristic used only for old state files
+  without `miner_path`.
+- `find_external_miner(cfg, exclude_pid)` — `/proc` scan using the catalogue
+  names plus every installed miner's directory/binary basename; skips our own
+  and `exclude_pid`. `TROMMEL_NO_EXTERNAL_SCAN=1` disables it for test isolation.
+
+### `emergency` — idempotent teardown
+
+- `Reason::{ServiceStop, Guard, Startup, Manual}` with `parse()`/`as_str()`.
+- `run(reason)` — take the OC lock, drop a stale-boot snapshot, wait up to 10 s
+  for a helper lease and terminate it if needed, stop **our** miner only
+  (path-checked; external state is left alone), clear state after the stop and
+  restore a current-boot applied snapshot with a 20 s timeout. Restore failure
+  keeps the snapshot + `last_error` and returns an error. `Outcome` records the
+  stopped PID, restored card count and whether an external miner was skipped.
+- `startup_recovery()` — `run(Reason::Startup)`; called by `trommeld` before it
+  owns the bus name. It never resumes mining.
+
+### `guard` — independent supervisor for manual runs
+
+- `spawn_guard()` — start `trommel guard --daemon-pid … --daemon-start …` via
+  `setsid` (skipped with `TROMMEL_NO_GUARD`), terminate a stale guard from a
+  previous session first.
+- `run(daemon_pid, daemon_start)` — write `guard.pid`, poll the daemon's PID and
+  `/proc` start time; a matching `guard.disarm` token exits cleanly, otherwise a
+  disappeared daemon leads to `emergency::run(Reason::Guard)`.
+- `disarm_and_stop()` — write the token for this exact daemon, signal the guard
+  PID (start-time checked) and remove `guard.pid`. Called before the graceful
+  restore so a normal shutdown cannot race a second restore.
 
 ### `status` — the status document
 
@@ -244,7 +300,7 @@ preset_id, miner, miner_version, profile }` (the last is a legacy-parse field).
 | `GetConfig()` | Applied config JSON (not redacted; local clients only) |
 | `ApplyConfig(json, mode)` | Validate, diff, stop/restart/save with rollback; returns applied/restarted/stopped/changes JSON |
 | `SetConfig(json)` | Compatibility wrapper: `ApplyConfig(json, "restart")` |
-| `RunBenchmark(request)` | `{"profiles": [], "seconds": 180}`; returns a report |
+| `RunBenchmark(request)` | `{"profiles": [], "seconds": 180}`; refuses while an external or unowned miner runs; returns a report |
 | `OCReport()` | Read-only JSON: snapshot, current limits, per-card targets for `snapshot` and `defaults` |
 | `RestoreOC(mode)` | Restore `snapshot` or `defaults`; returns a JSON report; refuses while mining |
 | `ResetOC()` / `RestoreStock()` | Compatibility wrapper: `RestoreOC("snapshot")` (falls back to defaults) |
@@ -252,7 +308,9 @@ preset_id, miner, miner_version, profile }` (the last is a legacy-parse field).
 
 `Engine` also holds an `oc_busy` flag: a second OC operation is rejected while
 one is waiting for authorization. The status refresher uses `try_snapshot()` so
-a 180 s auth dialog does not freeze status collection.
+a 180 s auth dialog does not freeze status collection. `Engine::new()` uses
+`Supervisor::with_config`; `Engine::shutdown()` is the bounded graceful stop
+used by the daemon signal/bus handler.
 
 Properties: `Running`, `Version`, `ContractVersion`. Signals:
 `StatusChanged(json)` and `Notification(summary, body)`.
@@ -299,6 +357,9 @@ daemon.
 ### `download` — install and import
 
 - `DownloadRequest { miner, version, url, sha256, archive, binary, source_url }`.
+- `validate_component(value, field)` — non-empty, not `.`/`..`, no `/`, `\` or
+  NUL, exactly one path component. `install`, `import_binary` and
+  `install_from_bytes` call it before the network/write.
 - `install(req, root)` — HTTPS only, 512 MiB cap, optional SHA-256,
   `tar.gz`/`tgz`/`zip`/raw; rejects absolute paths and `..`; requires an
   executable (`ELF` or `#!`), moves atomically into the store, returns a
@@ -338,8 +399,12 @@ daemon.
 3. **Supervisor loop** — a 1 s interval calling `Supervisor::tick`, logging
    events, sending one desktop notification (and the `Notification` signal) per
    event, requesting a refresh.
-4. **Shutdown** — SIGTERM/SIGINT exit the process and deliberately leave the
-   miner running; the next daemon instance adopts it by PID.
+4. **Startup recovery** — before the bus name is served, stop an orphaned miner
+   from the previous daemon, restore an applied snapshot and stay stopped.
+5. **Shutdown** — SIGTERM/SIGINT or a closed session bus disarm the guard,
+   stop only our miner, force a short-timeout restore and exit. systemd's
+   `ExecStopPost` and the guard cover a SIGKILL; both call the same
+   `trommel emergency-stop`.
 
 `trommeld` is single-purpose: do not put policy here that belongs in
 `trommel-core` (it would be untestable without D-Bus).

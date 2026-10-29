@@ -11,10 +11,10 @@ needs a real rig. Run the commands from the repository root; see
 | `cargo test --workspace` | Config defaults/migration/diff/warnings, miner argument rendering, fee handling, catalogue parsing, `nvidia-smi` parsing, OC argument validation, supervisor/state/status helpers, D-Bus helpers, hashrate formatting, download/path safety |
 | `cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings` | Lints in all crates including GUI code |
 | `cargo fmt --check` | Formatting |
-| `./scripts/e2e.sh` | CLI lifecycle on a private bus: start/stop/toggle, config v3, per-card inheritance vs custom overrides, apply modes, power read-back, ignored power/clock locks, restore snapshot/defaults, restore-on-stop off, helper timeout, snapshot/restore, stale external state and orphan adoption. A stub `org.freedesktop.Notifications` service (Python/Gio; the step is skipped when `python3-gi` is missing) proves the daemon sends desktop notifications without a shell applet |
+| `./scripts/e2e.sh` | CLI lifecycle on a private bus: start/stop/toggle, config v3, per-card inheritance vs custom overrides, apply modes, power read-back, ignored power/clock locks, restore snapshot/defaults, restore-on-stop off, helper timeout, snapshot/restore, stale external state. Fault-tolerance: SIGKILL + emergency-stop, startup recovery of an orphan, helper lease (live/replaced/dead), partial apply with and without a failed rollback, failed restore retried by startup recovery, custom-named binary stopped by path, external miner left alive, benchmark refusal, restart budget, guard, and a lost session bus. A stub `org.freedesktop.Notifications` service (Python/Gio; the step is skipped when `python3-gi` is missing) proves the daemon sends desktop notifications without a shell applet |
 | `./scripts/test-oc-helper.sh` | The real Bash helper against a stateful fake `nvidia-smi`: apply/reset, ignored power rejection, failing `-rgc`, range/UUID validation |
 | `./scripts/test-mcp.sh` | MCP initialize/ping/tools/list/tools/call, read-only default, `--allow-write` gating, rejected arguments, wallet redaction |
-| `./scripts/ui-smoke.sh` | AT-SPI click-through with a fake two-GPU rig: quick setup, start/stop, settings, preset editor, GPU tuning, miner install, alerts |
+| `./scripts/ui-smoke.sh` | AT-SPI click-through with a fake two-GPU rig: quick setup, start/stop, settings, preset editor, GPU tuning, miner install, alerts, and SIGKILLing the GUI while mining continues |
 | `./scripts/first-run-smoke.sh` | Pristine install: empty XDG dirs, no config, no wallet, no installed miner, one fake GPU; dashboard placeholders, wizard, single-GPU tuning |
 | `./scripts/check-polkit.sh` | Polkit action id and helper path match the code |
 | `./scripts/check-no-secrets.sh` | No wallet-like strings or secret markers in tracked files |
@@ -52,6 +52,35 @@ not a claim that CI covers it.
 | Installer | `install.sh`, `.deb` postinst, release installer | Binaries, helper, rule, units, no password prompt for the installing user |
 | Real rig | polkit prompt-free, 300 W/1620/810, start/stop, restore dialog | OC applied, ~125 TH/s, power read back, stock restore; an ignored memory lock stops the miner with a named error |
 | Error paths | missing helper, missing miner, external miner, failed restore, cancelled auth | Start aborts or explains; snapshot kept on failed restore; no silent success; a 180 s auth dialog is not killed |
+| Crash — daemon | `kill -9 trommeld` while mining (service and manual run) | systemd `ExecStopPost` or the guard restores PL/clocks; snapshot cleared; a later start does not resume mining |
+| Crash — GUI | `kill -9 trommel` while mining | Mining and uptime continue; no restore, snapshot kept |
+| Shutdown | `systemctl --user restart trommeld` while mining | SIGTERM path stops only our miner, restores stock; the restarted unit reports stopped |
+| Logout/reboot | log out of GNOME or reboot without stopping | Unit stop restores stock; after reboot the boot-id mismatch drops the snapshot and no false restore runs |
+| Bus loss | kill the session `dbus-daemon` in the e2e harness | Daemon restores and exits; the miner is gone |
+
+## Fault-tolerance drill on a real rig
+
+Run once per release on the reference rig; a fake GPU cannot prove the driver
+accepted the restore.
+
+1. `trommel start`; note `nvidia-smi --query-gpu=power.limit,clocks.mem
+   --format=csv`. Set a non-default limit (e.g. 320 W) so the restore is visible.
+2. `systemctl --user restart trommeld`: the unit stops/restores; the restarted
+   daemon reports a stopped session and `nvidia-smi` shows the stock limit.
+   Start again.
+3. `kill -9 $(pgrep -f target/release/trommeld)` (manual run or a unit without
+   `ExecStopPost`): the guard runs emergency-stop; wait a few seconds and check
+   that the miner is gone, the snapshot is absent and the stock limit is back.
+4. Kill only the GUI (`kill -9 $(pgrep -f 'trommel$')`): `trommel status --json`
+   still reports running, the miner PID is unchanged and no new `oc reset`
+   appears in `daemon.log`.
+5. Log out (or reboot) while mining: the unit stop restores the snapshot; after
+   login the dashboard is stopped. After a reboot an old snapshot is dropped by
+   the boot-id check, never replayed.
+6. Break the restore (temporarily install a helper that fails `reset`): Stop and
+   emergency-stop return non-zero, `oc-snapshot.json` + `last_error` remain, and
+   the UI banner stays. Restore the helper, run `trommel emergency-stop`, and
+   confirm the snapshot is cleared.
 
 ## Manual checks that cannot run in CI
 
@@ -64,6 +93,12 @@ not a claim that CI covers it.
   font stack are not comparable; regenerate them locally.
 - **Real pool API.** The pool is external and rate-limited; the cache/backoff
   path is unit-tested, the live JSON is not.
+- **Real SIGKILL/restart during a polkit prompt.** The helper lease is covered
+  with the fake helper; a real `pkexec` dialog + daemon SIGKILL needs a desktop
+  session and is checked manually with `nvidia-smi` before/after.
+- **systemd/logout/reboot.** The unit file and `ExecStopPost` are packaged and
+  reviewed, but the actual user-manager stop and session logout need a desktop
+  session; the e2e harness has no systemd.
 
 ## Known harness limits
 
