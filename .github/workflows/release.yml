@@ -19,7 +19,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
             desktop-file-utils appstream gettext librsvg2-bin \
-            python3 python3-gi gir1.2-glib-2.0 git ca-certificates dpkg-dev
+            python3 python3-gi gir1.2-glib-2.0 git ca-certificates curl dpkg-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
