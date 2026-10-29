@@ -21,6 +21,17 @@ Changelog; versions use SemVer.
 
 ### Changed
 
+- **Default window narrowed to 880 × 760.** The one-line view switcher holds in
+  Russian down to about 850 px, so the window opens a hundred pixels narrower
+  without falling back to the stacked labels or the bottom bar.
+- **Miner install: import moved into the version group.** “Import binary” is a
+  row next to the installation state instead of a third footer button, so a
+  narrow dialog keeps **Cancel**, the status line and the primary action inside
+  its edge; long status messages ellipsize and keep the full text in a tooltip.
+- **Sparklines reach the bubble edges.** The wash is over-drawn to the last
+  pixel and the plot keeps only a 2 px bottom margin, so the graph sits on the
+  bubble floor instead of floating above it or being clipped before the right
+  corner.
 - **Navigation moved into the header bar.** The four sections are an
   `AdwViewSwitcherTitle`, so the switcher sits next to the window actions
   instead of in a separate bar at the bottom. When the window is too narrow for

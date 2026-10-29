@@ -515,9 +515,11 @@ fn build_ui(app: &adw::Application) {
         .application(app)
         .title("Trommel")
         // The header carries navigation only (refresh, switcher, menu), so the
-        // one-line view switcher fits from about 880 px in Russian, the wider
-        // locale. 960 keeps a margin for longer translated page names.
-        .default_width(960)
+        // one-line view switcher fits from about 850 px in Russian, the wider
+        // locale. 880 keeps a small margin without making the window feel wide;
+        // below that the switcher stacks its labels under the icons (still in
+        // the header) and only at ~740 it moves to the bottom bar.
+        .default_width(880)
         .default_height(760)
         .build();
     window.set_size_request(400, 420);
@@ -3801,6 +3803,22 @@ fn miner_install_dialog(
     version_group.add(&version_combo);
     version_group.add(&version_entry);
     version_group.add(&state_row);
+    // Importing a local binary is the second source for the same install. As a
+    // row next to the installation state it stays readable at any window width;
+    // as a third footer button it pushed the primary action past the dialog
+    // edge on narrow windows.
+    let import = adw::ActionRow::builder()
+        .title(tr("Import binary", "Импортировать бинарник"))
+        .subtitle(tr(
+            "Install a binary you already have on disk",
+            "Установить бинарник, который уже есть на диске",
+        ))
+        .activatable(true)
+        .build();
+    let import_icon = gtk::Image::from_icon_name("document-open-symbolic");
+    import_icon.add_css_class("dim-label");
+    import.add_suffix(&import_icon);
+    version_group.add(&import);
     // The upstream link belongs to the version it documents, not to the window
     // chrome: an activatable row beats a stray icon in the header.
     if !def.source_url.is_empty() {
@@ -3876,17 +3894,15 @@ fn miner_install_dialog(
     let status = label("", &["caption", "dim-label"]);
     status.set_hexpand(true);
     status.set_valign(gtk::Align::Center);
-    let import = gtk::Button::builder()
-        .label(tr("Import binary…", "Импортировать бинарник…"))
-        .css_classes(["flat", "pill"])
-        .build();
+    // Long download/import messages must not widen the footer: ellipsize them
+    // and keep the full text in the tooltip (set_status_text does that).
+    status.set_ellipsize(gtk::pango::EllipsizeMode::End);
     let download = gtk::Button::builder()
         .label(tr("Download and install", "Скачать и установить"))
         .css_classes(["suggested-action", "pill"])
         .build();
     footer.append(&cancel);
     footer.append(&status);
-    footer.append(&import);
     footer.append(&download);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     page.set_vexpand(true);
@@ -4004,7 +4020,7 @@ fn miner_install_dialog(
         let version_entry = version_entry.clone();
         let finish_install = finish_install.clone();
         let status = status.clone();
-        import.connect_clicked(move |button| {
+        import.connect_activated(move |row| {
             let dialog = gtk::FileChooserNative::builder()
                 .title(tr("Select miner binary", "Выберите бинарник майнера"))
                 .action(gtk::FileChooserAction::Open)
@@ -4014,7 +4030,7 @@ fn miner_install_dialog(
             let version_entry = version_entry.clone();
             let finish_install = finish_install.clone();
             let status = status.clone();
-            let button = button.clone();
+            let row = row.clone();
             dialog.connect_response(move |dialog, response| {
                 if response == gtk::ResponseType::Accept {
                     if let Some(path) = dialog.file().and_then(|file| file.path()) {
@@ -4022,8 +4038,8 @@ fn miner_install_dialog(
                         if version.is_empty() {
                             version = tr("custom", "своя").to_string();
                         }
-                        button.set_sensitive(false);
-                        button.set_label(&tr("Importing…", "Импортирую…"));
+                        row.set_sensitive(false);
+                        row.set_subtitle(&tr("Importing…", "Импортирую…"));
                         set_status_text(
                             &status,
                             &tr(
@@ -4046,7 +4062,7 @@ fn miner_install_dialog(
                             .map_err(|err| err.to_string());
                             let _ = tx.send(result);
                         });
-                        let button = button.clone();
+                        let row = row.clone();
                         let status = status.clone();
                         let finish_install = finish_install.clone();
                         glib::timeout_add_local(Duration::from_millis(100), move || {
@@ -4057,10 +4073,10 @@ fn miner_install_dialog(
                                 }
                                 Ok(Err(error)) => {
                                     set_status_text(&status, &error, "error");
-                                    button.set_sensitive(true);
-                                    button.set_label(&tr(
-                                        "Import binary…",
-                                        "Импортировать бинарник…",
+                                    row.set_sensitive(true);
+                                    row.set_subtitle(&tr(
+                                        "Install a binary you already have on disk",
+                                        "Установить бинарник, который уже есть на диске",
                                     ));
                                     glib::ControlFlow::Break
                                 }
@@ -4076,10 +4092,10 @@ fn miner_install_dialog(
                                         ),
                                         "error",
                                     );
-                                    button.set_sensitive(true);
-                                    button.set_label(&tr(
-                                        "Import binary…",
-                                        "Импортировать бинарник…",
+                                    row.set_sensitive(true);
+                                    row.set_subtitle(&tr(
+                                        "Install a binary you already have on disk",
+                                        "Установить бинарник, который уже есть на диске",
                                     ));
                                     glib::ControlFlow::Break
                                 }
@@ -4192,6 +4208,9 @@ fn miner_install_dialog(
 /// Set text plus one semantic colour class on a status label.
 fn set_status_text(widget: &gtk::Label, text: &str, class: &str) {
     widget.set_text(text);
+    // Footer status lines ellipsize on narrow dialogs; the tooltip still carries
+    // the whole message.
+    widget.set_tooltip_text((!text.is_empty()).then_some(text));
     if class.is_empty() {
         widget.set_css_classes(&["caption", "dim-label"]);
     } else {
@@ -4508,7 +4527,7 @@ const METRIC_COUNT: usize = 6;
 /// (a 1 s GUI poll over 5 minutes is 300 samples).
 const HISTORY_SECS: u64 = 300;
 const HISTORY_MAX: usize = 360;
-const SPARK_HEIGHT: i32 = 22;
+const SPARK_HEIGHT: i32 = 24;
 
 type GpuSample = (u64, [Option<f64>; METRIC_COUNT]);
 
@@ -4617,9 +4636,14 @@ fn draw_sparkline(
     }
     let w = width as f64;
     let h = height as f64;
+    // The wash reaches the tile's rounded floor; the plot keeps only a 2 px
+    // margin, because a line that floats far above the bottom edge reads as
+    // detached from the tile. At 2 px the corner rounding trims at most ~1 px
+    // off the last sample.
+    let radius = 10.0_f64.min(h / 2.0).min(w / 2.0);
     let top = 3.0;
-    let bottom = 1.0;
-    let usable = (h - top - bottom).max(1.0);
+    let bottom = 2.0;
+    let usable = (h - bottom - top).max(1.0);
     let x_of = |ts: u64| (ts.saturating_sub(first_ts) as f64) * w / (last_ts - first_ts) as f64;
     let y_of = |value: f64| top + (1.0 - (value - lo) / (hi - lo)) * usable;
     let color = spark_color(area, color_key);
@@ -4639,7 +4663,6 @@ fn draw_sparkline(
     let _ = ctx.save();
     // The chart is the floor of the tile: square at the top, rounded at the
     // bottom so the wash follows the card's 10 px corner radius.
-    let radius = 10.0_f64.min(h / 2.0).min(w / 2.0);
     ctx.move_to(0.0, 0.0);
     ctx.line_to(w, 0.0);
     ctx.line_to(w, h - radius);
@@ -4665,10 +4688,12 @@ fn draw_sparkline(
     let gradient = gtk::cairo::LinearGradient::new(0.0, top, 0.0, h);
     gradient.add_color_stop_rgba(0.0, red, green, blue, 0.0);
     gradient.add_color_stop_rgba(1.0, red, green, blue, 0.12);
-    ctx.move_to(start_x, h);
+    // Overdraw by one pixel into the clip so antialiasing cannot leave a
+    // hairline of tile background at the bottom or right edge.
+    ctx.move_to(start_x, h + 1.0);
     ctx.line_to(start_x, start_y);
     spark_curve(ctx, &points);
-    ctx.line_to(end_x, h);
+    ctx.line_to(end_x + 1.0, h + 1.0);
     ctx.close_path();
     let _ = ctx.set_source(&gradient);
     let _ = ctx.fill();

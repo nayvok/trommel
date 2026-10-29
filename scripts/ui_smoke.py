@@ -539,8 +539,10 @@ def phase_install(ui: UI) -> None:
         return
     # Let the modal window finish mapping before clicking its footer button.
     time.sleep(1.0)
-    for name in ("Cancel", "Download and install", "Import binary…"):
+    for name in ("Cancel", "Download and install"):
         ui.check(ui.find(frame, "button", name) is not None, f"install button {name}")
+    # Import is a row in the Download group; it is not a push button anymore.
+    ui.check(ui.find(frame, None, "Import binary") is not None, "install import row")
     for name in ("Version name", "URL", "SHA-256"):
         ui.check(ui.find(frame, "text", name) is not None, f"install field {name}")
     ui.click_button("Cancel", frame, "install Cancel")

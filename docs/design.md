@@ -55,7 +55,7 @@ overrides it for screenshots and tests.
 
 | Constant | Value |
 | --- | --- |
-| Default window | 960 × 760 |
+| Default window | 880 × 760 |
 | Minimum window | 400 × 420 |
 | Dashboard content clamp | 900 px (cards widen beyond the reading column) |
 | Dashboard margins | 18 px top, 24 px bottom, 12 px sides |
@@ -143,7 +143,8 @@ Every coloured value has a word next to it (“installed”, “not installed”
    clipped and never duplicated. The header bar carries navigation and window
    chrome only (refresh, switcher, menu): the primary Start/Stop action lives on
    the dashboard, which keeps the one-line switcher usable down to roughly
-   880 px, and the 960×760 default leaves a margin for longer translations.
+   850 px, so the 880×760 default is one line in both locales; a narrower
+   window stacks the labels under the icons and keeps them in the header.
 3. **Wizards are the only Back/Next surfaces.** They are modal dialogs and keep
    Cancel/Back/Next in the footer on every step.
 4. **A page is a place you return to, not a step in a flow.** Drilling down
@@ -191,7 +192,9 @@ Every coloured value has a word next to it (“installed”, “not installed”
   load; the configured target/lock is a small hint and turns hot when the live
   value differs), a custom/default chip and a **Tune** button. Each bubble ends
   with a **sparkline** on the bubble floor: the metric's last five minutes as a
-  thin accent line over a soft accent wash, rounded with the bubble. The line
+  thin accent line over a soft accent wash, rounded with the bubble. The wash
+  reaches the rounded floor and the plot keeps only a 2 px margin, so the graph
+  is grounded in the bubble instead of floating above its bottom edge. The line
   follows the value colour, so a warm or hot bubble also draws warm or hot.
   History lives in the GUI (it starts empty and fills at the poll rate), not in
   the daemon status. A one-GPU rig uses a single full-width card with a 3×2
@@ -254,7 +257,8 @@ wizard:
   catalogue knows it;
 - HTTPS URL, optional SHA-256, archive kind (`tar.gz`, `zip`, raw) and binary
   name;
-- **Import** of a local executable;
+- **Import binary** row for a local executable (the footer keeps only
+  **Cancel** and the primary action, so it also fits a 400 px window);
 - a **Release page** row in the version group, the HTTPS-only/SHA-256 note and
   the error or success message; there is no separate “verified” badge in the
   dialog;
