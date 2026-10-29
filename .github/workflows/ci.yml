@@ -32,6 +32,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: GUI-feature tests
+        run: cargo test -p trommel --features gui
+      - name: CLI-only build
+        run: cargo build -p trommel
       - name: Root helper
         run: ./scripts/test-oc-helper.sh
       - name: End-to-end
@@ -41,23 +45,16 @@ jobs:
           ./scripts/e2e.sh 2>&1 | tee .e2e-run.log
       - name: End-to-end diagnostics
         if: failure()
-        shell: bash
-        run: |
-          {
-            echo "== trommeld"
-            pgrep -af trommeld 2>/dev/null || true
-            echo "== miners"
-            pgrep -af 'wildrig-multi|my-custom-rig|external-rig|flaky-miner' 2>/dev/null || true
-            for f in .e2e/emergency.out .e2e/emergency2.out .e2e/participation-emergency.out .e2e/daemon.out .e2e/state/trommel/state.json; do
-              [ -f "$f" ] || continue
-              echo "== $f"
-              tail -40 "$f"
-            done
-            echo "== failures"
-            grep -a '✗' .e2e-run.log 2>/dev/null || true
-          } > /tmp/e2e-diag.txt
-          echo "::error::$(tr '\n' ' ' < /tmp/e2e-diag.txt | cut -c1-12000)"
-          tail -40 .e2e-run.log 2>/dev/null || true
+        run: ./scripts/e2e-diagnostics.sh .e2e-run.log
+      - name: Upload e2e logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: |
+            .e2e
+            .e2e-run.log
+          if-no-files-found: ignore
       - name: MCP smoke test
         run: ./scripts/test-mcp.sh
       - name: Build
@@ -68,3 +65,48 @@ jobs:
         run: |
           desktop-file-validate data/io.github.nayvok.Trommel.desktop
           appstreamcli validate --explain data/io.github.nayvok.Trommel.metainfo.xml
+
+  package:
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
+            desktop-file-utils appstream gettext librsvg2-bin \
+            python3 git ca-certificates curl dpkg-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build package
+        run: ./scripts/package-deb.sh
+      - name: Validate package layout
+        run: ./scripts/test-deb.sh
+      - name: Install, upgrade and remove
+        run: ./scripts/test-deb-install.sh
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: trommel-deb
+          path: dist/*.deb
+
+  ui:
+    uses: ./.github/workflows/ui.yml
+
+  msrv:
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
+            python3 git ca-certificates curl
+      - uses: dtolnay/rust-toolchain@1.92
+      - uses: Swatinem/rust-cache@v2
+      - name: Check the declared MSRV
+        run: cargo check --workspace --all-targets --features trommel/gui --locked

@@ -80,7 +80,7 @@ arguments are hidden until you turn them on.
 
 - Linux with GNOME Shell 50 (Ubuntu 26.04 is the tested target), Wayland.
 - NVIDIA GPU + working `nvidia-smi` and driver.
-- For development: Rust 1.80+, `libgtk-4-dev`, `libadwaita-1-dev`, `pkg-config`.
+- For development: Rust 1.92+, `libgtk-4-dev`, `libadwaita-1-dev`, `pkg-config`.
 
 AMD/Intel, X11-specific paths and non-GNOME desktops are not supported.
 

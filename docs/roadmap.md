@@ -1,6 +1,6 @@
 # Roadmap
 
-Current release: **0.7.0** (29.10.2026). Shipped behaviour is documented in
+Current release: **0.8.0** (30.10.2026). Shipped behaviour is documented in
 [user-guide.md](user-guide.md) and [architecture.md](architecture.md); this page
 only describes direction. Anything not shipped is explicitly in the future
 sections — the README and guides do not describe it.
@@ -18,17 +18,16 @@ green. Status is updated in the same commit as the code.
 | **B2** | Per-GPU participation: exclude a card from the active miner without a second process, catalogue capabilities for device selection | **Done in 0.5.0** |
 | **B3** | Merge the Presets and Miners pages into one preset-centred flow (miner library dialog) | **Done in 0.6.0** |
 | **B4** | Miner version manager: install/update/remove with the affected presets shown, rollback | **Done in 0.7.0** |
-| **B5** | Release hardening after B1–B4: CI/test matrix, packaging install/upgrade/remove, release bundle verification, MSRV and documentation truth | **In progress** (0.8.0) |
+| **B5** | Release hardening after B1–B4: CI/test matrix, packaging install/upgrade/remove, release bundle verification, MSRV and documentation truth | **Done in 0.8.0** |
 
-B3 is complete in 0.6.0, B4 in 0.7.0. B5 is in progress on
-`feat/b5-release-hardening` and ships in 0.8.0. Multi-miner/multi-job remains a
-separate product decision under
+B3 is complete in 0.6.0, B4 in 0.7.0 and B5 in 0.8.0. Multi-miner/multi-job
+remains a separate product decision under
 [ADR 0005](adr/0005-one-active-session.md).
 
 ## Shipped in 0.8.x — release hardening (B5)
 
-Scope frozen on 30.10.2026, before the implementation. Every item is backed by
-a concrete gap in the 0.7.0 tree; anything not listed here is out of B5.
+Scope frozen on 30.10.2026 and shipped in 0.8.0. Every item is backed by a
+concrete gap in the 0.7.0 tree; anything not listed here stayed out of B5.
 
 Evidence for the freeze:
 
@@ -56,7 +55,7 @@ Evidence for the freeze:
   [verification.md](verification.md) implied that the release workflow ran the
   UI smoke tests.
 
-Frozen work:
+The frozen scope, now shipped:
 
 1. **Test matrix.** Build the CLI-only target; run `cargo test -p trommel
    --features gui`; add a pinned MSRV job (Rust 1.92); run

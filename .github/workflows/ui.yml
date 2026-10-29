@@ -1,0 +1,39 @@
+name: UI smoke
+
+# Headless UI coverage: Xvfb supplies the display and scripts/atspi-bus.sh
+# starts a private accessibility bus plus registry, so the AT-SPI suite runs
+# without a desktop session. Called by ci.yml (pull requests) and release.yml
+# (tag) so both run the same commands.
+on:
+  workflow_call:
+
+jobs:
+  ui:
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
+            desktop-file-utils appstream gettext librsvg2-bin \
+            python3 python3-gi gir1.2-glib-2.0 gir1.2-atspi-2.0 \
+            git ca-certificates curl dbus dbus-x11 at-spi2-core xvfb x11-utils \
+            fonts-dejavu-core libgl1 libegl1 libglx-mesa0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: UI smoke
+        run: xvfb-run -a -s "-screen 0 1440x900x24" ./scripts/ui-smoke.sh
+      - name: First-run smoke
+        run: xvfb-run -a -s "-screen 0 1440x900x24" ./scripts/first-run-smoke.sh
+      - name: Upload smoke logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-smoke-logs
+          path: |
+            .uicheck
+            .first-run-check
+          if-no-files-found: ignore

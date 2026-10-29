@@ -8,7 +8,27 @@ permissions:
   contents: write
 
 jobs:
+  ui:
+    uses: ./.github/workflows/ui.yml
+
+  msrv:
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
+            python3 git ca-certificates curl
+      - uses: dtolnay/rust-toolchain@1.92
+      - uses: Swatinem/rust-cache@v2
+      - name: Check the declared MSRV
+        run: cargo check --workspace --all-targets --features trommel/gui --locked
+
   release:
+    needs: [ui, msrv]
     runs-on: ubuntu-latest
     container: ubuntu:26.04
     steps:
@@ -24,6 +44,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Check version and tag
+        run: ./scripts/check-version.sh "$GITHUB_REF_NAME"
       - name: Check secrets
         run: ./scripts/check-no-secrets.sh
       - name: Check docs
@@ -34,6 +56,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: GUI-feature tests
+        run: cargo test -p trommel --features gui
+      - name: CLI-only build
+        run: cargo build -p trommel
       - name: Root helper
         run: ./scripts/test-oc-helper.sh
       - name: End-to-end
@@ -43,23 +69,18 @@ jobs:
           ./scripts/e2e.sh 2>&1 | tee .e2e-run.log
       - name: End-to-end diagnostics
         if: failure()
-        shell: bash
-        run: |
-          {
-            echo "== trommeld"
-            pgrep -af trommeld 2>/dev/null || true
-            echo "== miners"
-            pgrep -af 'wildrig-multi|my-custom-rig|external-rig|flaky-miner' 2>/dev/null || true
-            for f in .e2e/emergency.out .e2e/emergency2.out .e2e/participation-emergency.out .e2e/daemon.out .e2e/state/trommel/state.json; do
-              [ -f "$f" ] || continue
-              echo "== $f"
-              tail -40 "$f"
-            done
-            echo "== failures"
-            grep -a '✗' .e2e-run.log 2>/dev/null || true
-          } > /tmp/e2e-diag.txt
-          echo "::error::$(tr '\n' ' ' < /tmp/e2e-diag.txt | cut -c1-12000)"
-          tail -40 .e2e-run.log 2>/dev/null || true
+        run: ./scripts/e2e-diagnostics.sh .e2e-run.log
+      - name: Upload e2e logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: |
+            .e2e
+            .e2e-run.log
+          if-no-files-found: ignore
+      - name: MCP smoke test
+        run: ./scripts/test-mcp.sh
       - name: Polkit action id
         run: ./scripts/check-polkit.sh
       - name: Validate assets
@@ -68,8 +89,16 @@ jobs:
           appstreamcli validate --explain data/io.github.nayvok.Trommel.metainfo.xml
       - name: Build release bundle
         run: ./scripts/release-bundle.sh
+      - name: Verify release bundle
+        run: ./scripts/verify-release-bundle.sh dist/release
       - name: Validate package layout
-        run: ./scripts/test-deb.sh "dist/release/trommel_$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')_amd64.deb"
+        run: |
+          VERSION="$(cargo metadata --no-deps --format-version 1 --locked | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          ./scripts/test-deb.sh "dist/release/trommel_${VERSION}_amd64.deb"
+      - name: Install, upgrade and remove
+        run: |
+          VERSION="$(cargo metadata --no-deps --format-version 1 --locked | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          ./scripts/test-deb-install.sh "dist/release/trommel_${VERSION}_amd64.deb"
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:

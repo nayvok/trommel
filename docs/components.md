@@ -630,14 +630,18 @@ There is no shell extension and no GSettings schema; the GUI only edits the
 | --- | --- |
 | `scripts/e2e.sh` | Private D-Bus, fake GPU/helper/miner end-to-end CLI checks |
 | `scripts/ui-smoke.sh` + `ui_smoke.py` | AT-SPI click-through of the GTK app |
-| `scripts/atspi-bus.sh` | Shared accessibility-bus helper: answers check, private bus/registry fallback |
+| `scripts/atspi-bus.sh` | Shared accessibility-bus helper: answers check, private bus/registry fallback, fails closed when `at-spi2-core` is missing |
 | `scripts/first-run-smoke.sh` | Pristine-install path (no config, no wallet, no miner) |
+| `scripts/e2e-diagnostics.sh` | One failure report: processes, every `.e2e` artifact, `daemon.log`, `miner.log`, `✗` lines |
 | `scripts/test-mcp.sh` | MCP protocol, read-only default, redaction |
 | `scripts/screenshots.sh` | Deterministic docs screenshots from a fake rig |
-| `scripts/package-deb.sh` / `test-deb.sh` | Build and validate the `.deb` |
-| `scripts/release-bundle.sh` | Copy release assets and stable aliases |
+| `scripts/package-deb.sh` / `test-deb.sh` | Build the `.deb` (path-neutral) and assert the full documented layout |
+| `scripts/test-deb-install.sh` | Install/upgrade/remove in a disposable root container |
+| `scripts/release-bundle.sh` | Copy release assets and stable aliases, write `SHA256SUMS`, verify the bundle |
+| `scripts/verify-release-bundle.sh` | Check assets, sidecars and `SHA256SUMS` of a local or downloaded bundle |
+| `scripts/check-version.sh` | Workspace/lock/changelog/metainfo/tag version consistency |
 | `scripts/check-polkit.sh` | Action id/helper path consistency |
-| `scripts/check-no-secrets.sh` | Tracked-file secret/wallet scan |
+| `scripts/check-no-secrets.sh` | Tracked-file wallet, secret and personal-path scan |
 | `scripts/install-polkit-rule.sh` | Install helper, policy and per-user rule |
 | `scripts/check-docs.sh` | Relative markdown link and stale-name check |
 | `scripts/render-icons.sh` | Optional PNG icon rendering |

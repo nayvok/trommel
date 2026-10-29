@@ -9,10 +9,11 @@ root; if your global cargo cache is read-only, prefix with
 ```bash
 sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
   desktop-file-utils appstream gettext librsvg2-bin python3 \
-  gir1.2-atspi-2.0 dbus xdg-utils
+  gir1.2-atspi-2.0 dbus xdg-utils at-spi2-core xvfb x11-utils
 ```
 
-- Rust 1.80+ (edition 2021). GTK 4.22 / libadwaita 1.9 are required by the
+- Rust 1.92+ (edition 2021); this is the declared MSRV and CI checks it with
+  the `gui` feature. GTK 4.22 / libadwaita 1.9 are required by the
   dependencies; Ubuntu 26.04 is the tested distribution.
 - Python 3 is used by the test scripts and by packaging/release helpers.
 - The UI smoke test needs an accessible desktop session (AT-SPI). It prefers
@@ -22,8 +23,10 @@ sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
   accessibility bus answers a real D-Bus call; a stale socket from a crashed
   launcher no longer fails the run, because the scripts then start a private
   accessibility bus and registry under their work directory. `AT_SPI_BUS_ADDRESS`
-  still overrides both. The screenshot test needs a display too. Both fail closed
-  with a clear message rather than silently passing.
+  still overrides both. CI runs both smokes headlessly with `xvfb-run`; the
+  registry comes from `at-spi2-core`, and the private fallback fails with a
+  named error when it is missing. The screenshot test needs a display too. Both
+  fail closed with a clear message rather than silently passing.
 
 ## Build
 
@@ -42,22 +45,31 @@ do not move GTK types into `trommel-core` or the daemon.
 | Command | What it proves | Needs |
 | --- | --- | --- |
 | `cargo test --workspace` | Unit tests: config/migration, args, parsers, OC validation, status, D-Bus helpers | Rust only |
+| `cargo test -p trommel --features gui` | GUI-feature unit tests, including the screenshot-hook/private-instance pairing | GTK dev libs |
 | `cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings` | No new lints, including GUI code | GTK dev libs |
 | `cargo fmt --check` | Formatting | Rust only |
+| `cargo build -p trommel` | The CLI-only build keeps working (no GTK types leak into core/daemon) | Rust only |
 | `./scripts/e2e.sh` | Full CLI lifecycle on a private bus with fake GPU, helper and miner, including per-GPU participation (device arguments, excluded card untouched, restore, refusal), SIGKILL/emergency-stop, startup recovery, helper lease, partial apply, restore retry, custom binary, benchmark external guard, restart budget, guard and lost session bus | Python 3, dbus |
+| `./scripts/test-oc-helper.sh` | The real Bash helper against the stateful fake `nvidia-smi` | bash |
 | `./scripts/test-mcp.sh` | MCP protocol, read-only default, write gating, redaction | Python 3 |
-| `./scripts/ui-smoke.sh` | Critical GUI path through AT-SPI (quick setup, start/stop, settings, editor, tuning, install) | desktop session, AT-SPI; XWayland preferred |
-| `./scripts/first-run-smoke.sh` | Pristine install: no config, no wallet, no miner, one fake GPU | desktop session, AT-SPI; XWayland preferred |
-| `./scripts/check-no-secrets.sh` | No wallet-like string or secret marker in tracked files | git |
+| `./scripts/ui-smoke.sh` | Critical GUI path through AT-SPI (quick setup, start/stop, settings, editor, tuning, install, version manager) | desktop session or Xvfb, `at-spi2-core`; XWayland preferred |
+| `./scripts/first-run-smoke.sh` | Pristine install: no config, no wallet, no miner, one fake GPU | desktop session or Xvfb, `at-spi2-core` |
+| `./scripts/check-no-secrets.sh` | No wallet-like string, secret marker or personal home path in tracked files | git |
 | `./scripts/check-polkit.sh` | Action id and helper path consistency | none |
 | `./scripts/check-docs.sh` | Relative markdown links resolve; no references to removed docs | none |
-| `./scripts/package-deb.sh` + `./scripts/test-deb.sh` | Package builds and has the expected layout | dpkg-dev |
+| `./scripts/package-deb.sh` + `./scripts/test-deb.sh` | Package builds; every documented path, mode, maintainer script, polkit annotation and a path-neutral binary are present | dpkg-dev |
+| `./scripts/test-deb-install.sh` | Install, upgrade and remove: per-user rule written/kept/removed, user config preserved | root in a disposable container |
+| `./scripts/check-version.sh` | Workspace version matches `Cargo.lock`, `CHANGELOG.md`, metainfo and the tag | git, python3 |
+| `./scripts/verify-release-bundle.sh` | Bundle has the expected assets; `SHA256SUMS` covers the debs and installer; sidecars verify | built bundle |
 | Asset validation | `desktop-file-validate`, `appstreamcli validate` | those tools |
 
-CI (`.github/workflows/ci.yml`) runs secrets, format, clippy with `gui`, tests,
-e2e, MCP, docs links and asset validation on Ubuntu 26.04. The release workflow
-additionally runs `check-polkit.sh` and builds the release bundle. UI smoke and
-first-run smoke need a desktop session and are run manually.
+CI (`.github/workflows/ci.yml`) runs secrets, docs, format, clippy with `gui`,
+workspace tests, GUI-feature tests, the CLI-only build, the root helper, e2e,
+MCP, asset validation, the headless UI smokes (`.github/workflows/ui.yml`), the
+MSRV check and a packaging job (layout + install/upgrade/remove) on Ubuntu
+26.04. The release workflow runs the same matrix, verifies the tag/version and
+the release bundle, and then publishes. The interactive matrix in
+[verification.md](verification.md) remains manual because it needs a real rig.
 
 ### Test harness isolation
 
@@ -197,8 +209,8 @@ Common causes:
 
 ## Working in blocks
 
-The 0.5 roadmap is split into B0–B5 ([roadmap.md](roadmap.md#block-plan)). A
-block is the unit of review and release:
+The roadmap is split into B0–B5 ([roadmap.md](roadmap.md#block-plan)). A block
+is the unit of review and release:
 
 1. **Branch.** `feat/<block>-<topic>` from the current mainline. Do not mix the
    next block into the branch, even when it is tempting.
@@ -216,28 +228,36 @@ block is the unit of review and release:
 6. **Screenshots.** Only regenerate them when the UI actually changed; do not
    touch them for daemon/CLI blocks.
 7. **Package and tag.** Bump the workspace version, run
-   `./scripts/package-deb.sh && ./scripts/test-deb.sh`, then follow the release
-   checklist below. Tag `vX.Y.Z` only after the whole matrix is green.
+   `./scripts/check-version.sh`, `./scripts/package-deb.sh`,
+   `./scripts/test-deb.sh` and `./scripts/test-deb-install.sh`, then follow the
+   release checklist below. Tag `vX.Y.Z` only after the whole matrix is green.
 
 If the session runs out of time, stop after the last green sub-block, record the
 unfinished part in the roadmap and do not start the next block.
 
 ## Release checklist
 
-1. `cargo fmt --check`, `cargo clippy … -D warnings`, `cargo test --workspace`.
-2. `./scripts/e2e.sh`, `./scripts/test-mcp.sh`, `./scripts/check-polkit.sh`,
-   `./scripts/check-no-secrets.sh`, `./scripts/check-docs.sh`.
-3. `./scripts/ui-smoke.sh` and `./scripts/first-run-smoke.sh` on a desktop
-   session; regenerate screenshots if the UI changed.
+1. `cargo fmt --check`, `cargo clippy … -D warnings`, `cargo test --workspace`,
+   `cargo test -p trommel --features gui`, `cargo build -p trommel`.
+2. `./scripts/e2e.sh`, `./scripts/test-mcp.sh`, `./scripts/test-oc-helper.sh`,
+   `./scripts/check-polkit.sh`, `./scripts/check-no-secrets.sh`,
+   `./scripts/check-docs.sh`.
+3. `./scripts/ui-smoke.sh` and `./scripts/first-run-smoke.sh` (headless with
+   `xvfb-run -a ./scripts/ui-smoke.sh` is accepted; run them on a real desktop
+   session for a release); regenerate screenshots if the UI changed.
 4. Bump `version` in the workspace `Cargo.toml`; add a `CHANGELOG.md` entry and
-   a metainfo `<release>` entry.
-5. `./scripts/package-deb.sh`, `./scripts/test-deb.sh`, optional Docker install
-   on Ubuntu 26.04.
-6. Commit, tag `vX.Y.Z`, push the tag. The release workflow publishes the
-   versioned and stable `.deb` aliases, checksums and `trommel-install.sh` from
-   `scripts/release-bundle.sh`.
-7. Verify the published assets and the `releases/latest/download` URLs; install
-   once from a clean machine.
+   a metainfo `<release>` entry, then run `./scripts/check-version.sh`.
+5. `./scripts/package-deb.sh`, `./scripts/test-deb.sh`,
+   `./scripts/test-deb-install.sh` (root in a disposable container), optional
+   Docker install on Ubuntu 26.04.
+6. `./scripts/release-bundle.sh` builds and verifies `dist/release`; commit,
+   tag the last commit with `vX.Y.Z`, and push the branch and the tag. The
+   release workflow re-runs the matrix (including the UI smokes and the MSRV),
+   verifies the tag/version and the bundle, and publishes the versioned and
+   stable `.deb` aliases, sidecars, `trommel-install.sh` and `SHA256SUMS`.
+7. Verify the published assets (`./scripts/verify-release-bundle.sh` on a
+   downloaded copy), the `releases/latest/download` URLs and `sha256sum -c
+   SHA256SUMS`; install once from a clean machine.
 
 There is no apt repository and no PPA. Do not publish RPM/AppImage/Flatpak
 artifacts without a tested integration story ([packaging.md](packaging.md)).

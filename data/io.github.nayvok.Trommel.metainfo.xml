@@ -90,6 +90,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.8.0" date="2026-10-30">
+      <description>
+        <p>Release hardening: CI builds the CLI-only target, runs the GUI unit tests, checks the declared Rust 1.92 MSRV, validates the Debian package layout and install/upgrade/remove on every pull request, and runs both UI smoke suites headlessly under Xvfb. The release workflow verifies the tag and version, checks every asset and SHA-256 sum (including the installer), and publishes only after the UI and MSRV checks pass. No user-facing feature or schema change.</p>
+        <p xml:lang="ru">Укрепление релиза: CI собирает CLI-сборку без GUI, запускает модульные тесты GUI, проверяет заявленный MSRV Rust 1.92, проверяет раскладку Debian-пакета и установку/обновление/удаление на каждом PR и прогоняет оба UI-smoke набора без экрана под Xvfb. Release-workflow проверяет тег и версию, все ассеты и суммы SHA-256 (включая установщик) и публикует только после успешных проверок UI и MSRV. Пользовательских функций и изменений схемы нет.</p>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-10-29">
       <description>
         <p>Miner version manager: the miner library lists every installed version with the presets that pin it, its binary state and explicit Verify and Remove actions. Installing a build never rewrites a preset; an update then offers the affected presets as an explicit, default-off choice. A version pinned by a preset cannot be removed, an unused one asks for confirmation, and a per-preset switch moves exactly one preset to an installed older version for rollback.</p>

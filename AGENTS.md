@@ -33,6 +33,7 @@ audience. The most useful references while coding:
 
 ```bash
 cargo test --workspace
+cargo test -p trommel --features gui
 cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings
 cargo fmt --check
 cargo build -p trommel --features gui
@@ -44,12 +45,18 @@ cargo build -p trommeld
 ./scripts/first-run-smoke.sh
 ./scripts/screenshots.sh
 ./scripts/package-deb.sh
+./scripts/test-deb.sh
+./scripts/test-deb-install.sh     # root, disposable container
+./scripts/check-version.sh
+./scripts/verify-release-bundle.sh
 ./scripts/check-no-secrets.sh
 ./scripts/check-docs.sh
 ```
 
 Set `CARGO_HOME=$PWD/.cargo-home` when the global cargo cache is read-only.
-UI/screenshot scripts need a desktop session; the e2e/MCP tests do not.
+UI/screenshot scripts need a desktop session or `xvfb-run` + `at-spi2-core`;
+the e2e/MCP tests do not. The `.deb` install test is only safe in a disposable
+root container.
 
 ## Invariants
 

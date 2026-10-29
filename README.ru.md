@@ -77,7 +77,7 @@ Trommel — пульт управления NVIDIA-ригом на GTK4/libadwai
 
 - Linux с GNOME Shell 50 (тестируемая цель — Ubuntu 26.04), Wayland.
 - NVIDIA GPU + рабочие `nvidia-smi` и драйвер.
-- Для разработки: Rust 1.80+, `libgtk-4-dev`, `libadwaita-1-dev`, `pkg-config`.
+- Для разработки: Rust 1.92+, `libgtk-4-dev`, `libadwaita-1-dev`, `pkg-config`.
 
 AMD/Intel, X11-специфика и не-GNOME окружения не поддерживаются.
 

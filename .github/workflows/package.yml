@@ -22,6 +22,8 @@ jobs:
         run: ./scripts/package-deb.sh
       - name: Validate package layout
         run: ./scripts/test-deb.sh
+      - name: Install, upgrade and remove
+        run: ./scripts/test-deb-install.sh
       - uses: actions/upload-artifact@v4
         with:
           name: trommel-deb
