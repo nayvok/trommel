@@ -10,6 +10,23 @@ pass() { printf '\033[1;32m  ✓ %s\033[0m\n' "$*"; }
 fail() { printf '\033[1;31m  ✗ %s\033[0m\n' "$*"; FAILS=$((FAILS + 1)); }
 step() { printf '\n\033[1;34m== %s ==\033[0m\n' "$*"; }
 
+# A zombie is not a running process.
+#
+# On CI the daemon is killed while its miner runs; the orphan is reparented to
+# a PID 1 that does not reap, so the miner stays visible as <defunct> for the
+# rest of the run. `kill -0` still succeeds for it, which made every "the miner
+# is gone" assertion fail. /proc reports the real state: Z (and X/x) is dead.
+alive() {
+    local pid="${1:-}" stat state
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/stat" ] || return 1
+    stat=$(<"/proc/$pid/stat")
+    [ -n "$stat" ] || return 1
+    state=${stat##*) }
+    case "${state%% *}" in Z|X|x) return 1 ;; esac
+    return 0
+}
+
 # Start the daemon in its own session and record the real daemon PID.
 #
 # `setsid` forks when the caller is a process-group leader (as it is on some CI
@@ -173,7 +190,7 @@ fi
 step "Start daemon"
 start_daemon "$BIN/trommeld"
 sleep 2
-if kill -0 "$DAEMON_PID" 2>/dev/null; then pass "trommeld is running"; else fail "trommeld did not start"; cat "$WORK/daemon.out"; exit 1; fi
+if alive "$DAEMON_PID"; then pass "trommeld is running"; else fail "trommeld did not start"; cat "$WORK/daemon.out"; exit 1; fi
 
 step "Status contract"
 JSON=$("$BIN/trommel" status --json 2>/dev/null)
@@ -371,7 +388,7 @@ sleep 1
 "$BIN/trommel" emergency-stop --reason=manual > "$WORK/participation-emergency.out" 2>&1 \
     && pass "emergency-stop handled the reduced session" \
     || { fail "emergency-stop failed"; cat "$WORK/participation-emergency.out"; }
-kill -0 "$MINER_PID" 2>/dev/null \
+alive "$MINER_PID" \
     && fail "the excluded-session miner survived emergency-stop" \
     || pass "emergency-stop stopped the reduced-session miner"
 grep -q "reset --gpu GPU-11111111.*--pl 350" "$WORK/oc.log" \
@@ -638,7 +655,7 @@ MINER_PID=$(pgrep -f "$WORK/data/trommel/miners/wildrig/0.51.8/wildrig-multi" | 
 [ -n "$MINER_PID" ] && pass "miner is running before the SIGKILL" || fail "miner did not start"
 kill -9 "$DAEMON_PID" 2>/dev/null || true
 sleep 1
-kill -0 "$MINER_PID" 2>/dev/null \
+alive "$MINER_PID" \
     && pass "the miner survives a daemon crash (nothing kills it by accident)" \
     || fail "the miner died with the daemon"
 if "$BIN/trommel" emergency-stop --reason=manual > "$WORK/emergency.out" 2>&1; then
@@ -646,7 +663,7 @@ if "$BIN/trommel" emergency-stop --reason=manual > "$WORK/emergency.out" 2>&1; t
 else
     fail "emergency-stop failed"; cat "$WORK/emergency.out"
 fi
-kill -0 "$MINER_PID" 2>/dev/null \
+alive "$MINER_PID" \
     && fail "emergency-stop left the miner alive" \
     || pass "emergency-stop stopped the saved miner"
 [ ! -f "$WORK/state/trommel/oc-snapshot.json" ] \
@@ -786,12 +803,12 @@ MINER_PID=$(pgrep -f "$WORK/data/trommel/miners/wildrig/0.51.8/wildrig-multi" | 
 [ -n "$MINER_PID" ] && pass "miner is running before the crash" || fail "miner did not start"
 kill -9 "$DAEMON_PID" 2>/dev/null || true
 sleep 1
-kill -0 "$MINER_PID" 2>/dev/null \
+alive "$MINER_PID" \
     && pass "the orphaned miner is still alive when the new daemon starts" \
     || fail "the miner died before startup recovery"
 start_daemon "$BIN/trommeld"
 sleep 4
-kill -0 "$MINER_PID" 2>/dev/null \
+alive "$MINER_PID" \
     && fail "startup recovery left the orphaned miner running" \
     || pass "startup recovery stopped the orphaned miner"
 [ ! -f "$WORK/state/trommel/oc-snapshot.json" ] \
@@ -863,7 +880,7 @@ CUSTOM_PID=$(pgrep -f "$WORK/data/trommel/miners/wildrig/9.9.9/my-custom-rig" | 
 kill -9 "$DAEMON_PID" 2>/dev/null || true
 sleep 1
 "$BIN/trommel" emergency-stop --reason=manual >/dev/null 2>&1
-kill -0 "$CUSTOM_PID" 2>/dev/null \
+alive "$CUSTOM_PID" \
     && fail "emergency-stop did not stop the custom-named miner" \
     || pass "emergency-stop stopped the custom-named miner by its saved path"
 [ ! -f "$WORK/state/trommel/oc-snapshot.json" ] \
@@ -1007,7 +1024,7 @@ state = {"running": True, "miner_pid": int(sys.argv[2]), "miner_path": sys.argv[
 (work/"state"/"trommel"/"state.json").write_text(json.dumps(state, indent=2))
 PY
 "$BIN/trommel" emergency-stop --reason=manual >/dev/null 2>&1
-kill -0 "$EXT_PID" 2>/dev/null \
+alive "$EXT_PID" \
     && pass "emergency-stop left the external miner alive" \
     || fail "emergency-stop killed an external miner"
 [ ! -f "$WORK/state/trommel/state.json" ] \
@@ -1079,7 +1096,7 @@ if "$BIN/trommel" bench --minutes 1 > "$WORK/bench-external.out" 2>&1; then
 else
     pass "benchmark is refused while an external miner runs"
 fi
-kill -0 "$EXT_PID" 2>/dev/null \
+alive "$EXT_PID" \
     && pass "the external miner is still alive after the refused benchmark" \
     || fail "the refused benchmark killed the external miner"
 COUNT=$(pgrep -fc "$WORK/bin/wildrig-external" 2>/dev/null || true)
@@ -1156,12 +1173,12 @@ GUARD_PID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid
 [ -n "$GUARD_PID" ] && pass "guard process is recorded (PID $GUARD_PID)" || fail "guard PID file missing"
 kill -9 "$DAEMON_PID" 2>/dev/null || true
 for _ in $(seq 1 40); do
-    if ! kill -0 "$MINER_PID" 2>/dev/null && [ ! -f "$WORK/state/trommel/oc-snapshot.json" ]; then
+    if ! alive "$MINER_PID" && [ ! -f "$WORK/state/trommel/oc-snapshot.json" ]; then
         break
     fi
     sleep 0.5
 done
-kill -0 "$MINER_PID" 2>/dev/null \
+alive "$MINER_PID" \
     && fail "the guard did not stop the orphaned miner" \
     || pass "the guard stopped the orphaned miner"
 [ ! -f "$WORK/state/trommel/oc-snapshot.json" ] \
@@ -1172,7 +1189,7 @@ grep -q "emergency-stop reason=guard" "$WORK/state/trommel/daemon.log" 2>/dev/nu
     || fail "no guard emergency-stop in the daemon log"
 sleep 1
 if [ -n "$GUARD_PID" ]; then
-    kill -0 "$GUARD_PID" 2>/dev/null \
+    alive "$GUARD_PID" \
         && fail "the guard is still running after the restore" \
         || pass "the guard exits after restoring"
 fi
@@ -1215,13 +1232,13 @@ sleep 2
 MINER_PID=$(pgrep -f "$WORK/data/trommel/miners/wildrig/0.51.8/wildrig-multi" | head -1)
 kill "$BUS_PID" 2>/dev/null || true
 for _ in $(seq 1 40); do
-    if ! kill -0 "$DAEMON_PID" 2>/dev/null && ! kill -0 "$MINER_PID" 2>/dev/null; then break; fi
+    if ! alive "$DAEMON_PID" && ! alive "$MINER_PID"; then break; fi
     sleep 0.5
 done
-kill -0 "$DAEMON_PID" 2>/dev/null \
+alive "$DAEMON_PID" \
     && fail "the daemon survived losing the session bus" \
     || pass "the daemon exits when the session bus closes"
-kill -0 "$MINER_PID" 2>/dev/null \
+alive "$MINER_PID" \
     && fail "the miner survived a lost session bus" \
     || pass "the miner is stopped after the session bus closes"
 [ ! -f "$WORK/state/trommel/oc-snapshot.json" ] \
