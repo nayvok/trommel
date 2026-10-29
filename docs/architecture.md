@@ -116,8 +116,10 @@ Config
 
 `GpuTuning` uses `Option` values as the source of truth: `None` means “do not
 touch”, `Some` means “apply”. `enabled` decides whether the card participates in
-the profile at all. A fresh profile has no clock locks; power limit `None` means
-driver auto, and `0` in the UI maps to `None`.
+the **mining session**: `false` excludes it from the miner, skips its tuning and
+returns any tuning left over from an earlier restore-off session (see
+[ADR 0007](adr/0007-per-gpu-participation.md)). A fresh profile has no clock
+locks; power limit `None` means driver auto, and `0` in the UI maps to `None`.
 
 Presets reference a miner **id and version**, never a path. `miner_installs` is
 global: one installation is visible to every preset, and a preset whose version
@@ -144,10 +146,13 @@ external tools. They are descriptive, not enforced by the daemon; `Preset`
    kills a process it did not start).
 2. Validate the active preset: wallet present, pool address contains `:`,
    miner binary installed and executable.
-3. Resolve the effective tuning per card. A per-GPU entry with `custom = false`
-   inherits power, clocks and temperature from the profile default and only
-   keeps its own enable switch. Cards whose effective tuning has no power or
-   clock values are not touched at all.
+3. Resolve participation and the effective tuning per card. A per-GPU entry
+   with `custom = false` inherits power, clocks and temperature from the profile
+   default and only keeps its own participation switch. A card with
+   `enabled = false` is excluded from the miner and is never tuned; a
+   participating card whose effective tuning has no power or clock values is
+   not touched at all. A partial participation is validated against the
+   selected miner's documented device flag **before** any helper call.
 4. Query all GPUs. For a profile with tuning, reuse the current-boot snapshot or
    capture one; write it with `applied = true`, **all** target UUIDs and the
    exact applied tuning *before* the first helper call.
@@ -155,13 +160,20 @@ external tools. They are descriptive, not enforced by the daemon; `Preset`
    already registered in the snapshot and in the rollback list, so a partial
    failure restores every card that may have been touched. The power limit is
    read back (±1 W); a mismatch is a failure.
-6. Spawn the miner with an explicit argument vector (no shell), record the
-   absolute `state.miner_path`, write state, schedule a one-shot clock check and
-   clear the pool cache.
+6. Spawn the miner with an explicit argument vector (no shell). When a card is
+   excluded, the argument vector carries the miner's documented device flag
+   (`--gpu-list`, `--gpu-id` or `--devices`) with the participating
+   `nvidia-smi` indices; a miner without such a flag aborts the start instead of
+   quietly mining on every card. Record the absolute `state.miner_path`, write
+   state, schedule a one-shot clock check and clear the pool cache.
 
-The whole snapshot/apply/rollback block holds the cross-process OC file lock
-(§ *OC serialization and helper lease*). Any failure in 5–6 restores the
-snapshot before returning the error. If the rollback also fails, the snapshot is
+The snapshot records only the cards the session touches: `applied_gpus` holds
+the participating, tuned UUIDs, so Stop, shutdown and emergency-stop never
+restore a card that was not tuned. A card excluded now but still carrying
+tuning from an earlier restore-off session on this boot is restored to its
+snapshot before the new session starts. The whole snapshot/apply/rollback block
+holds the cross-process OC file lock (§ *OC serialization and helper lease*).
+Any failure in 5–6 restores the snapshot before returning the error. If the rollback also fails, the snapshot is
 kept with `last_error`, so the UI can offer a retry and emergency-stop can
 repeat it. A profile with no tuning creates no snapshot and calls no helper.
 Start never mines with a silently unapplied power limit.
@@ -312,11 +324,15 @@ Benchmarks are sequential by design: one miner at a time is an invariant.
 - `miner_info` — catalogue description, version, license, install/verified
   state and the fee breakdown;
 - `gpus[]` and `gpu` — one `GpuStats` per card from `nvidia-smi`;
+- `participation[]` — one entry per detected card with `index`, `uuid`, `name`,
+  `enabled` (the applied profile switch) and `mining` (this card is part of the
+  running session Trommel owns). It is the machine-readable form of the
+  dashboard chip;
 - `total` — aggregate hashrate, power, efficiency (J/TH), max temperature and
-  enabled/total GPU counts. Power is `power.draw` summed over every detected
-  card (an idle or profile-disabled card still draws, and a card whose reading
-  is `N/A` is skipped), the temperature is the hottest readable card and the
-  efficiency is that power over the hashrate;
+  participating/total GPU counts (`gpus_enabled` / `gpus_total`). Power is
+  `power.draw` summed over every detected card (an idle or excluded card still
+  draws, and a card whose reading is `N/A` is skipped), the temperature is the
+  hottest readable card and the efficiency is that power over the hashrate;
 - `miner` — API/log statistics (`hashrate_10s/60s/15m`, accepted, rejected,
   stale, source);
 - `pool` — cached pool statistics when mining;
@@ -438,6 +454,8 @@ long-lived process, so it owns this path; there is no shell extension.
   phrases; the catalogue links to upstream releases.
 - **One miner at a time.** Never spawn a second child, never silently restart a
   running miner, never kill an external process without explicit user action.
+  Per-GPU participation reduces the device set of that one miner; it is not a
+  second job, a second process or multi-job mining.
 - **Stock restore is mandatory by default.** No hardcoded power limit; capture
   before touching power/clocks and restore on stop.
 - **The daemon is the source of truth.** Editing `config.json` directly is not

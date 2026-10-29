@@ -8,13 +8,13 @@ needs a real rig. Run the commands from the repository root; see
 
 | Command | Covers |
 | --- | --- |
-| `cargo test --workspace` | Config defaults/migration/diff/warnings, miner argument rendering, fee handling, catalogue parsing, `nvidia-smi` parsing, OC argument validation, supervisor/state/status helpers, D-Bus helpers, hashrate formatting, download/path safety |
+| `cargo test --workspace` | Config defaults/migration/diff/warnings, miner argument rendering, documented device flags and per-driver device lists, device-capability refusal, participation status/warnings, fee handling, catalogue parsing, `nvidia-smi` parsing, OC argument validation, supervisor/state/status helpers, D-Bus helpers, hashrate formatting, download/path safety |
 | `cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings` | Lints in all crates including GUI code |
 | `cargo fmt --check` | Formatting |
-| `./scripts/e2e.sh` | CLI lifecycle on a private bus: start/stop/toggle, config v3, per-card inheritance vs custom overrides, apply modes, power read-back, ignored power/clock locks, restore snapshot/defaults, restore-on-stop off, helper timeout, snapshot/restore, stale external state. Fault-tolerance: SIGKILL + emergency-stop, startup recovery of an orphan, helper lease (live/replaced/dead), partial apply with and without a failed rollback, failed restore retried by startup recovery, custom-named binary stopped by path, external miner left alive, benchmark refusal, restart budget, guard, and a lost session bus. A stub `org.freedesktop.Notifications` service (Python/Gio; the step is skipped when `python3-gi` is missing) proves the daemon sends desktop notifications without a shell applet |
+| `./scripts/e2e.sh` | CLI lifecycle on a private bus: start/stop/toggle, config v3, per-card inheritance vs custom overrides, apply modes, power read-back, ignored power/clock locks, restore snapshot/defaults, restore-on-stop off, helper timeout, snapshot/restore, stale external state. Fault-tolerance: SIGKILL + emergency-stop, startup recovery of an orphan, helper lease (live/replaced/dead), partial apply with and without a failed rollback, failed restore retried by startup recovery, custom-named binary stopped by path, external miner left alive, benchmark refusal, restart budget, guard, and a lost session bus. Per-GPU participation: one excluded card means the miner receives only `--gpu-list 0`, the excluded card is neither tuned nor restored, a previously tuned excluded card is returned to stock, emergency-stop touches only the participating card, and a miner without a documented device flag refuses the partial rig without spawning. A stub `org.freedesktop.Notifications` service (Python/Gio; the step is skipped when `python3-gi` is missing) proves the daemon sends desktop notifications without a shell applet |
 | `./scripts/test-oc-helper.sh` | The real Bash helper against a stateful fake `nvidia-smi`: apply/reset, ignored power rejection, failing `-rgc`, range/UUID validation |
 | `./scripts/test-mcp.sh` | MCP initialize/ping/tools/list/tools/call, read-only default, `--allow-write` gating, rejected arguments, wallet redaction |
-| `./scripts/ui-smoke.sh` | AT-SPI click-through with a fake two-GPU rig: quick setup, start/stop, settings, preset editor, GPU tuning, miner install, alerts, and SIGKILLing the GUI while mining continues |
+| `./scripts/ui-smoke.sh` | AT-SPI click-through with a fake two-GPU rig: quick setup, start/stop, GPU participation switch (excluded chip and Totals), settings, preset editor, GPU tuning, miner install, alerts, and SIGKILLing the GUI while mining continues |
 | `./scripts/first-run-smoke.sh` | Pristine install: empty XDG dirs, no config, no wallet, no installed miner, one fake GPU; dashboard placeholders, wizard, single-GPU tuning |
 | `./scripts/check-polkit.sh` | Polkit action id and helper path match the code |
 | `./scripts/check-no-secrets.sh` | No wallet-like strings or secret markers in tracked files |
@@ -34,7 +34,7 @@ not a claim that CI covers it.
 
 | Surface | Action | Expected |
 | --- | --- | --- |
-| Dashboard | Refresh, Start/Stop, GPU include switch, Tune | Live status; Cancel in the alert restores the switch and the dirty banner; Start is disabled with every GPU off |
+| Dashboard | Refresh, Start/Stop, GPU participation switch, Tune | Live status; Cancel in the alert restores the switch and the dirty banner; Start is disabled with every GPU excluded or when the miner cannot select devices; the card chip and Totals show mining/excluded |
 | Dashboard layout | one GPU, then two GPUs | One card spans the row with a 3×2 bubble grid; two cards split the row evenly; three or more wrap |
 | Dashboard | stopped state | `0 TH/s`, numeric pool balance, configured endpoint named, no lone dashes |
 | Quick setup | Cancel, Next, Back, Apply 80 %, Use auto, Start mining | Three steps, validation, per-card values, start only after confirmation |
@@ -104,6 +104,15 @@ accepted the restore.
 
 - `AdwSpinRow` spinners are not exposed as AT-SPI values, so the UI smoke forces
   a profile change through the core-lock switch instead of typing a number.
+- Some GTK/AT-SPI builds expose `GtkMenuButton` (“Presets” in the tuning dialog)
+  without an action, so the smoke skips opening the Recommended menu and still
+  exercises the profile change through the core-lock switch.
+- `AdwExpanderRow` content (URL/SHA-256 in the install dialog) is not exposed by
+  every AT-SPI build; the smoke opens the expander when possible and reports the
+  fields as an accessibility limitation instead of a failure.
+- Device selection is verified against a fake miner that records its arguments;
+  a real miner's enumeration order (especially on a heterogeneous rig) still
+  needs a real benchmark.
 - Native file choosers and the About dialog are manual.
 - A closed dialog can linger in the AT-SPI tree after Cancel; the same click
   dismisses it in the manual check.

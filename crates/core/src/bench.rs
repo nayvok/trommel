@@ -73,6 +73,10 @@ pub fn run(cfg: &Config, profiles: &[String], seconds: u64) -> BenchReport {
     let Some(base_preset) = cfg.preset().cloned() else {
         return report;
     };
+    // The benchmark runs the same GPU set as the session. A miner that cannot
+    // select devices must fail its entry instead of quietly mining on an
+    // excluded card.
+    let gpus = crate::nvidia::query_all().unwrap_or_default();
 
     for miner_id in profiles {
         let def = catalog::miner(miner_id);
@@ -126,7 +130,20 @@ pub fn run(cfg: &Config, profiles: &[String], seconds: u64) -> BenchReport {
             .preset()
             .cloned()
             .unwrap_or_else(Preset::new_pearl);
-        let args = match miners::build_args(&bench_cfg, &bench_preset, &log_path) {
+        let devices = match miners::device_plan(&bench_cfg, &bench_preset, &gpus) {
+            Ok(devices) => devices,
+            Err(err) => {
+                entry.error = Some(err.to_string());
+                report.entries.push(entry);
+                continue;
+            }
+        };
+        let args = match miners::build_args_with_devices(
+            &bench_cfg,
+            &bench_preset,
+            &log_path,
+            devices.as_deref(),
+        ) {
             Ok(args) => args,
             Err(err) => {
                 entry.error = Some(err.to_string());
@@ -134,7 +151,7 @@ pub fn run(cfg: &Config, profiles: &[String], seconds: u64) -> BenchReport {
                 continue;
             }
         };
-        let mut child = match spawn(&binary, &args, &log_path) {
+        let mut child = match spawn(&binary, &args, &log_path, devices.is_some()) {
             Ok(child) => child,
             Err(err) => {
                 entry.error = Some(err.to_string());
@@ -193,6 +210,7 @@ fn spawn(
     binary: &std::path::Path,
     args: &[String],
     log_path: &std::path::Path,
+    explicit_devices: bool,
 ) -> anyhow::Result<Child> {
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -207,6 +225,9 @@ fn spawn(
         .stderr(Stdio::from(log_err));
     if let Some(dir) = binary.parent() {
         command.current_dir(dir);
+    }
+    if explicit_devices {
+        command.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
     }
     command
         .spawn()

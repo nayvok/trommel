@@ -569,8 +569,8 @@ impl Config {
             .unwrap_or(true);
         if !any_enabled {
             out.push(tr(
-                "No GPU is enabled in the active profile",
-                "В активном профиле не включено ни одной видеокарты",
+                "No GPU is selected for mining",
+                "Ни одна видеокарта не выбрана для майнинга",
             ));
         }
         let has_tuning = profile

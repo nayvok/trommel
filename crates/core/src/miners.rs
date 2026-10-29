@@ -8,6 +8,8 @@ use std::path::Path;
 
 use crate::catalog;
 use crate::config::{Config, GpuProfile, Preset};
+use crate::i18n::tr;
+use crate::nvidia::GpuStats;
 
 /// Resolve the GPU profile used by the preset for temperature/fan defaults.
 fn profile(cfg: &Config, preset: &Preset) -> GpuProfile {
@@ -17,12 +19,105 @@ fn profile(cfg: &Config, preset: &Preset) -> GpuProfile {
         .unwrap_or_default()
 }
 
+/// True when the catalogue documents a flag that lets this miner select the
+/// cards it runs on.
+pub fn supports_device_selection(miner_id: &str) -> bool {
+    catalog::miner(miner_id)
+        .map(|miner| miner.selects_devices())
+        .unwrap_or(false)
+}
+
+fn unsupported_device_selection(miner_id: &str) -> anyhow::Error {
+    anyhow::anyhow!(tr(
+        &format!(
+            "The selected miner ({miner_id}) cannot choose GPUs; enable every card or choose a miner that documents device selection"
+        ),
+        &format!(
+            "Выбранный майнер ({miner_id}) не умеет выбирать видеокарты; включите все карты или выберите майнер с поддержкой выбора устройств"
+        )
+    ))
+}
+
+/// Indices (`nvidia-smi` order) to pass to the miner, or `None` when every
+/// detected card takes part and the miner's default (all devices) is correct.
+///
+/// A partial participation is a hard capability check: a miner without a
+/// documented device flag must not be started, because it would silently mine
+/// on the excluded card as well.
+pub fn device_plan(
+    cfg: &Config,
+    preset: &Preset,
+    gpus: &[GpuStats],
+) -> anyhow::Result<Option<Vec<u32>>> {
+    let gpu_profile = profile(cfg, preset);
+    let participating: Vec<u32> = gpus
+        .iter()
+        .filter(|gpu| gpu_profile.tuning_for(&gpu.uuid).enabled)
+        .map(|gpu| gpu.index)
+        .collect();
+    if participating.len() == gpus.len() {
+        return Ok(None);
+    }
+    if participating.is_empty() {
+        anyhow::bail!(tr(
+            "No GPU is selected for mining",
+            "Ни одна видеокарта не выбрана для майнинга"
+        ));
+    }
+    if !supports_device_selection(&preset.miner) {
+        return Err(unsupported_device_selection(&preset.miner));
+    }
+    Ok(Some(participating))
+}
+
+/// Render the device flag for a miner that documents one. The list is the
+/// `nvidia-smi` index of every participating card, comma-separated.
+fn render_device_args(
+    miner: Option<&catalog::MinerDef>,
+    miner_id: &str,
+    devices: &[u32],
+) -> anyhow::Result<Vec<String>> {
+    if devices.is_empty() {
+        anyhow::bail!(tr(
+            "No GPU is selected for mining",
+            "Ни одна видеокарта не выбрана для майнинга"
+        ));
+    }
+    let Some(miner) = miner else {
+        return Err(unsupported_device_selection(miner_id));
+    };
+    if !miner.selects_devices() {
+        return Err(unsupported_device_selection(miner_id));
+    }
+    let list = devices
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(vec![miner.device_flag.clone(), list])
+}
+
 /// Build the full argument vector for a preset.
+///
+/// This is the "all detected cards take part" form. The supervisor uses
+/// [`build_args_with_devices`] when a card is excluded from the session.
 pub fn build_args(cfg: &Config, preset: &Preset, log_file: &Path) -> anyhow::Result<Vec<String>> {
+    build_args_with_devices(cfg, preset, log_file, None)
+}
+
+/// Build the argument vector, optionally restricting the miner to `devices`
+/// (`nvidia-smi` indices). `None` leaves the miner on all its default devices.
+pub fn build_args_with_devices(
+    cfg: &Config,
+    preset: &Preset,
+    log_file: &Path,
+    devices: Option<&[u32]>,
+) -> anyhow::Result<Vec<String>> {
     let log = log_file.to_string_lossy().into_owned();
     let gpu = profile(cfg, preset);
     let temp_limit = gpu.default.temp_limit_c;
     let temp_resume = gpu.default.temp_resume_c;
+    let miner = catalog::miner(&preset.miner);
     let mut args = match preset.miner.as_str() {
         "srbminer" => {
             let mut args: Vec<String> = vec![
@@ -96,7 +191,11 @@ pub fn build_args(cfg: &Config, preset: &Preset, log_file: &Path) -> anyhow::Res
         }
     };
 
-    if let Some(miner) = catalog::miner(&preset.miner) {
+    if let Some(devices) = devices {
+        args.extend(render_device_args(miner, &preset.miner, devices)?);
+    }
+
+    if let Some(miner) = miner {
         append_options(&mut args, miner, preset);
         if miner.fee_configurable && !miner.fee_flag.is_empty() {
             if let Some(fee) = preset.miner_fee_override_pct {
@@ -105,10 +204,37 @@ pub fn build_args(cfg: &Config, preset: &Preset, log_file: &Path) -> anyhow::Res
         }
     }
 
-    if !preset.extra_args.trim().is_empty() {
-        let parsed = shell_words::split(&preset.extra_args)
-            .map_err(|e| anyhow::anyhow!("invalid extra arguments: {e}"))?;
-        args.extend(parsed);
+    let extra = if preset.extra_args.trim().is_empty() {
+        None
+    } else {
+        Some(
+            shell_words::split(&preset.extra_args)
+                .map_err(|e| anyhow::anyhow!("invalid extra arguments: {e}"))?,
+        )
+    };
+    // A second device list would contradict the switches (and the miner would
+    // either ignore one or fail), so refuse instead of guessing.
+    if devices.is_some() {
+        if let (Some(miner), Some(extra)) = (miner, extra.as_ref()) {
+            let flag = miner.device_flag.as_str();
+            if !flag.is_empty()
+                && extra
+                    .iter()
+                    .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
+            {
+                anyhow::bail!(tr(
+                    &format!(
+                        "GPU selection is controlled by the dashboard switches; remove {flag} from the extra arguments"
+                    ),
+                    &format!(
+                        "Выбор карт задаётся переключателями на дашборде; уберите {flag} из дополнительных аргументов"
+                    )
+                ));
+            }
+        }
+    }
+    if let Some(extra) = extra {
+        args.extend(extra);
     }
 
     Ok(args)
@@ -185,8 +311,24 @@ mod tests {
         build_args(cfg, preset, Path::new("/tmp/miner.log")).unwrap()
     }
 
+    fn args_with_devices(
+        cfg: &Config,
+        preset: &Preset,
+        devices: Option<&[u32]>,
+    ) -> anyhow::Result<Vec<String>> {
+        build_args_with_devices(cfg, preset, Path::new("/tmp/miner.log"), devices)
+    }
+
     fn contains_pair(args: &[String], key: &str, value: &str) -> bool {
         args.windows(2).any(|w| w[0] == key && w[1] == value)
+    }
+
+    fn gpu(index: u32, uuid: &str) -> GpuStats {
+        GpuStats {
+            index,
+            uuid: uuid.into(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -265,5 +407,127 @@ mod tests {
         preset.miner_fee_override_pct = Some(0.0);
         let args = args(&cfg, &preset);
         assert!(!args.iter().any(|a| a.contains("fee")));
+    }
+
+    #[test]
+    fn device_flag_is_rendered_for_every_driver_branch() {
+        let (cfg, mut preset) = cfg_and_preset();
+        let args = args_with_devices(&cfg, &preset, Some(&[0])).unwrap();
+        assert!(contains_pair(&args, "--gpu-list", "0"));
+
+        preset.miner = "srbminer".into();
+        let args = args_with_devices(&cfg, &preset, Some(&[1])).unwrap();
+        assert!(contains_pair(&args, "--gpu-id", "1"));
+
+        preset.miner = "onezero".into();
+        let args = args_with_devices(&cfg, &preset, Some(&[0])).unwrap();
+        assert!(contains_pair(&args, "--devices", "0"));
+    }
+
+    #[test]
+    fn device_list_is_comma_separated_in_query_order() {
+        let (cfg, preset) = cfg_and_preset();
+        let args = args_with_devices(&cfg, &preset, Some(&[0, 2])).unwrap();
+        assert!(contains_pair(&args, "--gpu-list", "0,2"));
+    }
+
+    #[test]
+    fn device_args_come_before_catalogue_options() {
+        let (cfg, mut preset) = cfg_and_preset();
+        preset
+            .miner_options
+            .insert("fan_speed".into(), serde_json::json!(70));
+        let args = args_with_devices(&cfg, &preset, Some(&[0])).unwrap();
+        let device = args.iter().position(|arg| arg == "--gpu-list").unwrap();
+        let fan = args
+            .iter()
+            .position(|arg| arg == "--gpu-fan-speed")
+            .unwrap();
+        assert!(device < fan);
+    }
+
+    #[test]
+    fn all_cards_participating_needs_no_device_flag() {
+        let cfg = Config::default();
+        let preset = cfg.preset().unwrap().clone();
+        let gpus = [gpu(0, "GPU-a"), gpu(1, "GPU-b")];
+        assert_eq!(device_plan(&cfg, &preset, &gpus).unwrap(), None);
+        let args = args(&cfg, &preset);
+        assert!(!args.iter().any(|arg| arg == "--gpu-list"));
+    }
+
+    #[test]
+    fn one_excluded_card_produces_an_explicit_list() {
+        let mut cfg = Config::default();
+        cfg.gpu_profiles
+            .get_mut("balanced")
+            .unwrap()
+            .per_gpu
+            .insert(
+                "GPU-b".into(),
+                crate::config::GpuTuning {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
+        let preset = cfg.preset().unwrap().clone();
+        let gpus = [gpu(0, "GPU-a"), gpu(1, "GPU-b")];
+        assert_eq!(
+            device_plan(&cfg, &preset, &gpus).unwrap(),
+            Some(vec![0]),
+            "only the participating card is passed"
+        );
+    }
+
+    #[test]
+    fn every_card_excluded_is_an_error() {
+        let mut cfg = Config::default();
+        cfg.gpu_profiles
+            .get_mut("balanced")
+            .unwrap()
+            .default
+            .enabled = false;
+        let preset = cfg.preset().unwrap().clone();
+        let gpus = [gpu(0, "GPU-a"), gpu(1, "GPU-b")];
+        let err = device_plan(&cfg, &preset, &gpus).unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn an_unsupported_miner_is_refused_instead_of_mining_on_every_card() {
+        let mut cfg = Config::default();
+        cfg.gpu_profiles
+            .get_mut("balanced")
+            .unwrap()
+            .per_gpu
+            .insert(
+                "GPU-b".into(),
+                crate::config::GpuTuning {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
+        let mut preset = cfg.preset().unwrap().clone();
+        preset.miner = "private-build".into();
+        let gpus = [gpu(0, "GPU-a"), gpu(1, "GPU-b")];
+        let err = device_plan(&cfg, &preset, &gpus).unwrap_err();
+        assert!(err.to_string().contains("private-build"), "{err}");
+        let err = args_with_devices(&cfg, &preset, Some(&[0])).unwrap_err();
+        assert!(err.to_string().contains("private-build"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_device_list_is_rejected() {
+        let (cfg, preset) = cfg_and_preset();
+        let err = args_with_devices(&cfg, &preset, Some(&[])).unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn a_device_flag_in_extra_args_is_rejected() {
+        let (cfg, mut preset) = cfg_and_preset();
+        preset.extra_args = "--gpu-list 1".into();
+        let err = args_with_devices(&cfg, &preset, Some(&[0])).unwrap_err();
+        assert!(err.to_string().contains("--gpu-list"), "{err}");
     }
 }

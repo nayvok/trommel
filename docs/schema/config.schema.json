@@ -142,7 +142,9 @@
             "type": "object",
             "properties": {
               "enabled": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "false = exclude this card from mining; it is not passed to the miner and is not tuned",
+                "default": true
               },
               "power_limit_w": {
                 "type": [
@@ -194,7 +196,9 @@
               "type": "object",
               "properties": {
                 "enabled": {
-                  "type": "boolean"
+                  "type": "boolean",
+                  "description": "false = exclude this card from mining; it is not passed to the miner and is not tuned",
+                  "default": true
                 },
                 "custom": {
                   "type": "boolean",

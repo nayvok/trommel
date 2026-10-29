@@ -5,6 +5,46 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-29
+
+### Added
+
+- **Per-GPU participation (B2).** A card switched off in the GPU profile is now
+  excluded from the active mining session, not just from tuning: the miner is
+  started with the participating `nvidia-smi` indices only, the excluded card
+  receives no power or clock changes, and any tuning left by a previous
+  restore-off session is returned to stock before the new session starts. The
+  status document exposes `participation[]` (`enabled`, `mining`), the dashboard
+  marks each card `mining`/`excluded` and Totals counts `N of M`.
+
+- **Documented device-selection flags.** The catalogue now carries
+  `device_flag` next to `per_gpu_devices`: WildRig `--gpu-list`, SRBMiner
+  `--gpu-id`, OneZero `--devices`. A miner without a documented flag refuses a
+  partial rig with an explicit error instead of silently mining on every card;
+  a device flag in `extra_args` is rejected while Trommel supplies the list.
+  Benchmarks follow the same rule. See
+  [ADR 0007](docs/adr/0007-per-gpu-participation.md).
+
+- **Exclusion coverage in tests.** Unit tests cover every driver branch,
+  comma-separated indices, empty/one/many cards and the unsupported-miner
+  refusal. The e2e run starts with one excluded card and checks the miner
+  arguments, the untouched excluded card, stock restoration for a previously
+  tuned excluded card, a reduced emergency-stop restore and the explicit
+  refusal without spawning.
+
+### Changed
+
+- `GpuTuning.enabled` now means “participates in the mining session”. An enabled
+  card with no tuning still mines; an excluded card is not passed to the miner.
+  Changing participation is a restart change and uses the normal apply dialog.
+- The snapshot's `applied_gpus` covers only the participating, tuned cards;
+  Stop, shutdown and emergency-stop restore exactly that set. Aggregate rig
+  power and the hottest-card temperature still include excluded cards and say so
+  in their tooltips.
+- The GUI switch is labelled for mining participation (not “profile enable”);
+  the card chip and Totals describe the applied session, so a draft switch never
+  claims the miner already restarted.
+
 ### Removed
 
 - **The dashboard Efficiency row.** The J/TH value is still computed and

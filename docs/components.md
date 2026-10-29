@@ -44,8 +44,8 @@ The largest module and the shape of everything else.
 | `SCHEMA_VERSION` | `3`; `Config::load` migrates v1 configs and infers the v2→v3 `custom` flag |
 | `Config` | `active_preset`, `presets`, `gpu_profiles`, `miner_installs`, `custom_miners`/`pools` (reserved), `behavior` |
 | `Preset` | Coin/algo/miner/version/pool/wallet/worker/profile, `miner_options`, fee fields, `extra_args`, `env` |
-| `GpuTuning` | `enabled`, optional `power_limit_w`, `core_clock_mhz`, `memory_clock_mhz`, `fan_pct`, global `temp_limit_c`/`temp_resume_c`, and `custom` (per-GPU entries only) |
-| `GpuProfile` | `default` tuning plus `per_gpu` entries keyed by GPU UUID; `tuning_for(uuid)` inherits the default unless the entry is `custom` |
+| `GpuTuning` | `enabled` (participation, not just tuning), optional `power_limit_w`, `core_clock_mhz`, `memory_clock_mhz`, `fan_pct`, global `temp_limit_c`/`temp_resume_c`, and `custom` (per-GPU entries only) |
+| `GpuProfile` | `default` tuning plus `per_gpu` entries keyed by GPU UUID; `tuning_for(uuid)` inherits the default unless the entry is `custom`; a `false` `enabled` excludes the card from the miner and from tuning |
 | `Behavior` | Restart/poll/restore/login/notifications, `language`, `appearance`, `simple_mode` |
 | `MinerInstall` | Global install record: `miner`, `version`, `path`, `source_url`, `verified`, `custom`, `installed_at` |
 | `ApplyMode` | `Live`, `Restart`, `Stop`; `parse("live")`, `parse("restart")`, `parse("stop")` |
@@ -84,6 +84,10 @@ Key functions:
 
 - Types: `MinerDef`, `MinerVersion`, `MinerOption`, `OptionKind`
   (`int|bool|enum|string`), `OptionScope` (`global|gpu`), `CoinDef`, `PoolDef`.
+- `MinerDef::selects_devices()` is true only when `per_gpu_devices` **and** a
+  non-empty `device_flag` are present; the flag is documented upstream, never
+  guessed. Built-in flags: WildRig `--gpu-list`, SRBMiner `--gpu-id`, OneZero
+  `--devices`.
 - `catalog()` parses `resources/catalog/{miners,coins,pools}.toml` once
   (`OnceLock`), and exposes `miners()`, `miner(id)`, `coins()`, `coin(id)`,
   `pools()`, `pool(id)`, `miner_fee_pct(id)`, `pool_fee_pct(id)`.
@@ -182,16 +186,25 @@ No paths, no shell. The helper verifies the lease before its first `nvidia-smi`
 mutation. `apply` waits for the power limit to read back; `reset` reports
 failing `-rgc`/`-rmc` instead of swallowing them.
 
-### `miners` — argument construction
+### `miners` — argument construction and device selection
 
-`build_args(cfg, preset, log_file) -> Vec<String>` is the only place that knows
-miner CLI shapes. Core flags:
+`build_args(cfg, preset, log_file) -> Vec<String>` is the "all detected cards"
+form; `build_args_with_devices(cfg, preset, log_file, Option<&[u32]>)` adds the
+documented device flag. `device_plan(cfg, preset, gpus)` decides whether an
+explicit list is needed (`None` when every card participates), rejects an empty
+rig, and returns the explicit unsupported-miner error for a partial rig. The
+argument builder is the only place that knows miner CLI shapes. Core flags:
 
 | Driver | Match | Shape |
 | --- | --- | --- |
 | WildRig / generic | any unknown `miner` id | `--algo`, `--url`, `--user`, optional `--worker`, `--api-port`, `--api-worker-id`, `--log-file`, `--no-color`, `--print-time 10`, `--gpu-temp-limit`, `--gpu-temp-resume` |
 | SRBMiner | `"srbminer"` | `--algorithm`, `--pool`, `--wallet wallet.worker`, `--password x`, optional API flags/log |
 | OneZero | `"onezero"` | `-a`, `-o`, `-u`, optional `-w` |
+
+The device flag is emitted before catalogue options and contains the
+comma-separated `nvidia-smi` indices of the participating cards. It is only
+emitted for a catalogue miner with `selects_devices()`; a device flag inside
+`extra_args` is rejected to avoid two contradictory selections.
 
 Catalogue options are appended by `append_options`: bool options emit the flag
 when true, int options emit `flag value` within `min`/`max` (and skip
@@ -210,10 +223,12 @@ arguments — no shell.
   binary. A live miner from a previous daemon is marked `orphan` until startup
   recovery stops it; adoption never resumes mining.
 - `start(cfg)` — the Start algorithm from [architecture.md](architecture.md#start):
-  external-miner guard, preset validation, effective tuning, snapshot intent,
-  per-GPU apply + power verification with rollback, spawn, state update. It
-  holds the OC lock across the whole block and records the absolute
-  `state.miner_path`. A profile with no tuning creates no snapshot and calls no
+  external-miner guard, preset validation, participation + device-capability
+  check, effective tuning, restoration of a now-excluded card that still had
+  restore-off tuning, snapshot intent, per-GPU apply + power verification with
+  rollback, spawn, state update. It holds the OC lock across the whole block and
+  records the absolute `state.miner_path`. The chosen device list is kept for
+  crash restarts. A profile with no tuning creates no snapshot and calls no
   helper.
 - `stop(cfg) / shutdown(cfg)` — terminate only our child/PID (path-checked),
   skip and clear external state, restore the applied snapshot (unless disabled),
@@ -222,8 +237,9 @@ arguments — no shell.
 - `owns_miner()` — `running && !external` and a live child or path-matching PID;
   the benchmark uses it before stopping anything.
 - `tick(cfg) -> Vec<Event>` — one-second supervisor step: reap, bounded restart
-  with backoff, detect adoption loss, emit events, and run the one-shot clock
-  check after the GPU reaches load.
+  with backoff (with the same device list as the session), detect adoption
+  loss, emit events, and run the one-shot clock check after the GPU reaches
+  load.
 - `handle_unexpected_exit` — the bounded restart policy: up to five consecutive
   restarts (2/4/8/… s, cap 60), then stop + restore + error; `started_at` resets
   on every spawn.
@@ -278,7 +294,9 @@ legacy-parse field; `miner_path` is additive with a serde default).
 - `Status` composition and collection are described in
   [architecture.md](architecture.md#status-contract).
 - `Status::collect(cfg, state)` is blocking (nvidia-smi, HTTP pool, log tail) and
-  is always called from a blocking context.
+  is always called from a blocking context. It also builds `participation[]`
+  from the applied profile and the running state, and adds the “excluded from
+  mining” / “miner cannot choose GPUs” warnings.
 - `Status::stopped(cfg)` is the cheap snapshot used when stopping.
 - `OcView` — `applied`, `needs_restore`, `snapshot_available`, `stale`,
   `restore_on_stop`, `last_error`, snapshot age/boot and a first-card target
@@ -491,7 +509,7 @@ executes commands. It never blocks the GTK main loop.
 | `quick_setup_wizard` | Three-step first-run flow (cards → miner → wallet) |
 | `dialog_footer` / `dialog_body` | Shared dialog chrome: header keeps the title, actions go in a footer below the content |
 | `save_and_apply_with` | Diff + restart/stop alert; `on_cancel` restores optimistic changes |
-| `apply_status` | Renders a `Status` into every widget, including empty states; records sparkline samples |
+| `apply_status` | Renders a `Status` into every widget, including empty states and participation; records sparkline samples |
 | `History` / `sparkline` / `update_sparklines` | Per-GPU five-minute ring buffer and the Cairo sparklines drawn on the GPU bubble floor |
 | `copy_diagnostics` | Redacted bundle to the clipboard |
 
@@ -504,8 +522,10 @@ Rules that are easy to break:
 - A dirty draft survives `Refresh`; only an explicit apply clears it.
 - Toggling a GPU or editing an appearance/simple-mode switch updates the draft
   immediately, and **Cancel** in the restart/stop alert must undo it.
-- The GPU enable switch and the tuning dialog share one profile; there is no
-  second source of truth in the UI.
+- The GPU participation switch and the tuning dialog share one profile; there is
+  no second source of truth in the UI. The switch edits the draft; the card
+  chip (`mining` / `excluded`) and the Totals row describe the applied session,
+  so a switch change never pretends the miner already restarted.
 - Dialogs never put actions in the header: build them with `dialog_footer()` so
   the title stays clean, actions never scroll away and the primary button sits
   on the trailing edge.
@@ -586,6 +606,7 @@ There is no shell extension and no GSettings schema; the GUI only edits the
 | Add a pool or coin | `resources/catalog/*.toml`; a parser adapter only with a stable API |
 | Change miner arguments | `crates/core/src/miners.rs` (`build_args` / `append_options`) and its tests |
 | Change GPU apply/restore | `crates/core/src/oc.rs`, `polkit/trommel-oc`, `scripts/e2e.sh` |
+| Change per-GPU participation | `crates/core/src/miners.rs` (`device_plan`, `build_args_with_devices`), catalogue `device_flag`, `crates/core/src/supervisor.rs`, `status.rs`, GUI cards/totals, [ADR 0007](adr/0007-per-gpu-participation.md) |
 | Change the config model | `crates/core/src/config.rs`, `docs/schema/*.json`, migration/normalise tests |
 | Add a D-Bus method | `crates/core/src/dbus.rs` (trait + impl), CLI/MCP callers, [architecture.md](architecture.md) |
 | Add a status field | `crates/core/src/status.rs`, GUI rendering, CLI/MCP output |
