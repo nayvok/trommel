@@ -10,6 +10,22 @@ pass() { printf '\033[1;32m  ✓ %s\033[0m\n' "$*"; }
 fail() { printf '\033[1;31m  ✗ %s\033[0m\n' "$*"; FAILS=$((FAILS + 1)); }
 step() { printf '\n\033[1;34m== %s ==\033[0m\n' "$*"; }
 
+# Start the daemon in its own session and record the real daemon PID.
+#
+# `setsid` forks when the caller is a process-group leader (as it is on some CI
+# runners), so `$!` is not necessarily the daemon. The wrapper writes its own
+# PID before `exec`, which works whether setsid execs or forks.
+start_daemon() {
+    rm -f "$WORK/daemon.pid"
+    setsid bash -c 'echo $$ > "$1"; shift; exec "$@"' _ "$WORK/daemon.pid" "$@" \
+        > "$WORK/daemon.out" 2>&1 < /dev/null &
+    for _ in $(seq 1 100); do
+        [ -s "$WORK/daemon.pid" ] && break
+        sleep 0.1
+    done
+    DAEMON_PID=$(cat "$WORK/daemon.pid" 2>/dev/null || true)
+}
+
 step "Build"
 ( cd "$ROOT" && cargo build -q -p trommeld -p trommel ) || { echo "build failed" >&2; exit 1; }
 
@@ -155,8 +171,7 @@ else
 fi
 
 step "Start daemon"
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 2
 if kill -0 "$DAEMON_PID" 2>/dev/null; then pass "trommeld is running"; else fail "trommeld did not start"; cat "$WORK/daemon.out"; exit 1; fi
 
@@ -370,8 +385,7 @@ fi
 [ ! -f "$WORK/state/trommel/oc-snapshot.json" ] \
     && pass "emergency-stop cleared the reduced snapshot" \
     || fail "reduced snapshot survived emergency-stop"
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 2
 python3 - "$WORK" <<'PY'
 import json, pathlib, sys
@@ -590,8 +604,7 @@ cfg = json.loads(p.read_text())
 cfg["miner_installs"] = {}
 p.write_text(json.dumps(cfg, indent=2))
 PY
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 2
 if "$BIN/trommel" start >/dev/null 2>&1; then
     fail "start succeeded without an installed miner"
@@ -650,15 +663,13 @@ if "$BIN/trommel" emergency-stop --reason=manual > "$WORK/emergency2.out" 2>&1; 
 else
     fail "the second emergency-stop failed"; cat "$WORK/emergency2.out"
 fi
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 2
 
 step "SIGKILL during an in-flight helper waits, then restores"
 kill -9 "$DAEMON_PID" 2>/dev/null || true
 sleep 1
-env TROMMEL_OC_TIMEOUT_MS=30000 setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon env TROMMEL_OC_TIMEOUT_MS=30000 "$BIN/trommeld"
 sleep 2
 cat > "$WORK/bin/oc-helper" <<SH
 #!/bin/bash
@@ -733,8 +744,7 @@ fi
 exec "$ROOT/scripts/fixtures/fake-oc-helper.sh" "\${clean[@]}"
 SH
 chmod +x "$WORK/bin/oc-helper"
-env TROMMEL_OC_TIMEOUT_MS=30000 setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon env TROMMEL_OC_TIMEOUT_MS=30000 "$BIN/trommeld"
 sleep 2
 "$BIN/trommel" start > "$WORK/stuck-start.out" 2>&1 &
 START_CLIENT=$!
@@ -766,8 +776,7 @@ wait "$START_CLIENT" 2>/dev/null || true
     || fail "snapshot survived the stuck-helper restore"
 cp "$ROOT/scripts/fixtures/fake-oc-helper.sh" "$WORK/bin/oc-helper"
 chmod +x "$WORK/bin/oc-helper"
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 2
 
 step "Startup recovery stops the orphan and restores stock"
@@ -780,8 +789,7 @@ sleep 1
 kill -0 "$MINER_PID" 2>/dev/null \
     && pass "the orphaned miner is still alive when the new daemon starts" \
     || fail "the miner died before startup recovery"
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 4
 kill -0 "$MINER_PID" 2>/dev/null \
     && fail "startup recovery left the orphaned miner running" \
@@ -813,8 +821,7 @@ state = {"running": True, "miner_pid": 4000000, "started_at": int(time.time()) -
 PY
 kill "$DAEMON_PID" 2>/dev/null || true
 sleep 1
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 2
 if "$BIN/trommel" status --json 2>/dev/null | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if not s["state"]["running"] and not s["state"]["external"] else 1)'; then
     pass "phantom external state is gone"
@@ -869,8 +876,7 @@ cfg = json.loads(path.read_text())
 cfg["presets"]["pearl-wildrig"]["miner_version"] = "0.51.8"
 path.write_text(json.dumps(cfg, indent=2))
 PY
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 2
 "$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
 
@@ -970,8 +976,7 @@ sleep 1
 cp "$ROOT/scripts/fixtures/fake-oc-helper.sh" "$WORK/bin/oc-helper"
 chmod +x "$WORK/bin/oc-helper"
 BEFORE=$(grep -c '^reset ' "$WORK/oc.log" 2>/dev/null || true)
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 4
 AFTER=$(grep -c '^reset ' "$WORK/oc.log" 2>/dev/null || true)
 [ "$AFTER" -gt "$BEFORE" ] \
@@ -1009,8 +1014,7 @@ kill -0 "$EXT_PID" 2>/dev/null \
     && pass "external state is not claimed by this installation" \
     || fail "external state survived emergency-stop"
 kill "$EXT_PID" 2>/dev/null || true
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 2
 
 step "A hot second card triggers the overheat alert"
@@ -1068,8 +1072,7 @@ chmod +x "$WORK/bin/wildrig-external"
 setsid "$WORK/bin/wildrig-external" --algo pearlhash >/dev/null 2>&1 < /dev/null &
 EXT_PID=$!
 sleep 1
-env -u TROMMEL_NO_EXTERNAL_SCAN setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon env -u TROMMEL_NO_EXTERNAL_SCAN "$BIN/trommeld"
 sleep 3
 if "$BIN/trommel" bench --minutes 1 > "$WORK/bench-external.out" 2>&1; then
     fail "benchmark ran next to an external miner"
@@ -1085,8 +1088,7 @@ COUNT=$(pgrep -fc "$WORK/bin/wildrig-external" 2>/dev/null || true)
 kill -9 "$DAEMON_PID" 2>/dev/null || true
 kill "$EXT_PID" 2>/dev/null || true
 sleep 1
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 2
 
 step "Restart budget stops mining and restores"
@@ -1107,8 +1109,7 @@ PY
 "$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
 kill -9 "$DAEMON_PID" 2>/dev/null || true
 sleep 1
-env TROMMEL_MAX_RESTARTS=2 setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon env TROMMEL_MAX_RESTARTS=2 "$BIN/trommeld"
 sleep 2
 "$BIN/trommel" start >/dev/null 2>&1
 sleep 12
@@ -1137,8 +1138,7 @@ path.write_text(json.dumps(cfg, indent=2))
 PY
 kill -9 "$DAEMON_PID" 2>/dev/null || true
 sleep 1
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 2
 "$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
 
@@ -1146,8 +1146,7 @@ step "The guard restores after a SIGKILLed daemon"
 kill -9 "$DAEMON_PID" 2>/dev/null || true
 sleep 1
 rm -f "$WORK/state/trommel/guard.pid"
-env -u TROMMEL_NO_GUARD setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon env -u TROMMEL_NO_GUARD "$BIN/trommeld"
 sleep 3
 "$BIN/trommel" start >/dev/null 2>&1
 sleep 2
@@ -1177,8 +1176,7 @@ if [ -n "$GUARD_PID" ]; then
         && fail "the guard is still running after the restore" \
         || pass "the guard exits after restoring"
 fi
-setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
-DAEMON_PID=$!
+start_daemon "$BIN/trommeld"
 sleep 2
 
 step "A GUI crash does not stop mining"
