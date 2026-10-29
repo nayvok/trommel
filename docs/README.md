@@ -4,7 +4,7 @@ Trommel is a GTK4/libadwaita control room for a local NVIDIA mining rig. The
 daemon `trommeld` owns the applied configuration, the miner process and the GPU
 snapshot; the GTK app and the CLI are clients.
 
-This directory documents the shipped 0.4.x code. If a document and the source
+This directory documents the shipped 0.6.x code. If a document and the source
 disagree, the source is right — fix the document in the same change that fixes
 the code.
 

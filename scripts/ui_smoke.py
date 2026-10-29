@@ -51,15 +51,25 @@ class UI:
         return Atspi.get_desktop(0)
 
     def app(self):
+        # Match the PID first. In a PID namespace (or a sandboxed runner) the
+        # PID passed by the shell is not the host PID AT-SPI reports, so fall
+        # back to the unique Trommel window; GApplication is single-instance and
+        # the test uses its own XDG dirs, so there cannot be a second one.
+        fallback = None
         try:
             desktop = self.desktop()
             for index in range(desktop.get_child_count()):
                 node = desktop.get_child_at_index(index)
                 if node.get_process_id() == self.pid:
                     return node
+                if "trommel" in (node.get_name() or "").lower():
+                    if fallback is not None:
+                        fallback = False
+                    else:
+                        fallback = node
         except Exception:
             pass
-        return None
+        return fallback or None
 
     def wait_app(self, timeout: float = 15.0):
         return self.wait(lambda: self.app(), timeout, "application window")
@@ -116,35 +126,89 @@ class UI:
         root = frame if frame is not None else self.app()
         return self.actionable(root, "switch", name)
 
+    def visible(self, node) -> bool:
+        try:
+            states = {
+                state.value_nick for state in node.get_state_set().get_states()
+            }
+            return "showing" in states or "visible" in states
+        except Exception:
+            return False
+
     def frame_visible(self, name: str, contains: bool = True):
         app = self.app()
         # AdwDialog surfaces live inside the main window, so they are exposed
         # as dialogs in the accessibility tree rather than as frames.
         for role in ("frame", "dialog", "alert dialog"):
             for frame in self.find_all(app, role, name, contains):
-                try:
-                    states = {state.value_nick for state in frame.get_state_set().get_states()}
-                    if "showing" in states or "visible" in states:
-                        return frame
-                except Exception:
-                    pass
+                if self.visible(frame):
+                    return frame
         return None
+
+    def descendant_count(self, node, limit: int = 400) -> int:
+        total = 0
+        stack = [node]
+        while stack and total < limit:
+            current = stack.pop()
+            total += 1
+            try:
+                stack.extend(
+                    current.get_child_at_index(i)
+                    for i in range(current.get_child_count())
+                )
+            except Exception:
+                pass
+        return total
 
     def find_frame(self, name: str, contains: bool = True, timeout: float = 15.0):
         def lookup():
             app = self.app()
             if app is None:
                 return None
-            found = self.find(app, "frame", name, contains)
-            if found is not None:
-                return found
-            for role in ("dialog", "alert dialog"):
-                found = self.find(app, role, name, contains)
-                if found is not None:
-                    return found
+            for kind in ("frame", "dialog", "alert dialog"):
+                for found in self.find_all(app, kind, name, contains):
+                    if self.visible(found):
+                        return found
             return None
 
-        return self.wait(lookup, timeout, f"frame {name!r}")
+        found = self.wait(lookup, timeout, f"frame {name!r}")
+        if found is None:
+            return None
+        # AT-SPI builds a window's subtree incrementally. A proxy captured
+        # before the first frame finishes stays partial for its lifetime, so
+        # return a fresh proxy only once it contains the whole window.
+        deadline = time.time() + 6.0
+        last = found
+        while time.time() < deadline:
+            fresh = lookup()
+            if fresh is not None:
+                last = fresh
+                if self.descendant_count(fresh) >= 25:
+                    return fresh
+            time.sleep(0.1)
+        return last
+
+    def dialog_with(self, name: str, role: str = "list item", timeout: float = 15.0):
+        """Return a dialog only after its mapped page exposes `role`.
+
+        The first AT-SPI proxy of an AdwDialog can stay childless even after the
+        page is visible, so every lookup starts from a fresh tree and keeps the
+        proxy that already contains the expected content.
+        """
+
+        def lookup():
+            app = self.app()
+            if app is None:
+                return None
+            for kind in ("dialog", "frame", "alert dialog"):
+                for frame in self.find_all(app, kind, name, True):
+                    if not self.visible(frame):
+                        continue
+                    if self.find(frame, role) is not None:
+                        return frame
+            return None
+
+        return self.wait(lookup, timeout, f"dialog {name!r} with {role!r}")
 
     def wait(self, predicate, timeout: float, what: str):
         deadline = time.time() + timeout
@@ -254,7 +318,7 @@ def phase_main(ui: UI) -> None:
         return
 
     # Navigation surfaces.
-    for name in ("Dashboard", "Presets", "Miners", "Settings"):
+    for name in ("Dashboard", "Presets", "Settings"):
         ui.check(ui.find(frame, "page tab", name) is not None, f"page tab {name}")
     ui.check(ui.find(frame, "button", "Refresh") is not None, "Refresh button")
     ui.check(ui.find(frame, "button", "Start") is not None, "Start button")
@@ -376,16 +440,21 @@ def phase_main(ui: UI) -> None:
                     is not None,
                     "Cancel keeps the miner running",
                 )
-                restored = ui.switch("GPU 0 mining")
-                checked = False
-                if restored is not None:
+                def restored_switch():
+                    node = ui.switch("GPU 0 mining")
+                    if node is None:
+                        return None
                     try:
-                        checked = restored.get_state_set().contains(
-                            Atspi.StateType.CHECKED
-                        )
+                        if node.get_state_set().contains(Atspi.StateType.CHECKED):
+                            return node
                     except Exception:
-                        checked = False
-                ui.check(checked, "Cancel restores the GPU switch")
+                        pass
+                    return None
+
+                restored = ui.wait(
+                    restored_switch, 8.0, "GPU switch restored"
+                )
+                ui.check(restored is not None, "Cancel restores the GPU switch")
             else:
                 ui.fail("GPU disable did not ask for confirmation")
         ui.click(stopped, "hero Stop")
@@ -458,30 +527,51 @@ def phase_main(ui: UI) -> None:
         ui.check(editor is not None, "preset chevron opens the editor")
         if editor is not None:
             ui.click_button("Cancel", editor, "chevron editor Cancel")
-    ui.tab("Miners")
-    ui.check(
-        ui.wait(
-            lambda: ui.find(ui.app(), "list item", "WildRig Multi"),
-            5.0,
-            "miner row",
-        )
-        is not None,
-        "Miners page lists WildRig",
-    )
-    miner_chevron = ui.wait(
-        lambda: ui.find(ui.app(), "button", "Install or update this miner"),
+    library_button = ui.wait(
+        lambda: ui.find(ui.app(), "button", "Open the miner library"),
         5.0,
-        "miner chevron",
+        "miner library button",
     )
-    if ui.click(miner_chevron, "miner chevron"):
-        install = ui.wait(
-            lambda: ui.find_frame("Install miner", timeout=1.0),
-            5.0,
-            "install dialog from chevron",
-        )
-        ui.check(install is not None, "miner chevron opens the install dialog")
-        if install is not None:
-            ui.click_button("Cancel", install, "chevron install Cancel")
+    if ui.click(library_button, "miner library"):
+        library = ui.dialog_with("Miner library")
+        ui.check(library is not None, "Presets page opens the miner library")
+        if library is not None:
+            # AdwDialog builds its accessible children after the open
+            # animation; query them afresh once the tree is populated.
+            time.sleep(1.0)
+            ui.check(
+                ui.wait(
+                    lambda: ui.find(library, "list item", "WildRig Multi"),
+                    5.0,
+                    "library miner row",
+                )
+                is not None,
+                "miner library lists WildRig",
+            )
+            ui.check(
+                ui.find(library, "text", "Version name") is None,
+                "library itself is not the install dialog",
+            )
+            miner_chevron = ui.wait(
+                lambda: ui.find(library, "button", "Install or update this miner"),
+                5.0,
+                "library miner chevron",
+            )
+            if ui.click(miner_chevron, "library miner chevron"):
+                install = ui.wait(
+                    lambda: ui.find_frame("Install miner", timeout=1.0),
+                    5.0,
+                    "install dialog from library",
+                )
+                ui.check(install is not None, "library opens the install dialog")
+                if install is not None:
+                    ui.click_button("Cancel", install, "library install Cancel")
+            ui.click_button("Close", library, "library Close")
+            ui.check(
+                ui.wait(lambda: ui.frame_visible("Miner library") is None, 5.0, "closed")
+                is not None,
+                "miner library closes",
+            )
     ui.tab("Settings")
     simple = ui.wait(
         lambda: ui.switch("Simple mode"), 5.0, "simple switch"
@@ -518,10 +608,26 @@ def phase_editor(ui: UI) -> None:
     ui.check(frame is not None, "preset editor opens")
     if frame is None:
         return
-    for name in ("Cancel", "Save", "Duplicate", "Delete…", "Install…"):
+    for name in ("Cancel", "Save", "Duplicate", "Delete…", "Miner library…"):
         ui.check(ui.find(frame, "button", name) is not None, f"editor button {name}")
     for name in ("Name", "Wallet", "Worker", "Pool address"):
         ui.check(ui.find(frame, "text", name) is not None, f"editor field {name}")
+    # The editor opens the shared library focused on its preset.
+    if ui.click_button("Miner library…", frame, "editor miner library"):
+        library = ui.dialog_with("Miner library")
+        ui.check(library is not None, "editor opens the miner library")
+        if library is not None:
+            time.sleep(1.0)
+            ui.check(
+                ui.find(library, "list item", "Pearl WildRig") is not None,
+                "library names the preset it was opened from",
+            )
+            ui.check(
+                ui.find(library, "button", "Install…") is not None,
+                "library offers the preset's install action",
+            )
+            ui.click_button("Close", library, "editor library Close")
+            ui.wait(lambda: ui.frame_visible("Miner library") is None, 5.0, "closed")
     # Delete asks first; cancel the confirmation.
     if ui.click_button("Delete…", frame, "Delete…"):
         ui.close_alert("Delete preset", "Cancel")
@@ -601,9 +707,7 @@ def phase_tune(ui: UI) -> None:
 
 
 def phase_install(ui: UI) -> None:
-    frame = ui.wait(
-        lambda: ui.find_frame("Install miner", timeout=1.0), 15.0, "install dialog"
-    )
+    frame = ui.dialog_with("Install miner", role="button")
     ui.check(frame is not None, "miner install dialog opens")
     if frame is None:
         return
@@ -692,35 +796,6 @@ def phase_first_run(ui: UI) -> None:
         ui.click_button("Cancel", wizard, "first-run wizard Cancel")
         ui.wait(lambda: ui.find_frame("Quick setup", timeout=1.0) is None, 5.0, "closed")
 
-    ui.tab("Miners")
-    ui.check(
-        ui.wait(
-            lambda: ui.find(ui.app(), "list item", "WildRig Multi"),
-            8.0,
-            "miner row",
-        )
-        is not None,
-        "clean install lists WildRig as available",
-    )
-    ui.check(
-        ui.find(ui.app(), "label", "not installed", contains=True) is not None,
-        "clean install marks the miner as not installed",
-    )
-    chevron = ui.wait(
-        lambda: ui.find(ui.app(), "button", "Install or update this miner"),
-        5.0,
-        "miner chevron",
-    )
-    if ui.click(chevron, "miner chevron on clean install"):
-        install = ui.wait(
-            lambda: ui.find_frame("Install miner", timeout=1.0),
-            8.0,
-            "install dialog",
-        )
-        ui.check(install is not None, "install dialog opens without a config")
-        if install is not None:
-            ui.click_button("Cancel", install, "install Cancel on clean install")
-
     ui.tab("Presets")
     ui.check(
         ui.wait(
@@ -731,6 +806,50 @@ def phase_first_run(ui: UI) -> None:
         is not None,
         "clean install has the default Pearl preset",
     )
+    library_button = ui.wait(
+        lambda: ui.find(ui.app(), "button", "Open the miner library"),
+        5.0,
+        "miner library button",
+    )
+    if ui.click(library_button, "miner library on clean install"):
+        library = ui.dialog_with("Miner library")
+        ui.check(library is not None, "miner library opens without a config")
+        if library is not None:
+            time.sleep(1.0)
+            ui.check(
+                ui.wait(
+                    lambda: ui.find(library, "list item", "WildRig Multi"),
+                    8.0,
+                    "library miner row",
+                )
+                is not None,
+                "clean install lists WildRig as available",
+            )
+            ui.check(
+                ui.find(library, "label", "not installed", contains=True) is not None,
+                "clean install marks the miner as not installed",
+            )
+            chevron = ui.wait(
+                lambda: ui.find(library, "button", "Install or update this miner"),
+                5.0,
+                "library miner chevron",
+            )
+            if ui.click(chevron, "library miner chevron on clean install"):
+                install = ui.wait(
+                    lambda: ui.find_frame("Install miner", timeout=1.0),
+                    8.0,
+                    "install dialog",
+                )
+                ui.check(
+                    install is not None,
+                    "install dialog opens without a config",
+                )
+                if install is not None:
+                    ui.click_button(
+                        "Cancel", install, "install Cancel on clean install"
+                    )
+            ui.click_button("Close", library, "library Close on clean install")
+
     ui.tab("Dashboard")
     ui.check(
         ui.wait(

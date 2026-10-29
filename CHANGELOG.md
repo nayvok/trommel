@@ -5,6 +5,35 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-29
+
+### Added
+
+- **Miner library dialog (B3).** The catalogue, installed versions, preset
+  usage and the A/B benchmark moved from the removed Miners page into a modal
+  library opened from the Presets page and the preset editor. From a preset the
+  library shows that preset first, with its pinned `miner_version` and a direct
+  **Install…** action.
+- **Missing-version hints on preset rows.** A preset that pins an uninstalled
+  version now says so in its subtitle and offers **Install…**, which opens the
+  library focused on that preset. Start was already blocked by the missing
+  install; the row now explains why and where to fix it.
+
+### Changed
+
+- **Preset-centred navigation.** The top-level navigation is now Dashboard,
+  Presets and Settings. Miner installation remains global in `miner_installs`,
+  and installing a build never rewrites a preset or its version.
+- The preset editor's install action is now **Miner library…**; the library
+  keeps the preset context and links to the unchanged install dialog.
+- The miner library lists which presets and versions reference each miner, so
+  the effect of installing a shared build is visible before acting.
+
+### Removed
+
+- **The Miners top-level page** and its benchmark group. Installing remains one
+  dialog shared by the library, the editor and the wizard.
+
 ## [0.5.0] - 2026-10-29
 
 ### Added

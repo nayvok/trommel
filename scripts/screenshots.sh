@@ -51,15 +51,21 @@ cat > "$WORK/wildrig-multi" <<'SH'
 while true; do sleep 2; done
 SH
 chmod +x "$WORK/wildrig-multi"
+# The preset editor shows the install path. Keep the demo rig out of the
+# repository path so the tracked screenshot never contains a personal home
+# directory.
+DEMO_MINER="/tmp/trommel-screenshot-wildrig-multi"
+cp "$WORK/wildrig-multi" "$DEMO_MINER"
+chmod +x "$DEMO_MINER"
 "$WORK/wildrig-multi" --algo pearlhash >/dev/null 2>&1 &
 MINER_PID=$!
 for i in $(seq 1 80); do
   echo "[12:00:$((i%60))] hashrate: 10s: 125.$((i%9)) 60s: 125.0 15m: 124.9 TH/s" >> "$WORK/state/trommel/miner.log"
   echo "[12:00:$((i%60))] Shares: $((500+i)) accepted, 2 rejected" >> "$WORK/state/trommel/miner.log"
 done
-python3 - "$WORK" "$MINER_PID" <<'PY'
+python3 - "$WORK" "$MINER_PID" "$DEMO_MINER" <<'PY'
 import json, pathlib, sys, time
-work = pathlib.Path(sys.argv[1]); pid = int(sys.argv[2])
+work = pathlib.Path(sys.argv[1]); pid = int(sys.argv[2]); demo_miner = sys.argv[3]
 cfg = {
   "schema_version": 2, "active_preset": "pearl-wildrig",
   "presets": {"pearl-wildrig": {
@@ -78,7 +84,7 @@ cfg = {
       "GPU-22222222-2222-2222-2222-222222222222":{"enabled":True,"power_limit_w":130,
         "core_clock_mhz":1500,"memory_clock_mhz":750,"fan_pct":None,"temp_limit_c":90,"temp_resume_c":65}}}},
   "miner_installs": {"wildrig@0.51.8": {"miner":"wildrig","version":"0.51.8",
-    "path":str(work/"wildrig-multi"),"sha256":"","source_url":"","verified":False,"custom":True,"installed_at":0}},
+    "path":demo_miner,"sha256":"","source_url":"","verified":False,"custom":True,"installed_at":0}},
   "custom_miners": {}, "pools": {},
   "behavior": {"auto_restart":True,"restart_delay_s":5,"poll_interval_s":2,
     "restore_stock_on_stop":True,"start_mining_on_login":False,"notifications":False,"language":"en"}
@@ -94,6 +100,7 @@ cleanup() {
   [ -n "${DAEMON_PID:-}" ] && kill "$DAEMON_PID" 2>/dev/null || true
   [ -n "${MINER_PID:-}" ] && kill "$MINER_PID" 2>/dev/null || true
   [ -n "${BUS_PID:-}" ] && kill "$BUS_PID" 2>/dev/null || true
+  rm -f "${DEMO_MINER:-/tmp/trommel-screenshot-wildrig-multi}"
 }
 trap cleanup EXIT
 
@@ -213,6 +220,21 @@ install_shot() {
   [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
 }
 
+library_shot() {
+  local theme="$1" language="$2" target="$3"
+  wanted "$target" || return 0
+  configure "$language" 1
+  local attempt
+  for attempt in 1 2; do
+    rm -f "$target"
+    TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_LIBRARY=1 TROMMEL_LIBRARY_SCREENSHOT="$target" \
+      TROMMEL_WINDOW_HEIGHT=820 timeout 50 "$BIN/trommel" > "$WORK/gui-library-$theme-$language.log" 2>&1 || true
+    [ -f "$target" ] && break
+    echo "  … retrying $(basename "$target")" >&2
+  done
+  [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
+}
+
 wizard_shot() {
   local theme="$1" language="$2" target="$3" step="${4:-0}"
   wanted "$target" || return 0
@@ -231,10 +253,10 @@ wizard_shot() {
 
 shot dark en dashboard "$DOCS/dashboard-en-dark.png" 1 "" 960
 shot dark en presets "$DOCS/presets-en-dark.png"
-shot dark en miners "$DOCS/miners-en-dark.png"
 shot dark en settings "$DOCS/settings-en-dark.png"
 shot dark en settings "$DOCS/settings-advanced-en-dark.png" 0 bottom
 preset_shot dark en "$DOCS/preset-editor-en-dark.png"
+library_shot dark en "$DOCS/miner-library-en-dark.png"
 install_shot dark en "$DOCS/miner-install-en-dark.png"
 tune_shot dark en "$DOCS/gpu-tune-en-dark.png"
 wizard_shot dark en "$DOCS/setup-en-dark.png"
