@@ -225,14 +225,19 @@ design: one miner at a time is an invariant.
   state and the fee breakdown;
 - `gpus[]` and `gpu` — one `GpuStats` per card from `nvidia-smi`;
 - `total` — aggregate hashrate, power, efficiency (J/TH), max temperature and
-  enabled/total GPU counts;
+  enabled/total GPU counts. Power is `power.draw` summed over every detected
+  card (an idle or profile-disabled card still draws, and a card whose reading
+  is `N/A` is skipped), the temperature is the hottest readable card and the
+  efficiency is that power over the hashrate;
 - `miner` — API/log statistics (`hashrate_10s/60s/15m`, accepted, rejected,
   stale, source);
 - `pool` — cached pool statistics when mining;
 - `oc` — `applied` (the snapshot was applied), `needs_restore` (applied while
   stopped), snapshot availability, stale-boot flag, restore-on-stop setting,
   last restore error and a first-card summary of the restore/default targets;
-- `warnings` — config warnings plus “lock not honoured” warnings;
+- `warnings` — config warnings plus “lock not honoured” warnings and one
+  “card #N is at T °C (limit L °C)” note while the hottest card is at or above
+  the profile limit;
 - fees, expected hashrate, temperature limit, timestamp (`ts`, `ts_iso`) and
   app version.
 
@@ -319,7 +324,10 @@ stopped, crashed, warnings and an overheat episode):
 - the daemon emits the `Notification(summary, body)` D-Bus signal for custom
   integrations that want to render their own alert.
 
-Both use the same localised summary and body. The daemon is the only
+The overheat alert follows the hottest card, not card 0, and names it in the
+body (`… 95 °C (card #1, limit 90 °C)`), so a two-GPU rig alerts on whichever
+card is actually hot. Both paths use the same localised summary and body. The
+daemon is the only
 long-lived process, so it owns this path; there is no shell extension.
 
 ## Design constraints and trade-offs

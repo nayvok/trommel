@@ -81,31 +81,31 @@ async fn main() -> anyhow::Result<()> {
                 }
                 engine.set_status(status.clone()).await;
 
-                // Overheat notification, once per episode.
+                // Overheat notification, once per episode. The hot card can be
+                // any card: on a two-GPU rig the duty card is often the second
+                // one, and reading only `status.gpu` silenced the alert.
                 let hot = status
-                    .gpu
-                    .as_ref()
-                    .and_then(|gpu| gpu.temp_c)
-                    .map(|temp| temp >= temp_limit)
-                    .unwrap_or(false);
-                if hot && !overheated && notify_enabled {
-                    overheated = true;
-                    let temp = status
-                        .gpu
-                        .as_ref()
-                        .and_then(|gpu| gpu.temp_c)
-                        .unwrap_or_default();
-                    let summary = tr("Trommel: overheat", "Trommel: перегрев");
-                    let body = format!(
-                        "{} {temp} °C ({} {temp_limit} °C). {}",
-                        tr("Temperature reached", "Температура достигла"),
-                        tr("limit", "порог"),
-                        tr("The miner will pause.", "Майнер поставит паузу."),
-                    );
-                    let _ = Engine::emit_notification(iface_ref.signal_emitter(), &summary, &body)
-                        .await;
-                    dbus::notify_desktop(&connection, &summary, &body);
-                } else if !hot && overheated {
+                    .hottest_gpu()
+                    .filter(|gpu| gpu.temp_c.unwrap_or_default() >= temp_limit);
+                if let (Some(gpu), true) = (&hot, notify_enabled) {
+                    if !overheated {
+                        overheated = true;
+                        let temp = gpu.temp_c.unwrap_or_default();
+                        let index = gpu.index;
+                        let summary = tr("Trommel: overheat", "Trommel: перегрев");
+                        let body = format!(
+                            "{} {temp} °C ({} #{index}, {} {temp_limit} °C). {}",
+                            tr("Temperature reached", "Температура достигла"),
+                            tr("card", "карта"),
+                            tr("limit", "порог"),
+                            tr("The miner will pause.", "Майнер поставит паузу."),
+                        );
+                        let _ =
+                            Engine::emit_notification(iface_ref.signal_emitter(), &summary, &body)
+                                .await;
+                        dbus::notify_desktop(&connection, &summary, &body);
+                    }
+                } else if hot.is_none() && overheated {
                     overheated = false;
                 }
 

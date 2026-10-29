@@ -170,7 +170,50 @@ fn enabled_gpu_warning(cfg: &Config, gpus: &[GpuStats]) -> Option<String> {
     ))
 }
 
+/// Rig power: `power.draw` summed over every detected card.
+///
+/// Cards switched off in the active profile still appear (an idle card draws
+/// power), and a card whose reading is `N/A` is skipped, so the sum can be
+/// lower than a wall meter by that card's draw.
+fn total_power(gpus: &[GpuStats]) -> Option<f64> {
+    gpus.iter()
+        .filter_map(|gpu| gpu.power_w)
+        .reduce(|a, b| a + b)
+}
+
+/// Hottest readable card, ties resolved to the lowest index.
+///
+/// Every multi-card consumer (the `total` document, the overheat alert and the
+/// temperature note) goes through this: reading only the first card misses a
+/// hot second card, which is exactly what a dual-GPU rig hits.
+pub fn hottest_gpu(gpus: &[GpuStats]) -> Option<&GpuStats> {
+    gpus.iter()
+        .filter(|gpu| gpu.temp_c.is_some())
+        .max_by_key(|gpu| (gpu.temp_c.unwrap_or_default(), std::cmp::Reverse(gpu.index)))
+}
+
+/// One note while the hottest card sits at or above the profile limit.
+fn temp_warning(gpus: &[GpuStats], temp_limit: u32) -> Option<String> {
+    let gpu = hottest_gpu(gpus)?;
+    let temp = gpu.temp_c?;
+    (temp >= temp_limit).then(|| {
+        format!(
+            "{} #{}: {} °C ({} {} °C)",
+            tr("GPU", "Карта"),
+            gpu.index,
+            temp,
+            tr("limit", "порог"),
+            temp_limit
+        )
+    })
+}
+
 impl Status {
+    /// Hottest readable card, see [`hottest_gpu`].
+    pub fn hottest_gpu(&self) -> Option<&GpuStats> {
+        hottest_gpu(&self.gpus)
+    }
+
     /// Build a status snapshot. Blocking: calls `nvidia-smi` and HTTP APIs.
     pub fn collect(cfg: &Config, state: &State) -> Self {
         let preset = cfg.preset();
@@ -213,11 +256,8 @@ impl Status {
                     .unwrap_or(true)
             })
             .count() as u32;
-        let power = gpus
-            .iter()
-            .filter_map(|gpu| gpu.power_w)
-            .reduce(|a, b| a + b);
-        let temp_max = gpus.iter().filter_map(|gpu| gpu.temp_c).max();
+        let power = total_power(&gpus);
+        let temp_max = hottest_gpu(&gpus).and_then(|gpu| gpu.temp_c);
         let hashrate = miner.primary();
         let efficiency = match (power, hashrate) {
             (Some(power), Some(hashrate)) if power > 0.0 && hashrate > 0.0 => {
@@ -303,6 +343,9 @@ impl Status {
             state.running && !state.external,
             state.uptime_s(),
         ));
+        if let Some(warning) = temp_warning(&gpus, temp_limit) {
+            warnings.push(warning);
+        }
         if oc.needs_restore {
             warnings.push(tr(
                 "GPU power/clocks are still applied; use Restore stock in Settings",
@@ -563,5 +606,61 @@ mod tests {
         let uuid = "GPU-test";
         let cfg = tuned_config(uuid);
         assert!(enabled_gpu_warning(&cfg, &[tuned_gpu(uuid)]).is_none());
+    }
+
+    fn card(index: u32, temp: Option<u32>, power: Option<f64>) -> GpuStats {
+        GpuStats {
+            index,
+            uuid: format!("GPU-{index}"),
+            temp_c: temp,
+            power_w: power,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rig_power_sums_every_card_including_disabled_ones() {
+        let gpus = [
+            card(0, Some(74), Some(145.6)),
+            card(1, Some(81), Some(137.9)),
+        ];
+        assert_eq!(total_power(&gpus), Some(283.5));
+        assert_eq!(total_power(&[]), None);
+    }
+
+    #[test]
+    fn rig_power_skips_cards_without_a_reading() {
+        let gpus = [card(0, Some(74), Some(145.6)), card(1, Some(81), None)];
+        assert_eq!(total_power(&gpus), Some(145.6));
+    }
+
+    #[test]
+    fn hottest_card_is_not_always_the_first() {
+        let gpus = [
+            card(0, Some(74), Some(145.6)),
+            card(1, Some(81), Some(137.9)),
+        ];
+        assert_eq!(hottest_gpu(&gpus).map(|gpu| gpu.index), Some(1));
+        assert_eq!(hottest_gpu(&[]), None);
+        assert_eq!(hottest_gpu(&[card(0, None, Some(1.0))]), None);
+    }
+
+    #[test]
+    fn tying_cards_report_the_lowest_index() {
+        let gpus = [card(0, Some(70), None), card(1, Some(70), None)];
+        assert_eq!(hottest_gpu(&gpus).map(|gpu| gpu.index), Some(0));
+    }
+
+    #[test]
+    fn a_hot_second_card_adds_the_temperature_note() {
+        let gpus = [card(0, Some(74), None), card(1, Some(81), None)];
+        let warning = temp_warning(&gpus, 80).expect("warning");
+        assert!(warning.contains("81"), "{warning}");
+        assert!(warning.contains("80"), "{warning}");
+        assert!(warning.contains("#1"), "{warning}");
+        // One degree under the limit is not a note, and an unreadable card
+        // must not fake one.
+        assert!(temp_warning(&gpus, 82).is_none());
+        assert!(temp_warning(&[card(0, None, None)], 80).is_none());
     }
 }

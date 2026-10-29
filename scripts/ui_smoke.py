@@ -258,6 +258,8 @@ def phase_main(ui: UI) -> None:
         ui.check(ui.find(frame, "page tab", name) is not None, f"page tab {name}")
     ui.check(ui.find(frame, "button", "Refresh") is not None, "Refresh button")
     ui.check(ui.find(frame, "button", "Start") is not None, "Start button")
+    for row in ("Power", "Efficiency", "Max temperature"):
+        ui.check(ui.find(frame, "label", row) is not None, f"totals row {row}")
 
     quick = ui.wait(
         lambda: ui.find(frame, "button", "Quick setup"), 10.0, "Quick setup"

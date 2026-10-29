@@ -261,6 +261,7 @@ struct App {
     hero_meta: gtk::Label,
     pill: gtk::Label,
     total_power: adw::ActionRow,
+    total_efficiency: adw::ActionRow,
     total_temp: adw::ActionRow,
     gpu_host: gtk::Box,
     gpu_sig: RefCell<String>,
@@ -724,11 +725,19 @@ fn build_ui(app: &adw::Application) {
         .title(tr("Power", "Мощность"))
         .subtitle("—")
         .build();
+    // The status document has carried J/TH since the first contract version;
+    // a mining rig is judged on watts per terahash, so it belongs next to the
+    // watts it is derived from.
+    let total_efficiency = adw::ActionRow::builder()
+        .title(tr("Efficiency", "Эффективность"))
+        .subtitle("—")
+        .build();
     let total_temp = adw::ActionRow::builder()
         .title(tr("Max temperature", "Макс. температура"))
         .subtitle("—")
         .build();
     totals_group.add(&total_power);
+    totals_group.add(&total_efficiency);
     totals_group.add(&total_temp);
     dashboard_box.append(&totals_group);
 
@@ -812,6 +821,7 @@ fn build_ui(app: &adw::Application) {
         hero_meta,
         pill,
         total_power,
+        total_efficiency,
         total_temp,
         gpu_host,
         gpu_sig: RefCell::new(String::new()),
@@ -5230,6 +5240,15 @@ fn update_start_sensitivity(app: &Rc<App>, blocked: bool) {
     app.action_button.set_tooltip_text(tooltip.as_deref());
 }
 
+/// Tooltip text: one header line plus one line per card, when there is any.
+fn card_tooltip(header: &str, lines: &[String]) -> String {
+    if lines.is_empty() {
+        header.to_string()
+    } else {
+        format!("{header}\n\n{}", lines.join("\n"))
+    }
+}
+
 fn apply_status(app: &Rc<App>, status: Status) {
     let running = status.state.running;
     // The sparklines read this rolling window; a fresh status may repeat the
@@ -5342,6 +5361,42 @@ fn apply_status(app: &Rc<App>, status: Status) {
             .map(|v| format!("{v:.0}"))
             .unwrap_or_else(|| "—".into())
     ));
+    let power_lines: Vec<String> = status
+        .gpus
+        .iter()
+        .filter_map(|gpu| gpu.power_w.map(|watts| (gpu.index, watts)))
+        .map(|(index, watts)| format!("{} #{index} · {watts:.1} W", tr("Card", "Карта")))
+        .collect();
+    // The tiles above already show one number per card; the totals tooltip is
+    // where the reader can check how the aggregate was formed.
+    app.total_power.set_tooltip_text(Some(&card_tooltip(
+        &tr(
+            "Whole rig: power.draw summed over every detected card, including disabled ones.",
+            "Весь риг: power.draw, просуммированный по всем найденным картам, включая отключённые.",
+        ),
+        &power_lines,
+    )));
+    let efficiency = status.total.efficiency_j_per_th;
+    // Keep the unit in the placeholder: a bare dash next to "— W" and "— °C"
+    // reads as a broken row.
+    app.total_efficiency.set_subtitle(&format!(
+        "{} J/TH",
+        efficiency
+            .map(|v| format!("{v:.2}"))
+            .unwrap_or_else(|| "—".into())
+    ));
+    let efficiency_tip = if efficiency.is_some() {
+        tr(
+            "Rig power divided by the current hashrate (joules per TH/s).",
+            "Мощность рига, делённая на текущий хешрейт (джоули на TH/s).",
+        )
+    } else {
+        tr(
+            "Needs a running miner that reports a hashrate.",
+            "Нужен запущенный майнер, который сообщает хешрейт.",
+        )
+    };
+    app.total_efficiency.set_tooltip_text(Some(&efficiency_tip));
     app.total_temp.set_subtitle(&format!(
         "{} °C",
         status
@@ -5350,6 +5405,19 @@ fn apply_status(app: &Rc<App>, status: Status) {
             .map(|v| v.to_string())
             .unwrap_or_else(|| "—".into())
     ));
+    let temp_lines: Vec<String> = status
+        .gpus
+        .iter()
+        .filter_map(|gpu| gpu.temp_c.map(|temp| (gpu.index, temp)))
+        .map(|(index, temp)| format!("{} #{index} · {temp} °C", tr("Card", "Карта")))
+        .collect();
+    app.total_temp.set_tooltip_text(Some(&card_tooltip(
+        &tr(
+            "Hottest card's temperature.gpu, not an average.",
+            "temperature.gpu самой горячей карты, не среднее.",
+        ),
+        &temp_lines,
+    )));
     app.shares_ok
         .set_text(&status.miner.accepted.unwrap_or(0).to_string());
     app.shares_bad

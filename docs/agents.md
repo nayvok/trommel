@@ -98,7 +98,7 @@ human text. `status` and `start/stop/toggle` connect through D-Bus and start
 | `state.uptime_s`, `state.restarts` | Session health |
 | `miner_info` | Miner id/name/version, install/verified flags, fee breakdown |
 | `gpus[]` | Per-card live values and static limits |
-| `total` | Aggregate hashrate/power/efficiency/temperature |
+| `total` | Aggregate hashrate/power/efficiency/temperature; power sums every detected card, temperature is the hottest card |
 | `miner` | Hashrate windows, accepted/rejected/stale, `source` (`api`/`log`) |
 | `pool` | Cached pool statistics when mining |
 | `oc` | Snapshot availability, `applied`/`needs_restore`, stale flag, restore-on-stop, last OC error and target summary |

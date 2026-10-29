@@ -333,7 +333,8 @@ daemon.
 2. **Status refresher** — every `poll_interval` (or when a supervisor event
    requests it) collects `Status`, emits `StatusChanged` only when the JSON
    changed, updates `Engine`, and sends one overheat desktop notification per
-   episode when the first GPU reaches the temperature limit.
+   episode when the hottest card (`Status::hottest_gpu`) reaches the temperature
+   limit; the body names that card.
 3. **Supervisor loop** — a 1 s interval calling `Supervisor::tick`, logging
    events, sending one desktop notification (and the `Notification` signal) per
    event, requesting a refresh.
@@ -468,8 +469,8 @@ documented in [development.md](development.md#ui-hooks) when adding one:
   `org.freedesktop.Notifications.Notify` (app name `Trommel`, app icon, 8 s
   timeout) inside a 2 s bound; a missing service or a failure is ignored so the
   daemon never blocks. The status refresher sends one overheat alert per
-  episode; the supervisor loop sends one per `Event` through
-  `events_to_notifications`.
+  episode for the hottest card and names it in the body; the supervisor loop
+  sends one per `Event` through `events_to_notifications`.
 - The `Notification(summary, body)` D-Bus signal stays available for external
   integrations. Both paths use the same `i18n::tr` strings.
 

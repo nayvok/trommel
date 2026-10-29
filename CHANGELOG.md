@@ -13,6 +13,16 @@ Changelog; versions use SemVer.
   extension was removed. The `Notification` D-Bus signal is still emitted for
   integrations that want to render their own alert.
 
+- **Totals now explain themselves.** The **Totals** group gained an
+  **Efficiency** row (J/TH, already in the status JSON but never shown), and the
+  power and temperature rows carry a tooltip with one line per card. Power is
+  `power.draw` summed over every detected card, including the ones switched off
+  in the profile; the temperature is the hottest card's reading, not an average.
+
+- **A note when a card is at the temperature limit.** The dashboard **Notes**
+  row now names the hot card and both temperatures (`card #1: 95 °C (limit
+  90 °C)`) instead of staying silent while the miner throttles itself.
+
 - **Sparklines in the GPU cards.** Every metric bubble — power, core and memory
   clock, temperature, fan and load — ends with a five-minute sparkline on the
   bubble floor: a thin accent line over a soft wash, tinted like the value when
@@ -86,6 +96,12 @@ Changelog; versions use SemVer.
 
 ### Fixed
 
+- **The overheat notification followed only the first card.** The daemon read
+  `status.gpu`, so on a two-GPU rig a hot second card never produced an alert
+  even though the **Totals** row showed its temperature. The refresher now uses
+  `Status::hottest_gpu`, names the card in the body (`… 95 °C (card #1, limit
+  90 °C)`) and re-arms on the same episode rule as before; the e2e suite drives
+  the second card over the limit to cover it.
 - **GPU settings are now verified, not assumed.** `trommel-oc` reads the power
   limit back after `-pl` and fails instead of claiming success; `reset` reports
   a failing `-rgc`/`-rmc`; the supervisor checks memory/core locks once the

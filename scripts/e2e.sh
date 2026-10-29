@@ -455,7 +455,40 @@ else
     fail "start still blocked by stale state"
 fi
 
+step "A hot second card triggers the overheat alert"
+if [ "$NOTIFY_STUB" = 1 ]; then
+    : > "$NOTIFY_LOG"
+    python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "gpu-state.json"
+state = json.loads(path.read_text())
+state["gpus"][0]["temp"] = 60
+state["gpus"][1]["temp"] = 95
+path.write_text(json.dumps(state, indent=2))
+PY
+    sleep 4
+    if grep -q 'card #1' "$NOTIFY_LOG" 2>/dev/null; then
+        pass "the alert names the hot second card"
+    else
+        fail "overheat alert ignored the hot second card"
+        cat "$NOTIFY_LOG" 2>/dev/null || true
+    fi
+    if "$BIN/trommel" status --json 2>/dev/null | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+assert s["total"]["temp_max_c"] == 95, s["total"]
+assert any("GPU #1" in w for w in s["warnings"]), s["warnings"]
+'; then
+        pass "the status note names the hot second card"
+    else
+        fail "status note or max temperature ignored the hot second card"
+    fi
+else
+    echo "  - notification stub not running; overheat routing not exercised"
+fi
+
 step "Desktop notifications"
+
 if [ "$NOTIFY_STUB" = 1 ]; then
     if grep -q 'Trommel' "$NOTIFY_LOG" 2>/dev/null; then
         pass "daemon delivers desktop notifications without an applet"
