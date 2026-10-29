@@ -46,6 +46,12 @@ jobs:
         shell: bash
         run: |
           grep -a '✗' .e2e-run.log 2>/dev/null | sed 's/^/::error::/' || true
+          for f in .e2e/emergency.out .e2e/emergency2.out .e2e/participation-emergency.out .e2e/daemon.out .e2e/state/trommel/state.json; do
+            [ -f "$f" ] || continue
+            echo "::error file=$f::$(tr '\n' ' ' < "$f" | cut -c1-900)"
+          done
+          echo "::error::trommeld: $(pgrep -af trommeld 2>/dev/null | tr '\n' ';' | cut -c1-500)"
+          echo "::error::miners: $(pgrep -af wildrig 2>/dev/null | tr '\n' ';' | cut -c1-500)"
           tail -120 .e2e-run.log 2>/dev/null || true
       - name: Polkit action id
         run: ./scripts/check-polkit.sh
