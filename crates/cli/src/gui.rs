@@ -261,7 +261,6 @@ struct App {
     hero_meta: gtk::Label,
     pill: gtk::Label,
     total_power: adw::ActionRow,
-    total_efficiency: adw::ActionRow,
     total_temp: adw::ActionRow,
     gpu_host: gtk::Box,
     gpu_sig: RefCell<String>,
@@ -725,19 +724,11 @@ fn build_ui(app: &adw::Application) {
         .title(tr("Power", "Мощность"))
         .subtitle("—")
         .build();
-    // The status document has carried J/TH since the first contract version;
-    // a mining rig is judged on watts per terahash, so it belongs next to the
-    // watts it is derived from.
-    let total_efficiency = adw::ActionRow::builder()
-        .title(tr("Efficiency", "Эффективность"))
-        .subtitle("—")
-        .build();
     let total_temp = adw::ActionRow::builder()
         .title(tr("Max temperature", "Макс. температура"))
         .subtitle("—")
         .build();
     totals_group.add(&total_power);
-    totals_group.add(&total_efficiency);
     totals_group.add(&total_temp);
     dashboard_box.append(&totals_group);
 
@@ -821,7 +812,6 @@ fn build_ui(app: &adw::Application) {
         hero_meta,
         pill,
         total_power,
-        total_efficiency,
         total_temp,
         gpu_host,
         gpu_sig: RefCell::new(String::new()),
@@ -5376,27 +5366,6 @@ fn apply_status(app: &Rc<App>, status: Status) {
         ),
         &power_lines,
     )));
-    let efficiency = status.total.efficiency_j_per_th;
-    // Keep the unit in the placeholder: a bare dash next to "— W" and "— °C"
-    // reads as a broken row.
-    app.total_efficiency.set_subtitle(&format!(
-        "{} J/TH",
-        efficiency
-            .map(|v| format!("{v:.2}"))
-            .unwrap_or_else(|| "—".into())
-    ));
-    let efficiency_tip = if efficiency.is_some() {
-        tr(
-            "Rig power divided by the current hashrate (joules per TH/s).",
-            "Мощность рига, делённая на текущий хешрейт (джоули на TH/s).",
-        )
-    } else {
-        tr(
-            "Needs a running miner that reports a hashrate.",
-            "Нужен запущенный майнер, который сообщает хешрейт.",
-        )
-    };
-    app.total_efficiency.set_tooltip_text(Some(&efficiency_tip));
     app.total_temp.set_subtitle(&format!(
         "{} °C",
         status

@@ -27,8 +27,8 @@ arguments are hidden until you turn them on.
 ## Features
 
 - **Multi-GPU dashboard** — per-card temperature, power, fan, clocks and
-  utilization; rig power, J/TH efficiency and the hottest card's temperature
-  for the whole rig, each with a per-card breakdown in its tooltip.
+  utilization; rig power and the hottest card's temperature for the whole rig,
+  each with a per-card breakdown in its tooltip.
 - **Presets** — bundle the coin/algorithm (Pearl/pearlhash in the current
   catalogue), pool, wallet, worker, miner version and miner-specific options.
   GPU settings are edited in Settings, so switching presets does not re-enter

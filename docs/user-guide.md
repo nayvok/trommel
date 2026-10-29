@@ -63,12 +63,11 @@ the error is shown.
   last five minutes; it fills while the window is open (hover it for the
   observed minimum and maximum). Click **Tune** to edit its power limit and
   clock locks.
-- Below the cards: rig power, efficiency (J/TH), maximum temperature,
-  accepted/rejected shares, pool balance, the configured pool endpoint with its
-  fee, and warnings. Power is `power.draw` summed over every detected card,
-  including the ones switched off in the profile; efficiency is that power
-  divided by the current hashrate and stays empty until the miner reports one.
-  Hover a totals row to see the per-card values behind the number.
+- Below the cards: rig power, maximum temperature, accepted/rejected shares,
+  pool balance, the configured pool endpoint with its fee, and warnings. Power
+  is `power.draw` summed over every detected card, including the ones switched
+  off in the profile. Hover a totals row to see the per-card values behind the
+  number.
 - When the miner is stopped, hashrate and balance show numeric placeholders and
   the pool row still names the configured endpoint.
 - **Start** in the dashboard hero card applies your edited draft before

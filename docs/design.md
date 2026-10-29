@@ -200,14 +200,13 @@ Every coloured value has a word next to it (“installed”, “not installed”
   the daemon status. A one-GPU rig uses a single full-width card with a 3×2
   bubble grid; 2+ cards go into a wrap box and split the row evenly (240 px
   minimum per card). Core and memory clocks are labelled separately.
-- Aggregate rows: rig power, efficiency (J/TH), max temperature, accepted and
-  rejected shares, pool balance, the configured pool endpoint with its fee, and
-  warnings. Power sums `power.draw` over every detected card (a card switched
-  off in the profile still counts, since it still draws), the temperature is the
-  hottest card's reading, and efficiency is power ÷ hashrate, empty until the
-  miner reports one. Both the power and the temperature row carry a tooltip with
-  one line per card, so a two-GPU aggregate can be checked without opening the
-  JSON.
+- Aggregate rows: rig power, max temperature, accepted and rejected shares,
+  pool balance, the configured pool endpoint with its fee, and warnings. Power
+  sums `power.draw` over every detected card (a card switched off in the profile
+  still counts, since it still draws) and the temperature is the hottest card's
+  reading. Both rows carry a tooltip with one line per card, so a two-GPU
+  aggregate can be checked without opening the JSON. J/TH stays in the status
+  JSON for agents, but the dashboard does not show an efficiency row for now.
 - When stopped, show **numeric placeholders** (`0 TH/s`, `0.000 PRL` or `0 PRL`
   without a wallet) and still name the configured pool endpoint. No lone dashes
   as placeholders.

@@ -5,6 +5,12 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+### Removed
+
+- **The dashboard Efficiency row.** The J/TH value is still computed and
+  published in the status JSON for agents and diagnostics, but the Totals group
+  no longer shows it.
+
 ## [0.4.5] - 2026-10-29
 
 ### Added
