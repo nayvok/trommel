@@ -286,13 +286,22 @@ fn configured_miner_names(cfg: &Config) -> Vec<String> {
 /// daemons must not adopt (or stop) the real miner that may be running on the
 /// same machine under the same user.
 pub fn find_external_miner(cfg: &Config, exclude_pid: Option<u32>) -> Option<u32> {
+    external_miner_pids(cfg, exclude_pid).into_iter().min()
+}
+
+/// All matching PIDs. The public lookup returns the lowest one; tests use the
+/// full list so an unrelated miner already running on the same machine cannot
+/// hide the process the test just started.
+fn external_miner_pids(cfg: &Config, exclude_pid: Option<u32>) -> Vec<u32> {
     if std::env::var_os("TROMMEL_NO_EXTERNAL_SCAN").is_some() {
-        return None;
+        return Vec::new();
     }
-    let entries = std::fs::read_dir("/proc").ok()?;
+    let Some(entries) = std::fs::read_dir("/proc").ok() else {
+        return Vec::new();
+    };
     let own = std::process::id();
     let needles = configured_miner_names(cfg);
-    let mut found: Option<u32> = None;
+    let mut found = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
         let pid: u32 = match name.to_string_lossy().parse() {
@@ -303,7 +312,7 @@ pub fn find_external_miner(cfg: &Config, exclude_pid: Option<u32>) -> Option<u32
             continue;
         }
         if pid_matches_names(pid, &needles) || pid_matches_miner(pid) {
-            found = Some(found.map_or(pid, |current| current.min(pid)));
+            found.push(pid);
         }
     }
     found
@@ -413,8 +422,11 @@ mod tests {
             path: script.to_string_lossy().into_owned(),
             ..Default::default()
         });
-        assert_eq!(find_external_miner(&cfg, None), Some(child.id()));
-        assert_eq!(find_external_miner(&cfg, Some(child.id())), None);
+        // A real miner may already be running on the machine; the test only
+        // checks that its own child is in the match set and that excluding it
+        // removes it from that set.
+        assert!(external_miner_pids(&cfg, None).contains(&child.id()));
+        assert!(!external_miner_pids(&cfg, Some(child.id())).contains(&child.id()));
 
         let _ = child.kill();
         let _ = child.wait();
