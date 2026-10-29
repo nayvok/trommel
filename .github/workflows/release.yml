@@ -37,17 +37,16 @@ jobs:
       - name: Root helper
         run: ./scripts/test-oc-helper.sh
       - name: End-to-end
-        run: ./scripts/e2e.sh
+        shell: bash
+        run: |
+          set -o pipefail
+          ./scripts/e2e.sh 2>&1 | tee .e2e-run.log
       - name: End-to-end diagnostics
         if: failure()
+        shell: bash
         run: |
-          shopt -s nullglob
-          for f in .e2e/*.out .e2e/*.log .e2e/*.txt; do
-            echo "::group::$f"
-            grep -a '✗' "$f" 2>/dev/null | sed 's/^/::error::/' || true
-            tail -60 "$f" 2>/dev/null || true
-            echo "::endgroup::"
-          done
+          grep -a '✗' .e2e-run.log 2>/dev/null | sed 's/^/::error::/' || true
+          tail -120 .e2e-run.log 2>/dev/null || true
       - name: Polkit action id
         run: ./scripts/check-polkit.sh
       - name: Validate assets
