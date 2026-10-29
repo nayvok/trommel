@@ -20,6 +20,8 @@ cleanup() {
     [ -n "$GUI_PID" ] && kill "$GUI_PID" 2>/dev/null || true
     [ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null || true
     [ -n "$BUS_PID" ] && kill "$BUS_PID" 2>/dev/null || true
+    [ -n "${ATSPI_REGISTRY_PID:-}" ] && kill "$ATSPI_REGISTRY_PID" 2>/dev/null || true
+    [ -n "${ATSPI_BUS_PID:-}" ] && kill "$ATSPI_BUS_PID" 2>/dev/null || true
     pkill -f "$WORK/bin/wildrig-multi" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -64,6 +66,10 @@ while true; do
 done
 SH
 chmod +x "$WORK/bin/wildrig-multi"
+# A second, unused build so the UI smoke can exercise the remove confirmation
+# (the first version is pinned by both presets and must be refused).
+cp "$WORK/bin/wildrig-multi" "$WORK/bin/wildrig-multi-0.51.7"
+chmod +x "$WORK/bin/wildrig-multi-0.51.7"
 
 python3 - "$WORK" <<'PY'
 import json, pathlib, sys
@@ -106,6 +112,12 @@ cfg = {
         "wildrig@0.51.8": {
             "miner": "wildrig", "version": "0.51.8",
             "path": str(work / "bin" / "wildrig-multi"),
+            "sha256": "", "source_url": "", "verified": False, "custom": True,
+            "installed_at": 0,
+        },
+        "wildrig@0.51.7": {
+            "miner": "wildrig", "version": "0.51.7",
+            "path": str(work / "bin" / "wildrig-multi-0.51.7"),
             "sha256": "", "source_url": "", "verified": False, "custom": True,
             "installed_at": 0,
         }
@@ -153,12 +165,12 @@ export TROMMEL_FAKE_MODE="$WORK/fake-mode"
 export TROMMEL_OC_TIMEOUT_MS=1500
 export TROMMEL_OC_VERIFY_MS=1000
 export GTK_A11Y=atspi
-export AT_SPI_BUS_ADDRESS="${AT_SPI_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/at-spi/bus}"
-if [ ! -S "${AT_SPI_BUS_ADDRESS#unix:path=}" ]; then
-    echo "AT-SPI bus not found at $AT_SPI_BUS_ADDRESS" >&2
-    echo "run this script inside the graphical session" >&2
+# shellcheck source=scripts/atspi-bus.sh
+. "$ROOT/scripts/atspi-bus.sh"
+ensure_atspi_bus "$WORK" || {
+    echo "cannot provide an AT-SPI bus; run this inside a graphical session" >&2
     exit 1
-fi
+}
 # AdwDialog children are exposed late on the nested Wayland accessibility
 # bridge; XWayland gives AT-SPI a complete tree. The app itself is the same GTK
 # build, and TROMMEL_UI_WAYLAND=1 still runs the suite on native Wayland.

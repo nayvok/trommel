@@ -115,13 +115,15 @@ on each card's **Tune** dialog, not in the preset editor. A preset references a 
 not a path. Installing a version once makes every preset that references it see
 the version as installed. If a preset references a missing version, its row says
 so, Start is blocked, and **Install…** opens the miner library focused on that
-preset. There is no uninstall action yet.
+preset. Installed versions are managed in the library: you can verify, update
+and remove them there, and move one preset to an older version. Nothing changes
+a preset silently — see [Miner versions](#miner-versions).
 
 ![Presets](images/presets-en-dark.png)
 
 The **Miner library** row on the Presets page opens the library dialog. It lists
-the catalogue miners, their installed versions, the presets that use each miner,
-and the A/B benchmark:
+the catalogue miners, every installed version with the presets that pin it, a
+per-preset version switch, and the A/B benchmark:
 
 ![Miner library](images/miner-library-en-dark.png)
 
@@ -153,6 +155,39 @@ unverified; supply one whenever the release publishes it.
 
 The catalogue is a convenience, not a gate: if a miner released a new build
 before the catalogue was updated, type the version and paste the upstream URL.
+
+### Miner versions
+
+Installed builds are global and several versions of one miner can stay
+installed. The library shows one row per version under its miner:
+
+- the row names the presets that pin that version and their versions;
+- it reports whether the binary still exists and is executable, and whether a
+  SHA-256 was recorded — Trommel never invents a checksum;
+- **Verify** (the check icon) re-checks the binary, reports the result in a
+  toast and marks the row **verified** while the library stays open. **Remove**
+  (the trash icon) is the explicit uninstall.
+
+**Update** is installing another version with the shared install dialog. The
+build is added next to the existing ones and **no preset is rewritten**. After
+the install, Trommel lists the presets that pin a different version and asks
+which of them to move; nothing is selected and **Keep preset versions** is the
+default, so presets stay where they were unless you choose otherwise.
+
+**Remove** never happens silently:
+
+- while any preset pins the version, the action is refused with the list of
+  those presets. Switch them to another installed version first;
+- an unused version asks for confirmation and explains that the managed binary
+  is deleted (or only the install record, when the binary lives outside the
+  managed store), every preset stays as it is and other versions are kept.
+
+**Rollback** is the version switch in the **Preset versions** group: pick a
+preset, choose any other installed version and confirm. Only that preset moves;
+all other presets keep their pins. If the edited preset is the one the running
+miner uses, the change goes through the usual **Apply and restart / Apply and
+stop** dialog. A build whose binary is missing is listed but cannot be
+selected.
 
 ## Settings
 

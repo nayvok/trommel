@@ -5,6 +5,42 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-29
+
+### Added
+
+- **Miner version manager (B4).** The miner library is now a version manager:
+  every installed version is a row that names the presets pinning it, its
+  binary state and the recorded SHA-256 (or none), with explicit **Verify** and
+  **Remove** actions. Installing another version is an update; the library then
+  lists the presets that still pin an older version and lets the user select
+  which ones move. Presets are never rewritten by installing a build, and the
+  default is to keep every pin.
+- **Preset rollback.** A **Preset versions** group switches exactly one preset
+  to any other installed (and executable) version. Other presets keep their
+  versions; a running miner goes through the normal apply/restart/stop dialog.
+- **Guarded removal.** Removing a version that any preset pins is refused with
+  the list of presets and an explanation; removing an unused version asks for
+  confirmation. Only files under the managed miner store are deleted; a record
+  pointing elsewhere loses its record and keeps the binary.
+- **`trommel miner verify` and `trommel miner remove`.** Verify checks that
+  each recorded binary exists, is a regular file, is executable and readable,
+  and reports `ok`/`missing`/`not_executable` with only the recorded SHA-256
+  (never a fabricated one); it exits non-zero when a check fails. Remove refuses
+  a pinned version and requires `--yes` for an unused one.
+- **Version state in the agent surfaces.** `trommel diagnose --json` and the
+  read-only MCP `trommel_miners` tool now include installed versions with their
+  binary status, recorded checksum and the presets that pin them.
+
+### Changed
+
+- `trommel miner list` lists one line per installed version with its binary
+  status and the presets using it, including custom builds outside the
+  catalogue.
+- The miner library groups installed versions separately from the catalogue row
+  and adds the per-preset version switch. The install dialog remains the only
+  installer.
+
 ## [0.6.0] - 2026-10-29
 
 ### Added

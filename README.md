@@ -37,9 +37,11 @@ arguments are hidden until you turn them on.
   catalogue), pool, wallet, worker, miner version and miner-specific options.
   GPU settings are edited on each card's Tune dialog, so switching presets does
   not re-enter everything.
-- **Miner library dialog** — short description, installed versions, the presets
-  that use each miner and a link to the upstream release page. The developer fee
-  is shown as a breakdown (miner + pool = total) in the dashboard and the preset
+- **Miner library and version manager** — short description, every installed
+  version with the presets that pin it, binary state, verify/remove actions and
+  a link to the upstream release page. A newer build is installed without
+  touching a preset; you then choose which presets to move. The developer fee is
+  shown as a breakdown (miner + pool = total) in the dashboard and the preset
   editor.
 - **Miner-dependent settings** — option descriptors come from the selected
   miner in the catalogue: types, ranges, defaults and CLI flags. Values whose
@@ -48,6 +50,9 @@ arguments are hidden until you turn them on.
   list (catalogue plus your own imported builds), downloads over HTTPS and
   imports local binaries. Install a version once; every preset that references
   it sees it as installed, and missing versions block Start until resolved.
+  Older versions stay installed for rollback, removal of a pinned version is
+  refused, and switching a preset to another installed version changes only that
+  preset.
 - **Preset editor as a dialog** — rows open a modal editor with Save/Cancel,
   duplicate and a confirmation before deleting; no in-page Back navigation.
 - **Appearance** — System, Light or Dark colour scheme applied immediately and
@@ -166,10 +171,12 @@ trommel status --json        # contract used by the GUI and CLI
 trommel start / stop / toggle
 trommel preset list          # show presets and their total fee
 trommel preset use <id> --restart
-trommel miner list           # catalogue + installed versions
+trommel miner list           # catalogue + installed versions and their presets
 trommel miner import wildrig 0.51.8 /path/to/wildrig-multi
 trommel miner install wildrig 0.51.8 https://example.org/miner.tar.gz \
   --sha256 <hex> --archive tar.gz --binary wildrig-multi
+trommel miner verify         # check every installed binary; --json for agents
+trommel miner remove wildrig 0.51.7 --yes   # only an unused version
 trommel bench --minutes 3
 trommel diagnose --json > diagnostics.json
 trommel config diff proposed.json
@@ -182,8 +189,9 @@ indicator and miner keep working.
 
 ## Fees and miner info
 
-Each miner page shows a short description and installed versions; the install
-dialog lists catalogue versions and links to the upstream release page. The
+The miner library shows a short description and every installed version; the
+install dialog lists catalogue versions and links to the upstream release page.
+The
 preset editor shows the selected miner's description, install path and fee
 breakdown:
 

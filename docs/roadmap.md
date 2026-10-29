@@ -1,13 +1,13 @@
 # Roadmap
 
-Current release: **0.6.0** (29.10.2026). Shipped behaviour is documented in
+Current release: **0.7.0** (29.10.2026). Shipped behaviour is documented in
 [user-guide.md](user-guide.md) and [architecture.md](architecture.md); this page
 only describes direction. Anything not shipped is explicitly in the future
 sections — the README and guides do not describe it.
 
 ## Block plan
 
-The 0.5–0.6 work is split into blocks. A block is one branch, one scope freeze
+The 0.4–0.7 work is split into blocks. A block is one branch, one scope freeze
 and one verified release; later blocks are not started until the previous one is
 green. Status is updated in the same commit as the code.
 
@@ -17,12 +17,25 @@ green. Status is updated in the same commit as the code.
 | **B1** | Fault-tolerant session ownership: emergency-stop, OC file lock, helper lease, PID-by-path, startup recovery, systemd/bus shutdown (**B1a**) and guard, bounded restarts, benchmark guard (**B1b**) | **Done in 0.4.5** (B1a 0.4.4, B1b 0.4.5) |
 | **B2** | Per-GPU participation: exclude a card from the active miner without a second process, catalogue capabilities for device selection | **Done in 0.5.0** |
 | **B3** | Merge the Presets and Miners pages into one preset-centred flow (miner library dialog) | **Done in 0.6.0** |
-| **B4** | Miner version manager: install/update/remove with the affected presets shown, rollback | Not started |
+| **B4** | Miner version manager: install/update/remove with the affected presets shown, rollback | **Done in 0.7.0** |
 | **B5** | Release hardening after B1–B4 (packaging/test matrix review; scope defined when B4 closes) | Not started |
 
-B3 is complete in 0.6.0; B4 and B5 are not started. Multi-miner/multi-job
+B3 is complete in 0.6.0 and B4 in 0.7.0; B5 is not started. Multi-miner/multi-job
 remains a separate product decision under
 [ADR 0005](adr/0005-one-active-session.md).
+
+## Shipped in 0.7.x
+
+- **Miner version manager (B4).** The miner library now lists every installed
+  version per miner, the presets that pin it, its binary state and explicit
+  **Verify** and **Remove** actions. Installing a newer build never rewrites a
+  preset: after an install the affected presets are listed and the user chooses
+  which ones (if any) move. A version pinned by a preset cannot be removed; an
+  unused one needs confirmation. A **Preset versions** switch moves exactly one
+  preset to any installed older version, so rollback is explicit and local.
+  `trommel miner verify/remove` and the read-only MCP/`diagnose` bundle expose the
+  same state; checksums are only echoed from the install record, never invented.
+  See [ADR 0005](adr/0005-one-active-session.md).
 
 ## Shipped in 0.6.x
 
@@ -74,18 +87,16 @@ remains a separate product decision under
 
 Ordered by expected value, not commitment:
 
-1. **B4 — miner version manager.** Install/update/remove several versions with
-   a clear preset-impact view and no silent preset rewrite.
-2. **Download dialog with progress and cancel.** The core downloader is
+1. **Download dialog with progress and cancel.** The core downloader is
    synchronous and has no progress events; this needs a streaming API and a
    cancellable worker before it can be exposed.
-3. **Custom pool adapters.** Pools beyond PearlHash currently show configured
+2. **Custom pool adapters.** Pools beyond PearlHash currently show configured
    data only. Add an adapter only for a stable, documented API.
-4. **Gettext migration** with `po/ru.po` while keeping English source strings
+3. **Gettext migration** with `po/ru.po` while keeping English source strings
    ([i18n.md](i18n.md)).
-5. **RPM spec validation** on Fedora/openSUSE; the spec template exists but is
+4. **RPM spec validation** on Fedora/openSUSE; the spec template exists but is
    untested and not released.
-6. **A signed remote catalogue** with a verification story (signature, key
+5. **A signed remote catalogue** with a verification story (signature, key
    rotation, offline fallback).
 
 ## Later
@@ -124,5 +135,7 @@ recovery, visible restore failures). B2 implements point 4 of ADR 0005 and is
 recorded in ADR 0007 (`enabled` means participation, documented device flags
 only, no silent all-card fallback). B3 implements point 2 of ADR 0005 (the
 Miners page becomes a miner library dialog; presets stay the primary object and
-global installs are never rewritten). A superseding decision gets its own ADR
-and an explicit “supersedes” note; old ADRs are not rewritten.
+global installs are never rewritten). B4 implements point 3 (installed versions
+are global and versioned; update, remove and rollback show the affected presets
+and never rewrite them). A superseding decision gets its own ADR and an explicit
+“supersedes” note; old ADRs are not rewritten.

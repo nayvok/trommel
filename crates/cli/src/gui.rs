@@ -20,6 +20,7 @@ use trommel_core::i18n::{self, tr};
 use trommel_core::nvidia::GpuStats;
 use trommel_core::status::Status;
 use trommel_core::util;
+use trommel_core::versions;
 
 #[derive(Debug)]
 enum Cmd {
@@ -281,6 +282,16 @@ struct App {
     /// built on demand, so `refresh_miners` updates it only when this is Some.
     miner_library_group: RefCell<Option<adw::PreferencesGroup>>,
     miner_rows: RefCell<Vec<adw::ActionRow>>,
+    /// "Preset versions" group inside the open library: one row per preset with
+    /// a version switch (rollback / explicit move).
+    miner_preset_group: RefCell<Option<adw::PreferencesGroup>>,
+    miner_preset_rows: RefCell<Vec<adw::ActionRow>>,
+    /// The open library dialog. A version switch closes it before the normal
+    /// restart/stop decision is shown, so two modals never stack.
+    miner_library_dialog: RefCell<Option<adw::Dialog>>,
+    /// Last explicit Verify result per `miner@version` while the library is
+    /// open. The toast can sit behind the modal, so the row keeps a chip.
+    miner_verified: RefCell<BTreeMap<String, versions::BinaryStatus>>,
 }
 
 fn install_css() {
@@ -833,6 +844,10 @@ fn build_ui(app: &adw::Application) {
         settings,
         miner_library_group: RefCell::new(None),
         miner_rows: RefCell::new(Vec::new()),
+        miner_preset_group: RefCell::new(None),
+        miner_preset_rows: RefCell::new(Vec::new()),
+        miner_library_dialog: RefCell::new(None),
+        miner_verified: RefCell::new(BTreeMap::new()),
     });
     APP_SLOT.with(|slot| *slot.borrow_mut() = Some(app_state.clone()));
 
@@ -2686,14 +2701,26 @@ fn miner_library_dialog(
     }
 
     let catalog_group = adw::PreferencesGroup::builder()
-        .title(tr("Installed and supported miners", "Установленные и поддерживаемые майнеры"))
+        .title(tr("Installed versions", "Установленные версии"))
         .description(tr(
-            "Install a version once and every preset that pins it sees it. Presets are never rewritten when a build is installed.",
-            "Установите версию один раз, и все пресеты, закреплённые за ней, её увидят. Пресеты не переписываются при установке сборки.",
+            "Every version is shared by all presets. A version row names the presets that pin it; install, update, verify and remove from here. Installing a build never rewrites a preset.",
+            "Каждая версия общая для всех пресетов. В строке версии видно, какие пресеты её закрепили; здесь же установка, обновление, проверка и удаление. Установка сборки не переписывает пресеты.",
         ))
         .build();
     page.add(&catalog_group);
     *app.miner_library_group.borrow_mut() = Some(catalog_group);
+
+    // The rollback/move surface: one row per preset, never a bulk rewrite.
+    let preset_versions_group = adw::PreferencesGroup::builder()
+        .title(tr("Preset versions", "Версии в пресетах"))
+        .description(tr(
+            "Switch one preset to another installed version (rollback or forward). Only the preset you pick changes; other presets keep their pins.",
+            "Переведите один пресет на другую установленную версию (откат или вперёд). Меняется только выбранный пресет; остальные сохраняют закрепления.",
+        ))
+        .build();
+    page.add(&preset_versions_group);
+    *app.miner_preset_group.borrow_mut() = Some(preset_versions_group);
+
     refresh_miners(app);
 
     let bench_group = adw::PreferencesGroup::builder()
@@ -2740,12 +2767,17 @@ fn miner_library_dialog(
         dialog.connect_closed(move |_| {
             app.miner_library_group.borrow_mut().take();
             app.miner_rows.borrow_mut().clear();
+            app.miner_preset_group.borrow_mut().take();
+            app.miner_preset_rows.borrow_mut().clear();
+            app.miner_library_dialog.borrow_mut().take();
+            app.miner_verified.borrow_mut().clear();
             if let Some(callback) = &on_close {
                 callback();
             }
         });
     }
 
+    *app.miner_library_dialog.borrow_mut() = Some(dialog.clone());
     dialog.present(Some(&app.window));
     if let Some(path) = std::env::var_os("TROMMEL_LIBRARY_SCREENSHOT") {
         let path = path.to_string_lossy().into_owned();
@@ -2760,6 +2792,9 @@ fn miner_library_dialog(
     }
 }
 
+/// Rebuild the version manager and the preset switch rows while the library is
+/// open. It only renders the draft: nothing is installed, removed or re-pinned
+/// here.
 fn refresh_miners(app: &Rc<App>) {
     let Some(group) = app.miner_library_group.borrow().clone() else {
         return;
@@ -2767,27 +2802,49 @@ fn refresh_miners(app: &Rc<App>) {
     for row in app.miner_rows.borrow_mut().drain(..) {
         group.remove(&row);
     }
-    let cfg = app.config.borrow();
-    for miner in catalog::miners() {
-        let installed = catalog::installed_versions(&cfg, &miner.id);
-        let users: Vec<String> = cfg
-            .presets
+    // Clone: rebuilding combos must not hold the draft borrow across GTK
+    // notifications that may ask for it again.
+    let cfg = app.config.borrow().clone();
+
+    // Miners with installed versions come first: the manager is opened to act
+    // on a build, not to browse an unused catalogue entry.
+    let mut miner_ids = versions::miner_ids(&cfg);
+    miner_ids.sort_by(|a, b| {
+        let a_installed = cfg
+            .miner_installs
             .values()
-            .filter(|preset| preset.miner == miner.id)
-            .map(|preset| format!("{} {}", preset.name, preset.miner_version))
-            .collect();
-        let mut subtitle = miner.short_description().to_string();
+            .any(|install| &install.miner == a);
+        let b_installed = cfg
+            .miner_installs
+            .values()
+            .any(|install| &install.miner == b);
+        b_installed.cmp(&a_installed).then_with(|| a.cmp(b))
+    });
+    for miner_id in miner_ids {
+        let def = catalog::miner(&miner_id);
+        let name = def
+            .map(|miner| miner.name.clone())
+            .unwrap_or_else(|| miner_id.clone());
+        let installed = versions::installed(&cfg, &miner_id);
+        let users = versions::presets_for_miner(&cfg, &miner_id);
+        let mut subtitle = def
+            .map(|miner| miner.short_description().to_string())
+            .unwrap_or_else(|| tr("Custom build", "Своя сборка"));
         if !users.is_empty() {
             subtitle.push('\n');
             subtitle.push_str(&format!(
                 "{}: {}",
                 tr("Used by", "Используется"),
-                users.join(", ")
+                users
+                    .iter()
+                    .map(|preset| format!("{} ({})", preset.name, preset.miner_version))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         let row = adw::ActionRow::builder()
-            .title(&miner.name)
-            .subtitle(subtitle)
+            .title(&name)
+            .subtitle(&subtitle)
             .build();
         row.set_activatable(true);
         row.set_subtitle_lines(2);
@@ -2811,9 +2868,16 @@ fn refresh_miners(app: &Rc<App>) {
             state.set_valign(gtk::Align::Center);
             row.add_suffix(&state);
         } else {
-            let versions = label(&installed.join(" · "), &["caption", "success"]);
-            versions.set_valign(gtk::Align::Center);
-            row.add_suffix(&versions);
+            let versions_label = label(
+                &installed
+                    .iter()
+                    .map(|item| item.version.clone())
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+                &["caption", "success"],
+            );
+            versions_label.set_valign(gtk::Align::Center);
+            row.add_suffix(&versions_label);
         }
         let chevron = gtk::Button::builder()
             .icon_name("go-next-symbolic")
@@ -2825,14 +2889,11 @@ fn refresh_miners(app: &Rc<App>) {
             ))
             .build();
         let app_row = app.clone();
-        let miner_id = miner.id.clone();
-        let version = miner
-            .latest_version()
-            .map(|item| item.version.clone())
-            .unwrap_or_default();
+        let miner_row_id = miner_id.clone();
+        let version = versions::latest_version(&miner_id).unwrap_or_default();
         {
             let app_chev = app.clone();
-            let miner_chev = miner.id.clone();
+            let miner_chev = miner_id.clone();
             let version_chev = version.clone();
             chevron.connect_clicked(move |_| {
                 miner_install_dialog(&app_chev, &miner_chev, version_chev.clone(), None);
@@ -2840,11 +2901,543 @@ fn refresh_miners(app: &Rc<App>) {
         }
         row.add_suffix(&chevron);
         row.connect_activated(move |_| {
-            miner_install_dialog(&app_row, &miner_id, version.clone(), None);
+            miner_install_dialog(&app_row, &miner_row_id, version.clone(), None);
         });
         group.add(&row);
         app.miner_rows.borrow_mut().push(row);
+
+        // One explicit row per installed version: usage, binary state and the
+        // verify/remove actions. The install dialog above stays the only
+        // installer, so "update" is the same explicit install flow.
+        for item in installed {
+            let subtitle = version_row_subtitle(&item);
+            let version_row = adw::ActionRow::builder()
+                .title(&item.version)
+                .subtitle(&subtitle)
+                .build();
+            version_row.set_subtitle_lines(2);
+            version_row.add_prefix(&gtk::Image::from_icon_name(
+                "application-x-executable-symbolic",
+            ));
+            if item.custom {
+                let chip = label(&tr("custom", "своя сборка"), &["caption"]);
+                chip.set_valign(gtk::Align::Center);
+                version_row.add_suffix(&chip);
+            }
+            if !item.status.is_ok() {
+                let chip = label(item.status.as_str(), &["caption", "warning"]);
+                chip.set_valign(gtk::Align::Center);
+                version_row.add_suffix(&chip);
+            }
+            if let Some(status) = app.miner_verified.borrow().get(&item.key) {
+                let chip = label(
+                    &tr("verified", "проверено"),
+                    &[
+                        "caption",
+                        if status.is_ok() { "success" } else { "warning" },
+                    ],
+                );
+                chip.set_valign(gtk::Align::Center);
+                chip.set_tooltip_text(Some(&tr(
+                    "Result of the explicit Verify action",
+                    "Результат явной проверки",
+                )));
+                version_row.add_suffix(&chip);
+            }
+            let verify = gtk::Button::builder()
+                .icon_name("object-select-symbolic")
+                .css_classes(["flat"])
+                .valign(gtk::Align::Center)
+                .tooltip_text(tr("Verify the binary", "Проверить бинарник"))
+                .build();
+            {
+                let app = app.clone();
+                let miner = item.miner.clone();
+                let version = item.version.clone();
+                verify.connect_clicked(move |_| verify_miner_version(&app, &miner, &version));
+            }
+            version_row.add_suffix(&verify);
+            let remove = gtk::Button::builder()
+                .icon_name("user-trash-symbolic")
+                .css_classes(["flat"])
+                .valign(gtk::Align::Center)
+                .tooltip_text(tr(
+                    "Remove this version (blocked while a preset uses it)",
+                    "Удалить версию (заблокировано, пока её использует пресет)",
+                ))
+                .build();
+            {
+                let app = app.clone();
+                let miner = item.miner.clone();
+                let version = item.version.clone();
+                remove
+                    .connect_clicked(move |_| remove_miner_version_dialog(&app, &miner, &version));
+            }
+            version_row.add_suffix(&remove);
+            group.add(&version_row);
+            app.miner_rows.borrow_mut().push(version_row);
+        }
     }
+
+    refresh_preset_version_rows(app, &cfg);
+}
+
+/// Subtitle of one installed-version row: who pins it, binary state and the
+/// recorded-checksum fact (never a computed one).
+fn version_row_subtitle(item: &versions::InstalledVersion) -> String {
+    let mut parts = Vec::new();
+    if item.used_by.is_empty() {
+        parts.push(tr(
+            "No preset uses this version",
+            "Ни один пресет не использует эту версию",
+        ));
+    } else {
+        parts.push(format!(
+            "{}: {}",
+            tr("Used by", "Используется"),
+            item.used_by
+                .iter()
+                .map(|preset| format!("{} ({})", preset.name, preset.miner_version))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    match item.status {
+        versions::BinaryStatus::Missing => {
+            parts.push(tr("binary missing", "бинарник отсутствует").to_string())
+        }
+        versions::BinaryStatus::NotAFile => parts.push(tr("not a file", "не файл").to_string()),
+        versions::BinaryStatus::NotExecutable => {
+            parts.push(tr("not executable", "не исполняем").to_string())
+        }
+        versions::BinaryStatus::NotRecorded => {
+            parts.push(tr("no install record", "нет записи об установке").to_string())
+        }
+        versions::BinaryStatus::Ok => {}
+    }
+    if item.sha256_verified {
+        parts.push(tr("SHA-256 verified", "SHA-256 проверен").to_string());
+    } else if item.recorded_sha256.is_some() {
+        parts.push(
+            tr(
+                "SHA-256 recorded, not verified",
+                "SHA-256 записан, не проверен",
+            )
+            .to_string(),
+        );
+    } else {
+        parts.push(tr("no SHA-256 recorded", "SHA-256 не записан").to_string());
+    }
+    parts.join(" · ")
+}
+
+/// One switch per preset: the explicit rollback/move surface. The combo never
+/// applies on its own; a confirmation then pins exactly that preset.
+fn refresh_preset_version_rows(app: &Rc<App>, cfg: &Config) {
+    let Some(group) = app.miner_preset_group.borrow().clone() else {
+        return;
+    };
+    for row in app.miner_preset_rows.borrow_mut().drain(..) {
+        group.remove(&row);
+    }
+    let mut presets: Vec<Preset> = cfg.presets.values().cloned().collect();
+    presets.sort_by(|a, b| a.name.cmp(&b.name));
+    for preset in presets {
+        let usable: Vec<String> = versions::installed(cfg, &preset.miner)
+            .into_iter()
+            .filter(|item| item.status.is_ok())
+            .map(|item| item.version)
+            .collect();
+        let missing = !usable.contains(&preset.miner_version);
+        let mut labels: Vec<String> = Vec::new();
+        let mut targets: Vec<Option<String>> = Vec::new();
+        if missing {
+            labels.push(format!(
+                "{} ({})",
+                preset.miner_version,
+                tr("missing", "нет")
+            ));
+            targets.push(None);
+        }
+        for version in &usable {
+            labels.push(version.clone());
+            targets.push(Some(version.clone()));
+        }
+        if labels.is_empty() {
+            continue;
+        }
+        let current_index = targets
+            .iter()
+            .position(|target| target.as_deref() == Some(preset.miner_version.as_str()))
+            .unwrap_or(0);
+        let combo = adw::ComboRow::builder()
+            .title(&preset.name)
+            .subtitle(format!(
+                "{} · {} {}",
+                preset.miner,
+                tr("pinned", "закреплено"),
+                preset.miner_version
+            ))
+            .build();
+        combo.set_model(Some(&string_list(&labels)));
+        combo.set_selected(current_index as u32);
+        {
+            let app = app.clone();
+            let preset_id = preset.id.clone();
+            let preset_name = preset.name.clone();
+            let miner = preset.miner.clone();
+            let current_version = preset.miner_version.clone();
+            let guard = Rc::new(Cell::new(false));
+            let guard_for_revert = guard.clone();
+            let combo_weak = combo.downgrade();
+            combo.connect_notify_local(Some("selected"), move |row, _| {
+                if guard.get() {
+                    return;
+                }
+                let index = row.selected() as usize;
+                let Some(Some(target)) = targets.get(index).cloned() else {
+                    return;
+                };
+                if target == current_version {
+                    return;
+                }
+                let revert: Rc<dyn Fn()> = {
+                    let guard = guard_for_revert.clone();
+                    let combo_weak = combo_weak.clone();
+                    Rc::new(move || {
+                        guard.set(true);
+                        if let Some(combo) = combo_weak.upgrade() {
+                            combo.set_selected(current_index as u32);
+                        }
+                        guard.set(false);
+                    })
+                };
+                confirm_preset_version(
+                    &app,
+                    preset_id.clone(),
+                    preset_name.clone(),
+                    miner.clone(),
+                    current_version.clone(),
+                    target,
+                    Some(revert),
+                );
+            });
+        }
+        group.add(&combo);
+        app.miner_preset_rows.borrow_mut().push(combo.upcast());
+    }
+}
+
+/// Ask before pinning one preset; on cancel the combo goes back to the pin.
+fn confirm_preset_version(
+    app: &Rc<App>,
+    preset_id: String,
+    preset_name: String,
+    miner: String,
+    from: String,
+    to: String,
+    on_cancel: Option<Rc<dyn Fn()>>,
+) {
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr("Switch preset version?", "Сменить версию пресета?"))
+        .body(format!(
+            "{}: {from} → {to}.\n\n{}",
+            preset_name,
+            tr(
+                "Only this preset changes. Other presets keep their pinned versions; a running miner continues on its session until the change is applied.",
+                "Меняется только этот пресет. Другие пресеты сохраняют закреплённые версии; работающий майнер продолжает сессию до применения изменения."
+            )
+        ))
+        .build();
+    dialog.add_response("cancel", &tr("Cancel", "Отмена"));
+    dialog.add_response("switch", &tr("Switch", "Сменить"));
+    dialog.set_response_appearance("switch", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("switch"));
+    dialog.set_close_response("cancel");
+    let app = app.clone();
+    let window = app.window.clone();
+    dialog.choose(Some(&window), None::<&gio::Cancellable>, move |response| {
+        if response != "switch" {
+            if let Some(cancel) = &on_cancel {
+                cancel();
+            }
+            return;
+        }
+        let change = {
+            let mut cfg = app.config.borrow_mut();
+            versions::pin_preset(&mut cfg, &preset_id, &to)
+        };
+        match change {
+            Ok(Some(change)) => {
+                mark_dirty(&app);
+                refresh_preset_list(&app);
+                close_miner_library(&app);
+                save_and_apply(&app);
+                app.toast.add_toast(adw::Toast::new(&tr(
+                    &format!(
+                        "{} now uses {} {}; other presets are unchanged.",
+                        change.name, miner, change.to
+                    ),
+                    &format!(
+                        "{} теперь использует {} {}; другие пресеты не изменены.",
+                        change.name, miner, change.to
+                    ),
+                )));
+            }
+            Ok(None) => {}
+            Err(err) => show_error_toast(&app, &err.to_string()),
+        }
+    });
+}
+
+fn close_miner_library(app: &Rc<App>) {
+    if let Some(dialog) = app.miner_library_dialog.borrow().clone() {
+        dialog.close();
+    }
+}
+
+/// Check one binary and report the result without inventing a checksum.
+fn verify_miner_version(app: &Rc<App>, miner: &str, version: &str) {
+    let report = versions::verify(&app.config.borrow(), miner, version);
+    app.miner_verified.borrow_mut().insert(
+        trommel_core::config::install_key(miner, version),
+        report.status,
+    );
+    let name = catalog::miner(miner)
+        .map(|def| def.name.clone())
+        .unwrap_or_else(|| miner.to_string());
+    let message = format!("{name} {version}: {}", report.message);
+    if report.status.is_ok() {
+        app.toast.add_toast(adw::Toast::new(&message));
+    } else {
+        show_error_toast(app, &message);
+    }
+    refresh_miners(app);
+}
+
+/// Remove an unused version only after an explicit confirmation; a version any
+/// preset still pins is refused with the list of presets.
+fn remove_miner_version_dialog(app: &Rc<App>, miner: &str, version: &str) {
+    let plan = versions::remove_plan(&app.config.borrow(), miner, version);
+    let name = catalog::miner(miner)
+        .map(|def| def.name.clone())
+        .unwrap_or_else(|| miner.to_string());
+    if !plan.used_by.is_empty() {
+        let users = plan
+            .used_by
+            .iter()
+            .map(|preset| format!("{} ({})", preset.name, preset.miner_version))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let dialog = adw::AlertDialog::builder()
+            .heading(tr("This version is in use", "Эта версия используется"))
+            .body(format!(
+                "{} {version} {}:\n\n{users}\n\n{}",
+                name,
+                tr("is pinned by", "закреплена в пресетах:"),
+                tr(
+                    "Switch those presets to another installed version first. Removing a build never rewrites a preset.",
+                    "Сначала переведите эти пресеты на другую установленную версию. Удаление сборки не переписывает пресеты."
+                )
+            ))
+            .build();
+        dialog.add_response("close", &tr("Close", "Закрыть"));
+        dialog.set_default_response(Some("close"));
+        dialog.set_close_response("close");
+        dialog.choose(Some(&app.window), None::<&gio::Cancellable>, |_| {});
+        return;
+    }
+    if !plan.allowed {
+        show_error_toast(
+            app,
+            &tr(
+                "This version is not installed.",
+                "Эта версия не установлена.",
+            ),
+        );
+        refresh_miners(app);
+        return;
+    }
+    let detail = if plan.delete_dir.is_some() {
+        tr(
+            "The managed binary is deleted.",
+            "Управляемый бинарник будет удалён.",
+        )
+    } else {
+        tr(
+            "The recorded binary is outside the managed store; only the install record is removed.",
+            "Записанный бинарник находится вне управляемого хранилища; будет удалена только запись об установке.",
+        )
+    };
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr("Remove miner version?", "Удалить версию майнера?"))
+        .body(format!(
+            "{name} {version}\n\n{detail} {}",
+            tr(
+                "No preset is changed and no other version is removed.",
+                "Ни один пресет не изменится, другие версии останутся."
+            )
+        ))
+        .build();
+    dialog.add_response("cancel", &tr("Cancel", "Отмена"));
+    dialog.add_response("remove", &tr("Remove", "Удалить"));
+    dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    let app = app.clone();
+    let miner = miner.to_string();
+    let version = version.to_string();
+    let window = app.window.clone();
+    dialog.choose(Some(&window), None::<&gio::Cancellable>, move |response| {
+        if response != "remove" {
+            return;
+        }
+        let mut applied = app.applied.borrow().clone();
+        match versions::delete_install(
+            &mut applied,
+            &miner,
+            &version,
+            &trommel_core::download::miner_root(),
+        ) {
+            Ok(report) => {
+                let _ = applied.save();
+                *app.applied.borrow_mut() = applied.clone();
+                app.config.borrow_mut().remove_install(&miner, &version);
+                if let Ok(json) = serde_json::to_string(&applied) {
+                    let _ = app.tx.send(Cmd::Apply {
+                        json,
+                        mode: "live".into(),
+                        quiet: true,
+                    });
+                }
+                refresh_preset_list(&app);
+                refresh_miners(&app);
+                let message = if report.removed_files {
+                    format!(
+                        "{} {version} {}",
+                        name,
+                        tr(
+                            "removed with its managed files; presets are unchanged.",
+                            "удалена вместе с файлами; пресеты не изменены."
+                        )
+                    )
+                } else {
+                    format!(
+                        "{} {version} {}",
+                        name,
+                        tr(
+                            "install record removed; the external binary was left untouched.",
+                            "запись об установке удалена; внешний бинарник оставлен без изменений."
+                        )
+                    )
+                };
+                app.toast.add_toast(adw::Toast::new(&message));
+            }
+            Err(err) => show_error_toast(&app, &err.to_string()),
+        }
+    });
+}
+
+/// After a successful install, list the presets that still pin another version
+/// and let the user pick which ones move. Everything stays as it was by
+/// default, including the close/escape path.
+fn miner_update_choice_dialog(app: &Rc<App>, miner: &str, version: &str) {
+    let plan = versions::update_plan(&app.config.borrow(), miner, version);
+    if plan.affected.is_empty() {
+        return;
+    }
+    let name = catalog::miner(miner)
+        .map(|def| def.name.clone())
+        .unwrap_or_else(|| miner.to_string());
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr(
+            "Move presets to this version?",
+            "Перевести пресеты на эту версию?",
+        ))
+        .body(format!(
+            "{} {version} {}.\n\n{}",
+            name,
+            tr(
+                "is installed; every preset keeps its pinned version by default.",
+                "установлена; по умолчанию каждый пресет сохраняет закреплённую версию."
+            ),
+            tr(
+                "Select the presets to move to the new version:",
+                "Отметьте пресеты, которые нужно перевести на новую версию:"
+            )
+        ))
+        .build();
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    list.set_margin_top(12);
+    list.set_margin_bottom(12);
+    list.set_margin_start(12);
+    list.set_margin_end(12);
+    let mut checks: Vec<(String, gtk::CheckButton)> = Vec::new();
+    for preset in &plan.affected {
+        let check = gtk::CheckButton::with_label(&format!(
+            "{} — {} → {version}",
+            preset.name, preset.miner_version
+        ));
+        check.set_active(false);
+        list.append(&check);
+        checks.push((preset.id.clone(), check));
+    }
+    dialog.set_extra_child(Some(&list));
+    dialog.set_content_width(460);
+    dialog.add_response(
+        "keep",
+        &tr("Keep preset versions", "Оставить версии пресетов"),
+    );
+    dialog.add_response("move", &tr("Move selected", "Перевести выбранные"));
+    dialog.set_response_appearance("move", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("keep"));
+    dialog.set_close_response("keep");
+    let app = app.clone();
+    let miner = miner.to_string();
+    let version = version.to_string();
+    let window = app.window.clone();
+    dialog.choose(Some(&window), None::<&gio::Cancellable>, move |response| {
+        if response != "move" {
+            return;
+        }
+        let ids: Vec<String> = checks
+            .iter()
+            .filter(|(_, check)| check.is_active())
+            .map(|(id, _)| id.clone())
+            .collect();
+        if ids.is_empty() {
+            app.toast.add_toast(adw::Toast::new(&tr(
+                "No preset was selected; every pin is unchanged.",
+                "Ни один пресет не выбран; закрепления не изменены.",
+            )));
+            return;
+        }
+        let changes = {
+            let mut cfg = app.config.borrow_mut();
+            versions::pin_presets(&mut cfg, &ids, &miner, &version)
+        };
+        match changes {
+            Ok(changes) if !changes.is_empty() => {
+                mark_dirty(&app);
+                refresh_preset_list(&app);
+                close_miner_library(&app);
+                save_and_apply(&app);
+                let names = changes
+                    .iter()
+                    .map(|change| change.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                app.toast.add_toast(adw::Toast::new(&tr(
+                    &format!("Moved {names} to {version}; other presets keep their versions."),
+                    &format!(
+                        "{names} переведены на {version}; остальные пресеты сохранили версии."
+                    ),
+                )));
+            }
+            Ok(_) => {}
+            Err(err) => show_error_toast(&app, &err.to_string()),
+        }
+    });
 }
 
 fn copy_diagnostics(app: &Rc<App>) {
@@ -4310,6 +4903,8 @@ fn miner_install_dialog(
         let dialog = dialog.clone();
         let on_done = on_done.clone();
         Rc::new(move |install: MinerInstall| {
+            let miner_id = install.miner.clone();
+            let version = install.version.clone();
             {
                 let mut cfg = app.config.borrow_mut();
                 cfg.add_install(install.clone());
@@ -4339,6 +4934,9 @@ fn miner_install_dialog(
                 "Майнер установлен. Он доступен во всех пресетах.",
             )));
             dialog.close();
+            // The install itself never changes a pin. Offer the explicit
+            // choice only after the dialog is gone, so one modal is open.
+            miner_update_choice_dialog(&app, &miner_id, &version);
         })
     };
 

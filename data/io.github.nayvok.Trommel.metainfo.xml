@@ -90,6 +90,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.7.0" date="2026-10-29">
+      <description>
+        <p>Miner version manager: the miner library lists every installed version with the presets that pin it, its binary state and explicit Verify and Remove actions. Installing a build never rewrites a preset; an update then offers the affected presets as an explicit, default-off choice. A version pinned by a preset cannot be removed, an unused one asks for confirmation, and a per-preset switch moves exactly one preset to an installed older version for rollback.</p>
+        <p xml:lang="ru">Менеджер версий майнеров: библиотека показывает каждую установленную версию с пресетами, которые её закрепили, состоянием бинарника и явными действиями «Проверить» и «Удалить». Установка сборки никогда не переписывает пресет; после обновления затронутые пресеты предлагаются явным выбором, по умолчанию ничего не выбрано. Версию, закреплённую пресетом, удалить нельзя, для неиспользуемой запрашивается подтверждение, а переключатель версии пресета переводит ровно один пресет на установленную старую версию для отката.</p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-10-29">
       <description>
         <p>Preset-centred navigation: the Miners page is now a miner library dialog opened from the Presets page and the preset editor. The library lists installed versions, the presets that use each miner and the A/B benchmark. A preset that pins an uninstalled version says so and links straight to the library; installed builds stay global and never rewrite a preset.</p>

@@ -24,6 +24,14 @@ export XDG_CONFIG_HOME="$WORK/config"
 export XDG_STATE_HOME="$WORK/state"
 export XDG_CACHE_HOME="$WORK/cache"
 
+# A real executable for the version-manager checks: one installed build that is
+# present and one record whose binary disappeared.
+cat > "$WORK/bin/demo-miner" <<'SH'
+#!/bin/sh
+exit 0
+SH
+chmod +x "$WORK/bin/demo-miner"
+
 # Test fixture: two presets with distinct wallets so we can prove every preset
 # is redacted, not only the active one.
 WALLET_ACTIVE="prl1testactive0000000000000000000000000000"
@@ -58,6 +66,28 @@ cat > "$WORK/config/trommel/config.json" <<JSON
       "wallet": "$WALLET_BACKUP",
       "worker": "rig1",
       "pool_fee_pct": 1.0
+    }
+  },
+  "miner_installs": {
+    "wildrig@0.51.8": {
+      "miner": "wildrig",
+      "version": "0.51.8",
+      "path": "$WORK/bin/demo-miner",
+      "sha256": "",
+      "source_url": "",
+      "verified": false,
+      "custom": true,
+      "installed_at": 0
+    },
+    "wildrig@0.51.7": {
+      "miner": "wildrig",
+      "version": "0.51.7",
+      "path": "$WORK/bin/missing-miner",
+      "sha256": "",
+      "source_url": "",
+      "verified": false,
+      "custom": true,
+      "installed_at": 0
     }
   },
   "behavior": {"simple_mode": true}
@@ -190,9 +220,28 @@ for request_id, tool in ((11, "trommel_status"), (12, "trommel_diagnose"), (13, 
         response is not None and ("result" in response or "error" in response),
         f"{tool} answers without crashing the server",
     )
+miners = text_of(read[14])
+check(isinstance(miners, list), "trommel_miners returns the catalogue")
+wildrig = next((miner for miner in miners if miner.get("id") == "wildrig"), {})
+installs = wildrig.get("installs") or []
+check(len(installs) == 2, "trommel_miners lists every installed version")
+by_version = {install.get("version"): install for install in installs}
 check(
-    isinstance(text_of(read[14]), list),
-    "trommel_miners returns the catalogue",
+    by_version.get("0.51.8", {}).get("status") == "ok",
+    "an installed binary is reported ok",
+)
+check(
+    by_version.get("0.51.7", {}).get("status") == "missing",
+    "a missing binary is reported as missing",
+)
+check(
+    all(install.get("recorded_sha256") is None for install in installs),
+    "no SHA-256 is invented for unverified installs",
+)
+check(
+    {user.get("id") for user in by_version.get("0.51.8", {}).get("used_by", [])}
+    == {"pearl-wildrig", "backup"},
+    "each installed version names the presets that pin it",
 )
 check(read[15]["result"] == {}, "server survives an unavailable D-Bus")
 check(read[None]["error"]["code"] == -32700, "invalid JSON yields a parse error")
@@ -220,6 +269,15 @@ if diagnose:
     check(
         all(wallet in ("", "<redacted>") for wallet in diagnose_wallets),
         "trommel diagnose --json redacts wallets",
+    )
+    versions = diagnose.get("miner_versions") or []
+    check(
+        {entry.get("version") for entry in versions} == {"0.51.8", "0.51.7"},
+        "trommel diagnose --json reports installed versions",
+    )
+    check(
+        all(entry.get("recorded_sha256") is None for entry in versions),
+        "trommel diagnose --json does not invent a checksum",
     )
 
 if failures:

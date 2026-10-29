@@ -22,6 +22,8 @@ cleanup() {
     [ -n "$GUI_PID" ] && kill "$GUI_PID" 2>/dev/null || true
     [ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null || true
     [ -n "$BUS_PID" ] && kill "$BUS_PID" 2>/dev/null || true
+    [ -n "${ATSPI_REGISTRY_PID:-}" ] && kill "$ATSPI_REGISTRY_PID" 2>/dev/null || true
+    [ -n "${ATSPI_BUS_PID:-}" ] && kill "$ATSPI_BUS_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -84,12 +86,12 @@ export TROMMEL_OC_VERIFY_MS=1000
 export GTK_A11Y=atspi
 export LANG=C.UTF-8
 export LANGUAGE=en
-export AT_SPI_BUS_ADDRESS="${AT_SPI_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/at-spi/bus}"
-if [ ! -S "${AT_SPI_BUS_ADDRESS#unix:path=}" ]; then
-    echo "AT-SPI bus not found at $AT_SPI_BUS_ADDRESS" >&2
-    echo "run this script inside the graphical session" >&2
+# shellcheck source=scripts/atspi-bus.sh
+. "$ROOT/scripts/atspi-bus.sh"
+ensure_atspi_bus "$WORK" || {
+    echo "cannot provide an AT-SPI bus; run this inside a graphical session" >&2
     exit 1
-fi
+}
 # See ui-smoke.sh: XWayland exposes the complete AdwDialog tree to AT-SPI.
 if [ -n "${DISPLAY:-}" ] && [ "${TROMMEL_UI_WAYLAND:-0}" != 1 ]; then
     export GDK_BACKEND=x11

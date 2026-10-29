@@ -552,6 +552,116 @@ def phase_main(ui: UI) -> None:
                 ui.find(library, "text", "Version name") is None,
                 "library itself is not the install dialog",
             )
+            # Version manager (B4): an installed version row with preset usage,
+            # explicit verify/remove actions and a per-preset version switch.
+            version_row = ui.wait(
+                lambda: ui.find(library, "list item", "0.51.8"),
+                5.0,
+                "installed version row",
+            )
+            ui.check(version_row is not None, "library lists the installed version")
+            ui.check(
+                ui.find(library, None, "Preset versions", contains=True) is not None,
+                "library shows the preset version switches",
+            )
+            verify_button = ui.wait(
+                lambda: ui.find(library, "button", "Verify the binary"),
+                5.0,
+                "verify button",
+            )
+            if ui.click(verify_button, "verify binary"):
+                # The verify action refreshes the version rows; take a fresh
+                # proxy and look for the persistent result chip (a toast can
+                # sit behind the modal dialog).
+                library = ui.dialog_with("Miner library") or library
+                ui.check(
+                    ui.wait(
+                        lambda: ui.find(library, None, "verified", contains=True),
+                        5.0,
+                        "verify result chip",
+                    )
+                    is not None,
+                    "verify marks the version as checked",
+                )
+            # Target the button inside the pinned version's row: the unused row
+            # carries the same tooltip, so a frame-wide lookup picks the wrong
+            # one now that two versions are installed.
+            used_row = ui.wait(
+                lambda: ui.find(library, "list item", "0.51.8"),
+                5.0,
+                "pinned version row",
+            )
+            remove_button = ui.find(
+                used_row,
+                "button",
+                "Remove this version (blocked while a preset uses it)",
+            )
+            if ui.click(remove_button, "remove used version"):
+                blocked = ui.wait(
+                    lambda: ui.alert("This version is in use"),
+                    5.0,
+                    "remove blocked alert",
+                )
+                ui.check(blocked is not None, "removing a used version is blocked")
+                if blocked is not None:
+                    ui.check(
+                        ui.find(blocked, None, "Pearl WildRig", contains=True)
+                        is not None,
+                        "the blocked alert names the preset",
+                    )
+                    ui.click_button("Close", blocked, "blocked alert Close")
+                    ui.wait(
+                        lambda: ui.alert("This version is in use") is None,
+                        5.0,
+                        "blocked alert closed",
+                    )
+                    library = ui.dialog_with("Miner library")
+            # The unused 0.51.7 build can be removed after a confirmation; the
+            # row disappears and the presets keep 0.51.8.
+            unused = ui.wait(
+                lambda: ui.find(library, "list item", "0.51.7"),
+                5.0,
+                "unused version row",
+            )
+            if unused is not None:
+                unused_remove = ui.find(
+                    unused,
+                    "button",
+                    "Remove this version (blocked while a preset uses it)",
+                )
+                if ui.click(unused_remove, "remove unused version"):
+                    confirm = ui.wait(
+                        lambda: ui.alert("Remove miner version?"),
+                        5.0,
+                        "remove confirmation",
+                    )
+                    ui.check(confirm is not None, "removing an unused version asks first")
+                    if confirm is not None:
+                        ui.check(
+                            ui.wait(
+                                lambda: ui.find(
+                                    ui.app(),
+                                    None,
+                                    "No preset is changed",
+                                    contains=True,
+                                ),
+                                5.0,
+                                "remove explanation",
+                            )
+                            is not None,
+                            "the confirmation explains that presets are unchanged",
+                        )
+                        ui.click_button("Remove", confirm, "confirm remove")
+                        library = ui.dialog_with("Miner library") or library
+                        ui.check(
+                            ui.wait(
+                                lambda: ui.find(library, "list item", "0.51.7") is None,
+                                5.0,
+                                "removed version row",
+                            )
+                            is not None,
+                            "the unused version row disappears after removal",
+                        )
             miner_chevron = ui.wait(
                 lambda: ui.find(library, "button", "Install or update this miner"),
                 5.0,

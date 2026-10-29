@@ -20,7 +20,7 @@ runtime.
 | OC lock/lease | `~/.local/state/trommel/oc.lock`, `oc-lease.json` | read-only | Cross-process serialization and the in-flight helper |
 | Guard | `~/.local/state/trommel/guard.pid`, `guard.disarm` | read-only | Watch state for the manual-run supervisor |
 | Benchmarks | `~/.local/state/trommel/bench/*.json` | read | A/B reports |
-| Miner store | `~/.local/share/trommel/miners/<id>/<version>/` | read | Never hand-edit; use `trommel miner import/install` |
+| Miner store | `~/.local/share/trommel/miners/<id>/<version>/` | read | Never hand-edit; use `trommel miner import/install/remove` |
 | Status JSON | `trommel status --json` | read | The GUI/CLI contract |
 | Diagnostics | `trommel diagnose --json` | read | Redacted bundle for a model |
 | Config diff/apply | `trommel config diff/apply` | read/apply | Explicit mode, explicit consent |
@@ -91,10 +91,26 @@ trommel preset list          # human table with total fees
 trommel preset show          # active preset JSON
 trommel preset export <id> /tmp/preset.json
 trommel preset import /tmp/preset.json
-trommel miner list           # catalogue + installed versions
+trommel miner list           # catalogue + installed versions, their presets and binary state
+trommel miner verify         # check every installed binary; exits non-zero on a broken one
+trommel miner verify wildrig 0.51.8 --json
+trommel miner remove wildrig 0.51.7 --yes   # unused versions only; pinned versions are refused
 trommel oc report --json     # snapshot, current limits and restore targets
 trommel oc restore --mode snapshot|defaults
 ```
+
+`miner verify --json` returns one object per install: `miner`, `version`, `path`,
+`status` (`ok`, `missing`, `not_a_file`, `not_executable` or `not_recorded`),
+`exists`, `is_file`, `executable`, `readable`, `recorded_sha256`,
+`sha256_verified` and a localized `message`. `recorded_sha256` is the digest
+stored at install time or `null`; the verifier never hashes a file to invent one.
+
+`miner remove` refuses a version any preset pins, naming those presets, and
+requires `--yes` even for an unused one. It deletes only files under the managed
+store (a record pointing outside it loses the record and keeps the binary) and it
+never rewrites a preset. Installing another version is the update path: the new
+version is added, presets keep their pins, and only an explicit config change
+moves one.
 
 The current human-readable output is Russian. Parse JSON; do not scrape the
 human text. `status` and `start/stop/toggle` connect through D-Bus and start
@@ -141,7 +157,7 @@ args = ["mcp"]            # add "--allow-write" to enable write tools
 | `trommel_config` | — | Full config, all wallets redacted |
 | `trommel_config_validate` | — | `{"warnings": [...]}` for the current config |
 | `trommel_config_diff` | `config` object | `{"class": "...", "reasons": [...]}` |
-| `trommel_miners` | — | Catalogue entries and installed versions |
+| `trommel_miners` | — | Catalogue entries, installed versions with `status`, `recorded_sha256` (or `null`), `sha256_verified` and `used_by` presets |
 | `trommel_diagnose` | — | Redacted diagnostics bundle |
 | `trommel_oc` | — | Snapshot, current limits and restore targets |
 | `trommel_restore_oc` | `mode` = `snapshot`\|`defaults` | Write tool (`--allow-write`); returns a restore report |
@@ -205,6 +221,13 @@ poll; `Status()` returns the last snapshot.
 - Treat a config file write as an applied config. The daemon owns the live
   config; use Apply.
 - Add a bundled miner binary or a checksum/URL that was not actually verified.
+- Remove an installed version while a preset pins it, or rewrite
+  `preset.miner_version` for several presets to work around the refusal. Ask the
+  user to switch the preset versions first; the GUI switch changes one preset at
+  a time.
+- Treat `trommel_miners.installs[].recorded_sha256` as a verified checksum when
+  `sha256_verified` is `false`, or compute a digest and present it as the
+  recorded one.
 - Set a card's `enabled` to `false` on a miner that cannot select devices, or
   add `--gpu-list`/`--gpu-id`/`--devices` to `extra_args` to work around the
   refusal. Start and the agent must report the unsupported combination instead.

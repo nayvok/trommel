@@ -168,8 +168,10 @@ Every coloured value has a word next to it (“installed”, “not installed”
 | Presets | page | view switcher | Preset list, miner library entry; rows open the editor |
 | Settings | page | view switcher | Behaviour, appearance, actions |
 | Preset editor | `AdwDialog` | preset row / New preset | One preset: miner, version, pool, wallet, fees, options |
-| Miner library | `AdwDialog` | Presets page / preset editor | Catalogue, installed versions, benchmark, install entry |
+| Miner library | `AdwDialog` | Presets page / preset editor | Catalogue, installed versions with usage, verify/remove, per-preset version switch, benchmark, install entry |
 | Miner install | `AdwDialog` | Miner library row, editor, wizard | Version pick, HTTPS download, local import |
+| Move presets to a version | `AdwAlertDialog` | Miner library after an install | Per-preset checkboxes; nothing is pre-selected and “keep” is the default |
+| Remove miner version | `AdwAlertDialog` | Miner library version row | Confirmation for an unused version; a blocked alert listing presets when one pins it |
 | GPU tuning | `AdwDialog` | Dashboard card | Per-card power/clocks; copy to similar/all |
 | Quick setup | `AdwDialog` | Quick setup button / Start on a pristine install | Cards → miner → wallet → start |
 | Apply alert | `AdwAlertDialog` | apply while mining | Apply and restart / apply and stop / cancel |
@@ -254,17 +256,40 @@ Every coloured value has a word next to it (“installed”, “not installed”
   for confirmation, names the preset, and explains that the daemon keeps mining
   with the previously applied preset until another one is applied.
 
-### Miner library (modal)
+### Miner library (modal, version manager)
 
 - Opened from the Presets page and the preset editor; it replaces the former
   Miners page. The preset editor shows the preset at the top with its pinned
   version and an **Install…** action.
-- Compact rows: name, short description, a second line with the presets that
-  reference the miner and their versions, installed versions (or **not
-  installed**) and a chevron that opens the install dialog. The upstream source
-  link lives in the install dialog.
-- The library never rewrites a preset: installing a build only adds a global
-  `miner_installs` entry, and the preset keeps its own `miner_version`.
+- **Installed versions** group: one row per miner (catalogue plus stored custom
+  builds) with its short description, the presets that reference it and their
+  versions, an installed-versions summary (or **not installed**) and a chevron
+  that opens the install dialog. The upstream source link lives in the install
+  dialog.
+- Under each miner, one row per installed version: the version as the title, a
+  prefix binary icon, a subtitle with the presets that pin it, the binary state
+  (`binary missing`, `not executable`) and the recorded-checksum fact, plus
+  **Verify** (check icon) and **Remove** (trash icon). A broken binary carries a
+  warning chip and is never offered as a preset target. The rows never compute a
+  checksum.
+- **Verify** re-checks existence, file type, execute bit and readability,
+  reports the result in a toast and marks that row **verified** (success or
+  warning) for as long as the library stays open. **Remove** is blocked while a
+  preset pins the version: an alert lists those presets and explains that they
+  must switch first. An unused version shows a destructive confirmation that
+  names the managed deletion, the untouched presets and the other versions.
+- **Update** is the same install dialog; after a successful install an alert
+  lists the affected presets as unchecked checkboxes with **Keep preset
+  versions** as the default. Only the selected presets move, and only on the
+  explicit **Move selected** action.
+- **Preset versions** group: one `AdwComboRow` per preset with its miner,
+  pinned version and the installed executable versions (a missing pin is listed
+  as `<version> (missing)`). Selecting another version asks **Switch preset
+  version?**; cancel restores the combo, confirm pins exactly that preset,
+  closes the library and runs the normal apply/restart/stop flow.
+- The library never rewrites a preset silently: installing a build only adds a
+  global `miner_installs` entry, removal never edits a preset, and a version
+  switch touches one preset.
 - Benchmark controls (minutes + **Run benchmark**) run the sequential A/B test;
   a toast reports the best effective hashrate. **Close** dismisses the dialog.
 

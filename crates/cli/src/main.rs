@@ -9,6 +9,7 @@ use trommel_core::dbus::MinerProxy;
 use trommel_core::paths;
 use trommel_core::status::Status;
 use trommel_core::util;
+use trommel_core::versions;
 
 #[cfg(feature = "gui")]
 mod gui;
@@ -133,8 +134,18 @@ enum PresetCmd {
 
 #[derive(Subcommand)]
 enum MinerCmd {
-    /// Показать каталог и установленные версии
+    /// Показать каталог и установленные версии (с пресетами, которые их используют)
     List,
+    /// Проверить, что бинарники установленных версий существуют и доступны
+    Verify {
+        /// Майнер (без него проверяются все)
+        miner: Option<String>,
+        /// Версия (нужен майнер)
+        version: Option<String>,
+        /// Вывести JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Зарегистрировать существующий бинарник
     Import {
         miner: String,
@@ -152,6 +163,14 @@ enum MinerCmd {
         archive: String,
         #[arg(long)]
         binary: String,
+    },
+    /// Удалить установленную версию (только если её не использует ни один пресет)
+    Remove {
+        miner: String,
+        version: String,
+        /// Подтвердить удаление (без флага команда только объясняет отказ)
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -659,18 +678,81 @@ async fn run_miner_command(command: MinerCmd) -> anyhow::Result<()> {
     let mut cfg = Config::load_or_default();
     match command {
         MinerCmd::List => {
-            for miner in trommel_core::catalog::miners() {
-                let installed = trommel_core::catalog::installed_versions(&cfg, &miner.id);
+            for miner_id in versions::miner_ids(&cfg) {
+                let def = trommel_core::catalog::miner(&miner_id);
+                let name = def
+                    .map(|miner| miner.name.clone())
+                    .unwrap_or_else(|| miner_id.clone());
+                let fee = def.map(|miner| miner.fee_pct).unwrap_or(0.0);
+                let installed = trommel_core::catalog::installed_versions(&cfg, &miner_id);
                 println!(
                     "{:<12} {:<22} {:>6.2}%  {}",
-                    miner.id,
-                    miner.name,
-                    miner.fee_pct,
+                    miner_id,
+                    name,
+                    fee,
                     if installed.is_empty() {
                         "not installed".to_string()
                     } else {
                         format!("installed: {}", installed.join(", "))
                     }
+                );
+                // One line per record (including a binary that disappeared),
+                // with the presets that pin it. Installing never rewrites them.
+                for item in versions::installed(&cfg, &miner_id) {
+                    println!(
+                        "    {:<12} {:<14} {}",
+                        item.version,
+                        item.status.as_str(),
+                        usage_summary(&item.used_by)
+                    );
+                }
+            }
+            Ok(())
+        }
+        MinerCmd::Verify {
+            miner,
+            version,
+            json,
+        } => {
+            if version.is_some() && miner.is_none() {
+                anyhow::bail!("pass the miner before the version");
+            }
+            let reports: Vec<versions::VerifyReport> = match (miner.as_deref(), version.as_deref())
+            {
+                (Some(miner), Some(version)) => vec![versions::verify(&cfg, miner, version)],
+                (Some(miner), None) => {
+                    let installed = versions::installed(&cfg, miner);
+                    if installed.is_empty() {
+                        anyhow::bail!("{miner}: no installed versions");
+                    }
+                    installed
+                        .iter()
+                        .map(|item| versions::verify(&cfg, &item.miner, &item.version))
+                        .collect()
+                }
+                _ => versions::verify_all(&cfg),
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&reports)?);
+            } else if reports.is_empty() {
+                println!("no miner installs");
+            } else {
+                for report in &reports {
+                    println!(
+                        "{:<12} {:<12} {:<14} {}",
+                        report.miner,
+                        report.version,
+                        report.status.as_str(),
+                        report.message
+                    );
+                }
+            }
+            if let Some(bad) = reports.iter().find(|report| !report.status.is_ok()) {
+                anyhow::bail!(
+                    "verification failed for {} {} ({})",
+                    bad.miner,
+                    bad.version,
+                    bad.status.as_str()
                 );
             }
             Ok(())
@@ -688,7 +770,7 @@ async fn run_miner_command(command: MinerCmd) -> anyhow::Result<()> {
             )?;
             cfg.add_install(install);
             cfg.save()?;
-            apply_after_install(&cfg).await;
+            sync_daemon_config(&cfg).await;
             println!("imported {miner} {version} into the managed miner store");
             Ok(())
         }
@@ -713,17 +795,77 @@ async fn run_miner_command(command: MinerCmd) -> anyhow::Result<()> {
             let install = trommel_core::download::install(&request, &root)?;
             cfg.add_install(install);
             cfg.save()?;
-            apply_after_install(&cfg).await;
+            sync_daemon_config(&cfg).await;
             println!("installed {miner} {version}");
             Ok(())
         }
+        MinerCmd::Remove {
+            miner,
+            version,
+            yes,
+        } => {
+            let plan = versions::remove_plan(&cfg, &miner, &version);
+            if !plan.used_by.is_empty() {
+                let users = plan
+                    .used_by
+                    .iter()
+                    .map(|preset| format!("{} ({})", preset.name, preset.miner_version))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                anyhow::bail!(
+                    "cannot remove {miner} {version}: it is used by {users}. \
+                     Switch those presets to another installed version first; presets are never rewritten automatically."
+                );
+            }
+            if !cfg.install_record_exists(&miner, &version) {
+                anyhow::bail!("{miner} {version} is not installed");
+            }
+            if !yes {
+                anyhow::bail!(
+                    "refusing to remove {miner} {version} without --yes: it deletes the managed binary, \
+                     keeps every preset unchanged and cannot be undone by Trommel"
+                );
+            }
+            let report = versions::delete_install(
+                &mut cfg,
+                &miner,
+                &version,
+                &trommel_core::download::miner_root(),
+            )?;
+            cfg.save()?;
+            sync_daemon_config(&cfg).await;
+            if report.removed_files {
+                println!("removed {miner} {version} and its managed files");
+            } else {
+                println!(
+                    "removed the install record for {miner} {version}; the binary at {} was left untouched",
+                    report.recorded_path
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn usage_summary(used_by: &[versions::PresetUsage]) -> String {
+    if used_by.is_empty() {
+        "unused".to_string()
+    } else {
+        format!(
+            "used by: {}",
+            used_by
+                .iter()
+                .map(|preset| format!("{} ({})", preset.name, preset.miner_version))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 
 /// Miner installs are part of the config the daemon owns. Save the file, then
 /// tell a running daemon about it; otherwise Start would use a stale copy and
 /// claim the miner is not installed.
-async fn apply_after_install(cfg: &Config) {
+async fn sync_daemon_config(cfg: &Config) {
     let Ok(proxy) = connect().await else {
         return;
     };

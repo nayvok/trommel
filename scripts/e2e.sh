@@ -458,6 +458,60 @@ step "Preset commands"
 "$BIN/trommel" preset use pearl-wildrig --stop >/dev/null 2>&1 && pass "preset use --stop" || fail "preset use --stop"
 "$BIN/trommel" miner list | grep -q "installed: 0.51.8" && pass "miner install state" || fail "miner list"
 
+step "Miner version manager"
+"$BIN/trommel" miner import wildrig 0.50.0 "$WORK/bin/wildrig-multi" >/dev/null 2>&1 \
+    && pass "an older build is installed for rollback" || fail "older build import failed"
+"$BIN/trommel" config get | python3 -c '
+import json,sys
+c=json.load(sys.stdin)
+assert "wildrig@0.50.0" in c["miner_installs"]
+assert all(p["miner_version"] == "0.51.8" for p in c["presets"].values())
+' && pass "installing a version does not rewrite a preset" || fail "preset version was rewritten"
+"$BIN/trommel" miner verify wildrig 0.50.0 --json > "$WORK/verify-old.json" 2>/dev/null \
+    && python3 -c '
+import hashlib, json, sys
+report=json.load(open(sys.argv[1]))
+assert report[0]["status"] == "ok", report
+assert report[0]["sha256_verified"] is False, report
+digest = report[0]["recorded_sha256"]
+if digest is not None:
+    actual = hashlib.sha256(open(report[0]["path"], "rb").read()).hexdigest()
+    assert digest == actual, (digest, actual)
+' "$WORK/verify-old.json" \
+    && pass "verify reports the binary with only its real digest" || fail "verify reported a wrong state"
+if "$BIN/trommel" miner remove wildrig 0.51.8 --yes > "$WORK/remove-used.out" 2>&1; then
+    fail "a version pinned by a preset was removed"
+else
+    pass "removing a preset-pinned version is refused"
+fi
+grep -q "Pearl" "$WORK/remove-used.out" \
+    && pass "the refusal names the affected preset" || fail "the refusal does not name the preset"
+"$BIN/trommel" config get | python3 -c '
+import json, os, sys
+c=json.load(sys.stdin)
+install=c["miner_installs"]["wildrig@0.51.8"]
+assert os.path.exists(install["path"]), install
+' && pass "the pinned binary was not deleted" || fail "the pinned binary disappeared"
+"$BIN/trommel" miner remove wildrig 0.50.0 --yes >/dev/null 2>&1 \
+    && pass "an unused version is removed with --yes" || fail "unused version removal failed"
+[ ! -e "$WORK/data/trommel/miners/wildrig/0.50.0" ] \
+    && pass "the unused version files were deleted" || fail "unused version files remain"
+"$BIN/trommel" config get | python3 -c '
+import json,sys
+c=json.load(sys.stdin)
+assert "wildrig@0.51.8" in c["miner_installs"], c["miner_installs"]
+assert "wildrig@0.50.0" not in c["miner_installs"], c["miner_installs"]
+' && pass "the install record is gone from the config" || fail "the install record survived"
+"$BIN/trommel" diagnose --json > "$WORK/versions.json" 2>/dev/null \
+    && python3 -c '
+import json,sys
+report=json.load(open(sys.argv[1]))
+versions=report["miner_versions"]
+assert [entry["version"] for entry in versions] == ["0.51.8"], versions
+assert versions[0]["status"] == "ok", versions
+' "$WORK/versions.json" \
+    && pass "diagnostics report the installed version state" || fail "diagnostics version report"
+
 step "Config and migration sanity"
 "$BIN/trommel" config get | python3 -c 'import json,sys; c=json.load(sys.stdin); assert c["schema_version"]==3; assert c["active_preset"]=="pearl-wildrig"' && pass "config v3 is active" || fail "config v3"
 
