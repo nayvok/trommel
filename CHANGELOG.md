@@ -5,6 +5,36 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-30
+
+### Fixed
+
+- **`SetConfig` no longer restarts a running miner.** The compatibility wrapper
+  applies live and returns the restart-required error for a change that needs a
+  restart; a client must pass an explicit `restart` or `stop` mode to
+  `ApplyConfig`.
+- **Installed versions sort numerically.** `0.51.10` is listed after `0.51.9`,
+  and `update_available` is true only when the catalogue latest is numerically
+  newer than the target and not installed yet.
+- **An unreadable binary is reported as `not_readable`** instead of being folded
+  into `not_executable`, both in the JSON diagnostics and in the GUI.
+- **A downloaded release bundle verifies from any checkout.**
+  `verify-release-bundle.sh` reads the version from the bundle filenames instead
+  of the workspace version.
+- **The Debian build remaps paths through `CARGO_ENCODED_RUSTFLAGS`.** A
+  checkout path containing spaces no longer corrupts the remap flags, and flags
+  set by the caller are preserved.
+- **`check-no-secrets.sh` inspects every match.** A line that names both the
+  `/home/user` placeholder and a real account fails instead of passing.
+- **CI checks the version on every run and requires an annotated tag.**
+  `GITHUB_REF_NAME` is treated as a tag only for `refs/tags/*`, and the release
+  workflow's write token is limited to the publishing job.
+- **The e2e harness records the real detached worker PIDs**, so the external
+  miner checks and the final cleanup address the process the test started.
+- **Docs and the RPM template.** One canonical release checklist, a precise
+  `CUDA_DEVICE_ORDER` rule, a security contact and the untagged 0.4.1-0.4.4
+  note; the template version matches 0.8.2.
+
 ## [0.8.1] - 2026-10-30
 
 ### Fixed

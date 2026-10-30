@@ -3026,6 +3026,9 @@ fn version_row_subtitle(item: &versions::InstalledVersion) -> String {
         versions::BinaryStatus::NotExecutable => {
             parts.push(tr("not executable", "не исполняем").to_string())
         }
+        versions::BinaryStatus::NotReadable => {
+            parts.push(tr("not readable", "недоступен для чтения").to_string())
+        }
         versions::BinaryStatus::NotRecorded => {
             parts.push(tr("no install record", "нет записи об установке").to_string())
         }

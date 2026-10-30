@@ -337,7 +337,7 @@ legacy-parse field; `miner_path` is additive with a serde default).
 | `Refresh()` | Recollect status now and return it |
 | `GetConfig()` | Applied config JSON (not redacted; local clients only) |
 | `ApplyConfig(json, mode)` | Validate, diff, stop/restart/save with rollback; returns applied/restarted/stopped/changes JSON |
-| `SetConfig(json)` | Compatibility wrapper: `ApplyConfig(json, "restart")` |
+| `SetConfig(json)` | Compatibility wrapper: `ApplyConfig(json, "live")`; refuses a change that needs a restart instead of restarting silently |
 | `RunBenchmark(request)` | `{"profiles": [], "seconds": 180}`; refuses while an external or unowned miner runs; returns a report |
 | `OCReport()` | Read-only JSON: snapshot, current limits, per-card targets for `snapshot` and `defaults` |
 | `RestoreOC(mode)` | Restore `snapshot` or `defaults`; returns a JSON report; refuses while mining |

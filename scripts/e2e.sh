@@ -43,6 +43,24 @@ start_daemon() {
     DAEMON_PID=$(cat "$WORK/daemon.pid" 2>/dev/null || true)
 }
 
+# Start a helper/miner stand-in in its own session and print the real PID.
+#
+# `$!` is not reliable for the same reason as in `start_daemon`; record the PID
+# before `exec` so the liveness checks and the final `kill` address the process
+# the test actually started.
+start_detached() {
+    local pidfile="$1"
+    shift
+    rm -f "$pidfile"
+    setsid bash -c 'echo $$ > "$1"; shift; exec "$@"' _ "$pidfile" "$@" \
+        >/dev/null 2>&1 < /dev/null &
+    for _ in $(seq 1 100); do
+        [ -s "$pidfile" ] && break
+        sleep 0.1
+    done
+    cat "$pidfile" 2>/dev/null || true
+}
+
 step "Build"
 ( cd "$ROOT" && cargo build -q -p trommeld -p trommel ) || { echo "build failed" >&2; exit 1; }
 
@@ -222,6 +240,36 @@ assert s["state"]["running"] is True, s["state"]
 assert s["total"]["power_w"] == 430.0, s["total"]
 print("  running:", s["state"]["running"], "power:", s["total"]["power_w"])
 ' && pass "miner running with aggregated power" || fail "running status"
+
+step "SetConfig never restarts a running miner"
+CPID=$("$BIN/trommel" status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"]["miner_pid"])')
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+cfg["active_preset"] = "second"
+pathlib.Path(sys.argv[1], "setconfig.json").write_text(json.dumps(cfg))
+PY
+if command -v dbus-send >/dev/null 2>&1; then
+    if dbus-send --session --print-reply \
+        --dest=io.github.nayvok.Trommel.Daemon \
+        /io/github/nayvok/Trommel \
+        io.github.nayvok.Trommel.SetConfig \
+        string:"$(cat "$WORK/setconfig.json")" > "$WORK/setconfig.out" 2>&1; then
+        fail "SetConfig applied a restart-class change instead of refusing"
+    elif grep -qi "restart required" "$WORK/setconfig.out"; then
+        pass "SetConfig refuses a restart-class change"
+    else
+        fail "SetConfig failed without the restart-required error"
+        sed -n '1,3p' "$WORK/setconfig.out"
+    fi
+    NEWPID=$("$BIN/trommel" status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"]["miner_pid"])')
+    [ "$CPID" = "$NEWPID" ] \
+        && pass "SetConfig left the running miner alone" \
+        || fail "SetConfig restarted the miner (pid $CPID -> $NEWPID)"
+else
+    echo "  - dbus-send is not installed; SetConfig refusal is not exercised"
+fi
 
 step "Apply and restart while running"
 "$BIN/trommel" preset use second --restart >/dev/null 2>&1
@@ -1065,8 +1113,7 @@ cat > "$WORK/bin/external-rig" <<'SH'
 while true; do sleep 2; done
 SH
 chmod +x "$WORK/bin/external-rig"
-setsid "$WORK/bin/external-rig" --algo pearlhash >/dev/null 2>&1 < /dev/null &
-EXT_PID=$!
+EXT_PID=$(start_detached "$WORK/ext-emergency.pid" "$WORK/bin/external-rig" --algo pearlhash)
 sleep 1
 python3 - "$WORK" "$EXT_PID" "$WORK/bin/external-rig" <<'PY'
 import json, pathlib, sys, time
@@ -1140,8 +1187,7 @@ cat > "$WORK/bin/wildrig-external" <<'SH'
 while true; do sleep 2; done
 SH
 chmod +x "$WORK/bin/wildrig-external"
-setsid "$WORK/bin/wildrig-external" --algo pearlhash >/dev/null 2>&1 < /dev/null &
-EXT_PID=$!
+EXT_PID=$(start_detached "$WORK/ext-bench.pid" "$WORK/bin/wildrig-external" --algo pearlhash)
 sleep 1
 start_daemon env -u TROMMEL_NO_EXTERNAL_SCAN "$BIN/trommeld"
 sleep 3
@@ -1173,8 +1219,7 @@ cat > "$WORK/bin/wildrig-legacy" <<'SH'
 while true; do sleep 2; done
 SH
 chmod +x "$WORK/bin/wildrig-legacy"
-setsid "$WORK/bin/wildrig-legacy" --algo pearlhash >/dev/null 2>&1 < /dev/null &
-LEGACY_PID=$!
+LEGACY_PID=$(start_detached "$WORK/ext-legacy.pid" "$WORK/bin/wildrig-legacy" --algo pearlhash)
 sleep 1
 python3 - "$WORK" "$LEGACY_PID" <<'PY'
 import json, pathlib, sys, time
@@ -1281,9 +1326,8 @@ sleep 2
 sleep 2
 # The crashing miner is now in its backoff. A manual miner started here must
 # win; the daemon must not spawn a second one when the timer expires.
-setsid "$WORK/bin/wildrig-external" --algo pearlhash >/dev/null 2>&1 < /dev/null &
+EXT2_PID=$(start_detached "$WORK/ext-restart.pid" "$WORK/bin/wildrig-external" --algo pearlhash)
 sleep 1
-EXT2_PID=$(pgrep -f "$WORK/bin/wildrig-external" | head -1)
 [ -n "$EXT2_PID" ] || fail "the external miner did not start"
 sleep 9
 if grep -q "restart cancelled: external miner pid=$EXT2_PID" "$WORK/state/trommel/daemon.log" 2>/dev/null; then

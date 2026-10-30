@@ -1,6 +1,6 @@
 # Roadmap
 
-Current release: **0.8.0** (30.10.2026). Shipped behaviour is documented in
+Current release: **0.8.2** (30.10.2026). Shipped behaviour is documented in
 [user-guide.md](user-guide.md) and [architecture.md](architecture.md); this page
 only describes direction. Anything not shipped is explicitly in the future
 sections — the README and guides do not describe it.
@@ -178,6 +178,13 @@ Ordered by expected value, not commitment:
 - Shipping an RPM/AppImage/Flatpak artifact without a tested integration story.
 - Running `trommeld` itself as root. Independent supervision is systemd plus the
   unprivileged guard process, never a root daemon.
+
+## Release history note
+
+The `CHANGELOG.md` entries for 0.4.1–0.4.4 were written before tags and GitHub
+Releases were used; those versions were never tagged or published. `v0.4.5` is
+the first tag of that line. The history is not rewritten and old commits are not
+retagged: the existing tags and published releases are the source of truth.
 
 ## Decision log
 

@@ -6,7 +6,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 status=0
 
 WALLETS="$(mktemp)"
-trap 'rm -f "$WALLETS"' EXIT
+HOME_HITS="$(mktemp)"
+trap 'rm -f "$WALLETS" "$HOME_HITS"' EXIT
 
 # Real-looking Pearl addresses: prl1 + at least 50 base32-ish chars.
 if git grep -n -E 'prl1[0-9a-z]{50,}' -- ':!local' >"$WALLETS" 2>/dev/null; then
@@ -25,11 +26,23 @@ fi
 
 # Personal home directories leak the developer's account into sources, docs and
 # built binaries. /home/user is the neutral placeholder used by test fixtures.
+# Filter every match, not every line: one line can name both the placeholder
+# and a real account, and the real one must still fail the check.
 if git grep -n -E '/home/[A-Za-z0-9._-]+' \
-    -- ':!local' ':!scripts/check-no-secrets.sh' \
-    | grep -vE '/home/user([^A-Za-z0-9._-]|$)'; then
-    echo "error: personal home path in tracked files (use /home/user)" >&2
-    status=1
+    -- ':!local' ':!scripts/check-no-secrets.sh' >"$HOME_HITS" 2>/dev/null; then
+    personal=0
+    while IFS= read -r hit; do
+        if printf '%s\n' "$hit" \
+            | grep -oE '/home/[A-Za-z0-9._-]+' \
+            | grep -qvx '/home/user'; then
+            printf '%s\n' "$hit" >&2
+            personal=1
+        fi
+    done < "$HOME_HITS"
+    if [ "$personal" -ne 0 ]; then
+        echo "error: personal home path in tracked files (use /home/user)" >&2
+        status=1
+    fi
 fi
 
 # Binaries/miners must never be tracked.

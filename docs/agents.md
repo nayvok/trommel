@@ -100,7 +100,8 @@ trommel oc restore --mode snapshot|defaults
 ```
 
 `miner verify --json` returns one object per install: `miner`, `version`, `path`,
-`status` (`ok`, `missing`, `not_a_file`, `not_executable` or `not_recorded`),
+`status` (`ok`, `missing`, `not_a_file`, `not_executable`, `not_readable` or
+`not_recorded`),
 `exists`, `is_file`, `executable`, `readable`, `recorded_sha256`,
 `sha256_verified` and a localized `message`. `recorded_sha256` is the digest
 stored at install time or `null`; the verifier never hashes a file to invent one.
@@ -197,9 +198,10 @@ gdbus call --session --dest io.github.nayvok.Trommel.Daemon \
 
 Methods, properties and signals are listed in
 [architecture.md](architecture.md#status-contract) and
-[components.md](components.md). Always pass `ApplyConfig` mode; `SetConfig` is
-a compatibility wrapper that restarts a running miner. `Refresh()` is safe to
-poll; `Status()` returns the last snapshot.
+[components.md](components.md). Always pass an explicit `ApplyConfig` mode.
+`SetConfig` is a compatibility wrapper that applies live and refuses a change
+that needs a restart, so a running miner is never restarted silently.
+`Refresh()` is safe to poll; `Status()` returns the last snapshot.
 
 ## Things an agent must not do
 

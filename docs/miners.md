@@ -152,11 +152,13 @@ Rules:
   id has no capability and therefore cannot take part in a partial rig.
 - A device flag in the preset's `extra_args` is rejected when Trommel supplies
   the list: two contradictory selections are not a supported configuration.
-- The indices follow the `nvidia-smi` order shown on the dashboard. For an
-  explicit CUDA list the supervisor sets `CUDA_DEVICE_ORDER=PCI_BUS_ID` unless
-  `preset.env` overrides it, so CUDA enumeration matches `nvidia-smi`. WildRig
-  uses OpenCL, which enumerates in PCI order. A heterogeneous/reordered rig is
-  still verified best with a real benchmark.
+- The indices follow the `nvidia-smi` order shown on the dashboard. When an
+  explicit list is passed, the supervisor sets `CUDA_DEVICE_ORDER=PCI_BUS_ID`
+  for the miner process unless `preset.env` overrides it, so CUDA enumeration
+  matches the `nvidia-smi` indices. The variable is inert for OpenCL miners such
+  as WildRig, whose device order is not guaranteed to match PCI order; a
+  heterogeneous or reordered rig is verified best with a real benchmark. When
+  every card participates no list is passed and the variable is not set.
 - A card excluded now but tuned by an earlier restore-off session is returned
   to its snapshot before the new session starts. Snapshot, Stop, shutdown and
   emergency-stop cover only the participating, tuned cards.

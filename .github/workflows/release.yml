@@ -4,8 +4,10 @@ on:
   push:
     tags: ['v*']
 
+# The token stays read-only everywhere except the job that publishes the
+# release, so the test jobs (and the reusable UI workflow) cannot write.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   ui:
@@ -31,8 +33,15 @@ jobs:
     needs: [ui, msrv]
     runs-on: ubuntu-latest
     container: ubuntu:26.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # check-version.sh proves that the pushed tag is annotated and points
+          # at HEAD, so the tag object must be present in the clone.
+          fetch-depth: 0
+          fetch-tags: true
       - name: Install dependencies
         run: |
           apt-get update
@@ -45,7 +54,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Check version and tag
-        run: ./scripts/check-version.sh "$GITHUB_REF_NAME"
+        run: ./scripts/check-version.sh
       - name: Check secrets
         run: ./scripts/check-no-secrets.sh
       - name: Check docs

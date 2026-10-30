@@ -1,7 +1,7 @@
 # Security policy
 
-Please report vulnerabilities privately to the maintainer (see the GitHub
-profile) rather than in a public issue. Include reproduction steps, the affected
+Please report vulnerabilities privately to the maintainer at
+`yanyushkov@gmail.com` rather than in a public issue. Include reproduction steps, the affected
 version, and whether the polkit helper, a miner binary or the D-Bus service is
 involved.
 

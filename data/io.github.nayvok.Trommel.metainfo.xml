@@ -90,6 +90,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.8.2" date="2026-10-30">
+      <description>
+        <p>Maintenance release: the D-Bus SetConfig wrapper applies live and never restarts a running miner silently; installed versions sort numerically and an update is offered only for a newer catalogue build; an unreadable binary has its own status; the release bundle verifies from its own version, CI requires an annotated tag and limits the write token to the publishing job; the Debian build remaps paths safely and the docs and RPM template are current. No new features or schema changes.</p>
+        <p xml:lang="ru">Сопроводительный релиз: обёртка D-Bus SetConfig применяет конфиг live и больше не перезапускает майнер молча; установленные версии сортируются численно, обновление предлагается только на более новую сборку каталога; недоступный для чтения бинарник имеет отдельный статус; релизный бандл проверяется по собственной версии, CI требует annotated-тег и ограничивает write-токен публикующим job; сборка deb безопасно перемапливает пути, документация и шаблон RPM актуальны. Новых функций и изменений схемы нет.</p>
+      </description>
+    </release>
     <release version="0.8.1" date="2026-10-30">
       <description>
         <p>Safety release for the miner lifecycle: a scheduled restart is cancelled when a manual miner appears during the backoff; a legacy state without the recorded binary path is never signalled by name; every SIGTERM/SIGKILL re-checks the kernel start time and the helper lease; the guard restores stock before it is disarmed and is reported only after its ready marker; removing a miner version uses one config snapshot and surfaces save errors; install-time verification facts and v1 profiles without GPU fields are no longer rewritten; the Debian package no longer pulls GNOME Shell or libglib2.0-bin.</p>

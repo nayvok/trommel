@@ -12,6 +12,7 @@
 //! invented: a report only echoes the SHA-256 recorded at install time, and
 //! `None` means the install was recorded without one.
 
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -36,6 +37,8 @@ pub enum BinaryStatus {
     NotAFile,
     /// The file exists but no execute bit is set.
     NotExecutable,
+    /// The file has an execute bit but cannot be opened for reading.
+    NotReadable,
 }
 
 impl BinaryStatus {
@@ -52,6 +55,7 @@ impl BinaryStatus {
             Self::Missing => "missing",
             Self::NotAFile => "not_a_file",
             Self::NotExecutable => "not_executable",
+            Self::NotReadable => "not_readable",
         }
     }
 }
@@ -189,15 +193,20 @@ fn inspect(path: &str) -> (BinaryStatus, bool, bool, bool, bool) {
     #[cfg(not(unix))]
     let executable = true;
     let readable = std::fs::File::open(path).is_ok();
-    let status = if !executable {
+    let status = binary_status(executable, readable);
+    (status, true, true, executable, readable)
+}
+
+/// Classify a regular file by the two properties `inspect` can observe.
+fn binary_status(executable: bool, readable: bool) -> BinaryStatus {
+    if !executable {
         BinaryStatus::NotExecutable
     } else if !readable {
         // A file we cannot open is not usable even with the execute bit.
-        BinaryStatus::NotExecutable
+        BinaryStatus::NotReadable
     } else {
         BinaryStatus::Ok
-    };
-    (status, true, true, executable, readable)
+    }
 }
 
 fn verify_install(install: &MinerInstall) -> VerifyReport {
@@ -237,9 +246,14 @@ fn verify_install(install: &MinerInstall) -> VerifyReport {
         ),
         BinaryStatus::NotExecutable => format!(
             "{} {}",
+            tr("The binary is not executable:", "Бинарник не исполняем:"),
+            install.path
+        ),
+        BinaryStatus::NotReadable => format!(
+            "{} {}",
             tr(
-                "The binary is not executable or not readable:",
-                "Бинарник не исполняем или недоступен для чтения:"
+                "The binary is not readable:",
+                "Бинарник недоступен для чтения:"
             ),
             install.path
         ),
@@ -291,7 +305,11 @@ pub fn verify(cfg: &Config, miner: &str, version: &str) -> VerifyReport {
 /// binary disappeared are included so the diagnostics bundle shows them.
 pub fn verify_all(cfg: &Config) -> Vec<VerifyReport> {
     let mut reports: Vec<VerifyReport> = cfg.miner_installs.values().map(verify_install).collect();
-    reports.sort_by(|a, b| (&a.miner, &a.version).cmp(&(&b.miner, &b.version)));
+    reports.sort_by(|a, b| {
+        a.miner
+            .cmp(&b.miner)
+            .then_with(|| version_cmp(&a.version, &b.version))
+    });
     reports
 }
 
@@ -331,6 +349,47 @@ pub fn presets_for_miner(cfg: &Config, miner: &str) -> Vec<PresetUsage> {
     users
 }
 
+/// Natural order for dotted version strings: numeric runs compare as numbers,
+/// so `0.51.10` sorts after `0.51.9`. Non-numeric parts compare byte-wise.
+pub fn version_cmp(a: &str, b: &str) -> Ordering {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        if a[i].is_ascii_digit() && b[j].is_ascii_digit() {
+            let a_start = i;
+            while i < a.len() && a[i].is_ascii_digit() {
+                i += 1;
+            }
+            let b_start = j;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            let a_run = trim_zeros(&a[a_start..i]);
+            let b_run = trim_zeros(&b[b_start..j]);
+            let order = a_run.len().cmp(&b_run.len()).then_with(|| a_run.cmp(b_run));
+            if order != Ordering::Equal {
+                return order;
+            }
+        } else {
+            let order = a[i].cmp(&b[j]);
+            if order != Ordering::Equal {
+                return order;
+            }
+            i += 1;
+            j += 1;
+        }
+    }
+    (a.len() - i).cmp(&(b.len() - j))
+}
+
+fn trim_zeros(run: &[u8]) -> &[u8] {
+    let first = run
+        .iter()
+        .position(|byte| *byte != b'0')
+        .unwrap_or(run.len());
+    &run[first..]
+}
+
 /// Every recorded version for one miner, including a missing binary.
 pub fn installed(cfg: &Config, miner: &str) -> Vec<InstalledVersion> {
     let mut versions: Vec<InstalledVersion> = cfg
@@ -353,7 +412,7 @@ pub fn installed(cfg: &Config, miner: &str) -> Vec<InstalledVersion> {
             }
         })
         .collect();
-    versions.sort_by(|a, b| a.version.cmp(&b.version));
+    versions.sort_by(|a, b| version_cmp(&a.version, &b.version));
     versions
 }
 
@@ -370,7 +429,11 @@ pub fn all_installed(cfg: &Config) -> Vec<InstalledVersion> {
         .into_iter()
         .flat_map(|miner| installed(cfg, &miner))
         .collect();
-    versions.sort_by(|a, b| (&a.miner, &a.version).cmp(&(&b.miner, &b.version)));
+    versions.sort_by(|a, b| {
+        a.miner
+            .cmp(&b.miner)
+            .then_with(|| version_cmp(&a.version, &b.version))
+    });
     versions
 }
 
@@ -407,7 +470,10 @@ pub fn update_plan(cfg: &Config, miner: &str, target_version: &str) -> UpdatePla
     let latest = latest_version(miner);
     let offered = latest
         .as_ref()
-        .map(|version| version != target_version && !installed_versions.contains(version))
+        .map(|version| {
+            version_cmp(version, target_version) == Ordering::Greater
+                && !installed_versions.contains(version)
+        })
         .unwrap_or(false);
     let mut affected: Vec<PresetUsage> = cfg
         .presets
@@ -941,6 +1007,51 @@ mod tests {
         assert_eq!(gone.status, BinaryStatus::NotRecorded);
         assert_eq!(gone.recorded_sha256, None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn binary_status_separates_permission_from_readability() {
+        assert_eq!(binary_status(true, true), BinaryStatus::Ok);
+        assert_eq!(binary_status(false, true), BinaryStatus::NotExecutable);
+        assert_eq!(binary_status(true, false), BinaryStatus::NotReadable);
+        assert_eq!(binary_status(false, false), BinaryStatus::NotExecutable);
+        assert_eq!(BinaryStatus::NotReadable.as_str(), "not_readable");
+    }
+
+    #[test]
+    fn versions_compare_numerically() {
+        assert_eq!(version_cmp("0.51.9", "0.51.10"), Ordering::Less);
+        assert_eq!(version_cmp("0.51.10", "0.51.9"), Ordering::Greater);
+        assert_eq!(version_cmp("0.51.9", "0.51.9"), Ordering::Equal);
+        assert_eq!(version_cmp("1.0.0", "0.99.99"), Ordering::Greater);
+        assert_eq!(version_cmp("0.09", "0.9"), Ordering::Equal);
+    }
+
+    #[test]
+    fn installed_versions_sort_numerically() {
+        let root = temp_root("numeric-order");
+        let mut cfg = Config::default();
+        cfg.add_install(binary(&root, "wildrig", "0.51.10", 0o755));
+        cfg.add_install(binary(&root, "wildrig", "0.51.9", 0o755));
+        let versions = installed(&cfg, "wildrig");
+        assert_eq!(versions[0].version, "0.51.9");
+        assert_eq!(versions[1].version, "0.51.10");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn update_plan_only_offers_a_newer_catalogue_version() {
+        let latest = latest_version("wildrig").expect("wildrig is catalogued");
+        let cfg = Config::default();
+        let older = update_plan(&cfg, "wildrig", "0.0.1");
+        assert!(older.update_available, "0.0.1 is older than {latest}");
+        let newest = update_plan(&cfg, "wildrig", &latest);
+        assert!(
+            !newest.update_available,
+            "the target is the catalogue latest"
+        );
+        let custom = update_plan(&cfg, "wildrig", "99.0.0");
+        assert!(!custom.update_available, "the catalogue has no newer build");
     }
 
     #[test]

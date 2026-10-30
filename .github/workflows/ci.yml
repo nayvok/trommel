@@ -26,6 +26,8 @@ jobs:
         run: ./scripts/check-no-secrets.sh
       - name: Check docs
         run: ./scripts/check-docs.sh
+      - name: Check version
+        run: ./scripts/check-version.sh
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
