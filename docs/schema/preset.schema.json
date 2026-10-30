@@ -3,29 +3,74 @@
   "$id": "https://github.com/nayvok/trommel/docs/schema/preset.schema.json",
   "title": "Trommel preset",
   "type": "object",
-  "required": ["id", "name", "coin", "algo", "miner", "miner_version", "pool", "pool_url", "gpu_profile"],
+  "required": [
+    "id",
+    "name",
+    "coin",
+    "algo",
+    "miner",
+    "miner_version",
+    "pool_url",
+    "gpu"
+  ],
   "properties": {
     "id": {"type": "string", "minLength": 1},
     "name": {"type": "string", "minLength": 1},
     "coin": {"type": "string"},
+    "coin_symbol": {"type": "string"},
+    "coin_name": {"type": "string"},
+    "wallet_prefix": {"type": "string"},
+    "hashrate_unit": {
+      "type": "string",
+      "enum": ["auto", "H/s", "kH/s", "MH/s", "GH/s", "TH/s", "PH/s"]
+    },
     "algo": {"type": "string"},
     "miner": {"type": "string"},
     "miner_version": {"type": "string"},
-    "pool": {"type": "string"},
-    "pool_url": {"type": "string", "pattern": ":"},
+    "pool_url": {"type": "string"},
+    "pool_fee_pct": {"type": "number", "minimum": 0, "maximum": 100},
+    "pool_api_url": {"type": "string"},
     "wallet": {"type": "string"},
     "worker": {"type": "string"},
-    "gpu_profile": {"type": "string"},
+    "gpu": {"$ref": "#/$defs/gpuProfile"},
     "api_port": {"type": "integer", "minimum": 0, "maximum": 65535},
     "expected_hashrate": {"type": ["number", "null"]},
     "miner_options": {"type": "object"},
-    "miner_fee_override_pct": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+    "miner_fee_override_pct": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 100
+    },
     "miner_fee_pct": {"type": "number", "minimum": 0, "maximum": 100},
-    "pool_fee_pct": {"type": "number", "minimum": 0, "maximum": 100},
     "extra_args": {"type": "string"},
     "env": {"type": "object", "additionalProperties": {"type": "string"}},
     "created_at": {"type": "integer", "minimum": 0},
     "updated_at": {"type": "integer", "minimum": 0}
+  },
+  "$defs": {
+    "gpuTuning": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "power_limit_w": {"type": ["integer", "null"], "minimum": 0},
+        "core_clock_mhz": {"type": ["integer", "null"], "minimum": 0},
+        "memory_clock_mhz": {"type": ["integer", "null"], "minimum": 0},
+        "custom": {"type": "boolean"},
+        "gpu_preset": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "gpuProfile": {
+      "type": "object",
+      "properties": {
+        "default": {"$ref": "#/$defs/gpuTuning"},
+        "per_gpu": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/gpuTuning"}
+        }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": true
 }

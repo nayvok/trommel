@@ -5,6 +5,46 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+### Added — preset-scoped GPU settings and schema v4
+
+- **Each mining preset now owns its GPU settings.** The shared `gpu_profiles`
+  map is gone; a preset carries its per-card participation, power limit and
+  clock locks. Switching the active preset switches the GPU setup, and a new
+  preset starts from stock.
+- **Named GPU presets.** A card's Tune dialog can save, apply, rename and delete
+  reusable per-card tuning templates. Deleting a mining preset keeps them.
+- **First run without Quick setup.** A fresh config has no preset. The dashboard
+  offers **Create preset**; Start explains the same thing and opens the preset
+  editor. The old wizard no longer exists.
+- **Coins and manual pools.** The preset editor chooses a coin filtered by the
+  selected miner's advertised algorithms (with a custom-coin path), enters the
+  pool address by hand and can point at a documented JSON pool API. The pool
+  dropdown is gone; a known host only supplies a fee hint and API template.
+- **Per-coin hashrate units.** The hero and CLI use the coin's preferred unit
+  (`TH/s`, `MH/s`, …) with automatic scaling when the value is far away.
+- **Miner capabilities.** Catalogue drivers, API flags, per-algorithm fees and
+  optional `--list-algorithms`/`--help` probing replace per-miner Rust branches.
+  Arbitrary newer miner versions can be installed without an app update.
+- **Report issue.** Error details and Settings can open a prefilled GitHub issue
+  with redacted diagnostics.
+
+### Changed
+
+- **Cancel in the GPU tuning dialog is a real cancel.** Stock and GPU-preset
+  choices only change the dialog; Save is the only action that writes to the
+  draft. “Recommended” and the immediate “Profile default” action are removed.
+- **Temperature limit and resume are global** in `behavior`, not per GPU preset.
+- **One active miner remains.** All supported miners can use several GPUs; the
+  per-card data is ready for a future multi-session design.
+- The dashboard replaces the Totals group with an Active preset row and a single
+  Pool and shares group.
+
+### Migration
+
+- v1/v2/v3 configs are migrated on first load: each preset embeds the GPU
+  profile it referenced; unreferenced profiles are dropped. The changelog note
+  is intentional: named v3 profiles were never selectable from the GUI.
+
 ### Added
 
 - **New Adwaita app icon and tray artwork.** The main icon is installed as a

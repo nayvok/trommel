@@ -174,9 +174,11 @@ fn call_tool(params: &Value, allow_write: bool) -> Result<Value, String> {
                         "name": preset.name,
                         "active": cfg.active_preset.as_deref() == Some(preset.id.as_str()),
                         "coin": preset.coin,
+                        "coin_symbol": preset.symbol(),
                         "algo": preset.algo,
                         "miner": preset.miner,
                         "version": preset.miner_version,
+                        "pool_url": preset.pool_url,
                         "total_fee_pct": preset.total_fee_pct(),
                     })
                 })

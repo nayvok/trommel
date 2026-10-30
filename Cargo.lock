@@ -1878,6 +1878,7 @@ version = "0.8.2"
 dependencies = [
  "anyhow",
  "flate2",
+ "percent-encoding",
  "serde",
  "serde_json",
  "sha2",

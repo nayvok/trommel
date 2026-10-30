@@ -114,34 +114,41 @@ chmod +x "$WORK/bin/wildrig-multi"
 python3 - "$WORK" <<'PY'
 import json, pathlib, sys
 work = pathlib.Path(sys.argv[1])
-cfg = {
-  "schema_version": 3, "active_preset": "pearl-wildrig",
-  "presets": {"pearl-wildrig": {
-    "id":"pearl-wildrig","name":"Pearl · WildRig","coin":"pearl","algo":"pearlhash",
-    "miner":"wildrig","miner_version":"0.51.8","pool":"pearlhash",
-    "pool_url":"pool.pearlhash.xyz:9000","wallet":"prl1testwallet","worker":"e2e",
-    "gpu_profile":"balanced","api_port":0,"expected_hashrate":125e12,
-    "miner_options":{"fan_speed":70},"miner_fee_override_pct":None,"miner_fee_pct":0.0,
-    "pool_fee_pct":1.0,"extra_args":"","env":{},"created_at":0,"updated_at":0},
-    "second": {
-    "id":"second","name":"Second","coin":"pearl","algo":"pearlhash",
-    "miner":"wildrig","miner_version":"0.51.8","pool":"pearlhash",
-    "pool_url":"pool.pearlhash.xyz:9000","wallet":"prl1testwallet","worker":"e2e2",
-    "gpu_profile":"balanced","api_port":0,"expected_hashrate":125e12,
-    "miner_options":{},"miner_fee_override_pct":None,"miner_fee_pct":0.0,
-    "pool_fee_pct":1.0,"extra_args":"","env":{},"created_at":0,"updated_at":0}},
-  "gpu_profiles": {"balanced": {"name":"Balanced","default":{"enabled":True,"power_limit_w":300,
-    "core_clock_mhz":1620,"memory_clock_mhz":810,"fan_pct":None,"temp_limit_c":90,"temp_resume_c":65},
+gpu = {"default":{"enabled":True,"power_limit_w":300,
+    "core_clock_mhz":1620,"memory_clock_mhz":810},
     "per_gpu":{
       "GPU-11111111-1111-1111-1111-111111111111": {"enabled":True,"custom":False},
       "GPU-22222222-2222-2222-2222-222222222222": {"enabled":True,"custom":True,
         "power_limit_w":130,"core_clock_mhz":1500,"memory_clock_mhz":750}
-    }}},
+    }}
+cfg = {
+  "schema_version": 4, "active_preset": "pearl-wildrig",
+  "presets": {"pearl-wildrig": {
+    "id":"pearl-wildrig","name":"Pearl · WildRig","coin":"pearl",
+    "coin_symbol":"PRL","coin_name":"Pearl","wallet_prefix":"prl1","hashrate_unit":"TH/s",
+    "algo":"pearlhash",
+    "miner":"wildrig","miner_version":"0.51.8",
+    "pool_url":"pool.pearlhash.xyz:9000","pool_fee_pct":1.0,"pool_api_url":"",
+    "wallet":"prl1testwallet","worker":"e2e",
+    "gpu":gpu,"api_port":0,"expected_hashrate":125e12,
+    "miner_options":{"fan_speed":70},"miner_fee_override_pct":None,"miner_fee_pct":0.0,
+    "extra_args":"","env":{},"created_at":0,"updated_at":0},
+    "second": {
+    "id":"second","name":"Second","coin":"pearl",
+    "coin_symbol":"PRL","coin_name":"Pearl","wallet_prefix":"prl1","hashrate_unit":"TH/s",
+    "algo":"pearlhash",
+    "miner":"wildrig","miner_version":"0.51.8",
+    "pool_url":"pool.pearlhash.xyz:9000","pool_fee_pct":1.0,"pool_api_url":"",
+    "wallet":"prl1testwallet","worker":"e2e2",
+    "gpu":gpu,"api_port":0,"expected_hashrate":125e12,
+    "miner_options":{},"miner_fee_override_pct":None,"miner_fee_pct":0.0,
+    "extra_args":"","env":{},"created_at":0,"updated_at":0}},
+  "gpu_presets": {},
   "miner_installs": {"wildrig@0.51.8": {"miner":"wildrig","version":"0.51.8",
     "path":str(work/"bin"/"wildrig-multi"),"sha256":"","source_url":"","verified":False,"custom":True,"installed_at":0}},
-  "custom_miners": {}, "pools": {},
   "behavior": {"auto_restart":True,"restart_delay_s":2,"poll_interval_s":1,
-    "restore_stock_on_stop":True,"start_mining_on_login":False,"notifications":True,"language":"en"}
+    "restore_stock_on_stop":True,"start_mining_on_login":False,"notifications":True,
+    "language":"en","temp_limit_c":90,"temp_resume_c":65}
 }
 (work/"config"/"trommel"/"config.json").write_text(json.dumps(cfg, indent=2))
 PY
@@ -216,7 +223,7 @@ JSON=$("$BIN/trommel" status --json 2>/dev/null)
 echo "$JSON" | python3 -c '
 import json,sys
 s=json.load(sys.stdin)
-assert s["contract_version"]==3
+assert s["contract_version"]==4
 assert len(s["gpus"])==2, s["gpus"]
 assert s["miner_info"]["id"]=="wildrig"
 assert s["miner_info"]["total_fee_pct"]==1.0
@@ -300,7 +307,7 @@ cfg = json.loads(path.read_text())
 # The apply-and-restart test above activated the second preset; the
 # participation checks below edit the main one.
 cfg["active_preset"] = "pearl-wildrig"
-cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = False
+cfg["presets"]["pearl-wildrig"]["gpu"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = False
 path.write_text(json.dumps(cfg, indent=2))
 PY
 "$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
@@ -359,7 +366,7 @@ import json, pathlib, sys
 path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
 cfg = json.loads(path.read_text())
 cfg["behavior"]["restore_stock_on_stop"] = False
-cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = True
+cfg["presets"]["pearl-wildrig"]["gpu"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = True
 path.write_text(json.dumps(cfg, indent=2))
 PY
 "$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
@@ -379,7 +386,7 @@ python3 - "$WORK" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
 cfg = json.loads(path.read_text())
-cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = False
+cfg["presets"]["pearl-wildrig"]["gpu"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = False
 path.write_text(json.dumps(cfg, indent=2))
 PY
 "$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
@@ -406,7 +413,7 @@ import json, pathlib, sys
 path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
 cfg = json.loads(path.read_text())
 cfg["behavior"]["restore_stock_on_stop"] = True
-cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = True
+cfg["presets"]["pearl-wildrig"]["gpu"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = True
 path.write_text(json.dumps(cfg, indent=2))
 PY
 "$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
@@ -422,7 +429,7 @@ python3 - "$WORK" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
 cfg = json.loads(path.read_text())
-cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = False
+cfg["presets"]["pearl-wildrig"]["gpu"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = False
 path.write_text(json.dumps(cfg, indent=2))
 PY
 "$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
@@ -457,7 +464,7 @@ python3 - "$WORK" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
 cfg = json.loads(path.read_text())
-cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = True
+cfg["presets"]["pearl-wildrig"]["gpu"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = True
 path.write_text(json.dumps(cfg, indent=2))
 PY
 "$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
@@ -473,7 +480,7 @@ cfg = json.loads(path.read_text())
 preset = cfg["presets"]["pearl-wildrig"]
 preset["miner"] = "custom-b2"
 preset["miner_version"] = "1.0.0"
-cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = False
+cfg["presets"]["pearl-wildrig"]["gpu"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = False
 path.write_text(json.dumps(cfg, indent=2))
 PY
 "$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
@@ -496,7 +503,7 @@ cfg = json.loads(path.read_text())
 preset = cfg["presets"]["pearl-wildrig"]
 preset["miner"] = "wildrig"
 preset["miner_version"] = "0.51.8"
-cfg["gpu_profiles"]["balanced"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = True
+cfg["presets"]["pearl-wildrig"]["gpu"]["per_gpu"]["GPU-22222222-2222-2222-2222-222222222222"]["enabled"] = True
 cfg.get("miner_installs", {}).pop("custom-b2@1.0.0", None)
 path.write_text(json.dumps(cfg, indent=2))
 PY
@@ -562,7 +569,7 @@ assert versions[0]["status"] == "ok", versions
     && pass "diagnostics report the installed version state" || fail "diagnostics version report"
 
 step "Config and migration sanity"
-"$BIN/trommel" config get | python3 -c 'import json,sys; c=json.load(sys.stdin); assert c["schema_version"]==3; assert c["active_preset"]=="pearl-wildrig"' && pass "config v3 is active" || fail "config v3"
+"$BIN/trommel" config get | python3 -c 'import json,sys; c=json.load(sys.stdin); assert c["schema_version"]==4; assert c["active_preset"]=="pearl-wildrig"' && pass "config v4 is active" || fail "config v4"
 
 step "Diagnostics redaction"
 if "$BIN/trommel" diagnose --json > "$WORK/diagnostics.json" 2>/dev/null \

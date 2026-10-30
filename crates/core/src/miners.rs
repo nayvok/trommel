@@ -3,21 +3,16 @@
 //! Core arguments are driver-specific; everything else comes from the
 //! catalogue's option descriptors and the preset's `miner_options` map. No
 //! shell is involved: the supervisor spawns the binary directly.
+//!
+//! v4 moves the driver, API flags and per-algorithm fee into the catalogue so a
+//! community miner with the generic shape is data-only.
 
 use std::path::Path;
 
-use crate::catalog;
-use crate::config::{Config, GpuProfile, Preset};
+use crate::catalog::{self, MinerDriver};
+use crate::config::{Config, Preset};
 use crate::i18n::tr;
 use crate::nvidia::GpuStats;
-
-/// Resolve the GPU profile used by the preset for temperature/fan defaults.
-fn profile(cfg: &Config, preset: &Preset) -> GpuProfile {
-    cfg.gpu_profiles
-        .get(&preset.gpu_profile)
-        .cloned()
-        .unwrap_or_default()
-}
 
 /// True when the catalogue documents a flag that lets this miner select the
 /// cards it runs on.
@@ -45,14 +40,13 @@ fn unsupported_device_selection(miner_id: &str) -> anyhow::Error {
 /// documented device flag must not be started, because it would silently mine
 /// on the excluded card as well.
 pub fn device_plan(
-    cfg: &Config,
+    _cfg: &Config,
     preset: &Preset,
     gpus: &[GpuStats],
 ) -> anyhow::Result<Option<Vec<u32>>> {
-    let gpu_profile = profile(cfg, preset);
     let participating: Vec<u32> = gpus
         .iter()
-        .filter(|gpu| gpu_profile.tuning_for(&gpu.uuid).enabled)
+        .filter(|gpu| preset.gpu.tuning_for(&gpu.uuid).enabled)
         .map(|gpu| gpu.index)
         .collect();
     if participating.len() == gpus.len() {
@@ -114,12 +108,14 @@ pub fn build_args_with_devices(
     devices: Option<&[u32]>,
 ) -> anyhow::Result<Vec<String>> {
     let log = log_file.to_string_lossy().into_owned();
-    let gpu = profile(cfg, preset);
-    let temp_limit = gpu.default.temp_limit_c;
-    let temp_resume = gpu.default.temp_resume_c;
     let miner = catalog::miner(&preset.miner);
-    let mut args = match preset.miner.as_str() {
-        "srbminer" => {
+    let driver = miner.map(|miner| miner.driver).unwrap_or_default();
+    let temp_limit = cfg.behavior.temp_limit_c;
+    let temp_resume = cfg.behavior.temp_resume_c;
+    let api_port = preset.effective_api_port();
+
+    let mut args = match driver {
+        MinerDriver::Srbminer => {
             let mut args: Vec<String> = vec![
                 "--algorithm".into(),
                 preset.algo.clone(),
@@ -130,20 +126,10 @@ pub fn build_args_with_devices(
                 "--password".into(),
                 "x".into(),
             ];
-            if preset.api_port > 0 {
-                args.extend([
-                    "--api-enable".into(),
-                    "--api-port".into(),
-                    preset.api_port.to_string(),
-                ]);
-                if !preset.worker.is_empty() {
-                    args.extend(["--api-rig-name".into(), preset.worker.clone()]);
-                }
-            }
             args.extend(["--log-file".into(), log]);
             args
         }
-        "onezero" => {
+        MinerDriver::Onezero => {
             let mut args: Vec<String> = vec![
                 "-a".into(),
                 preset.algo.clone(),
@@ -158,7 +144,7 @@ pub fn build_args_with_devices(
             args
         }
         // WildRig and the generic custom driver.
-        _ => {
+        MinerDriver::Generic => {
             let mut args: Vec<String> = vec![
                 "--algo".into(),
                 preset.algo.clone(),
@@ -169,12 +155,6 @@ pub fn build_args_with_devices(
             ];
             if !preset.worker.is_empty() {
                 args.extend(["--worker".into(), preset.worker.clone()]);
-            }
-            if preset.api_port > 0 {
-                args.extend(["--api-port".into(), preset.api_port.to_string()]);
-                if !preset.worker.is_empty() {
-                    args.extend(["--api-worker-id".into(), preset.worker.clone()]);
-                }
             }
             args.extend([
                 "--log-file".into(),
@@ -191,15 +171,19 @@ pub fn build_args_with_devices(
         }
     };
 
+    append_api_args(&mut args, miner, preset, api_port);
+
     if let Some(devices) = devices {
         args.extend(render_device_args(miner, &preset.miner, devices)?);
     }
 
     if let Some(miner) = miner {
         append_options(&mut args, miner, preset);
-        if miner.fee_configurable && !miner.fee_flag.is_empty() {
-            if let Some(fee) = preset.miner_fee_override_pct {
-                args.extend([miner.fee_flag.clone(), format!("{fee}")]);
+        let fee = miner.fee_for(&preset.algo);
+        if fee.configurable && !fee.flag.is_empty() {
+            if let Some(override_pct) = preset.miner_fee_override_pct {
+                args.push(fee.flag);
+                args.push(override_pct.to_string());
             }
         }
     }
@@ -238,6 +222,45 @@ pub fn build_args_with_devices(
     }
 
     Ok(args)
+}
+
+/// Append the documented local-API flags. This is catalogue data; adding a new
+/// miner with the same shape needs no Rust branch.
+fn append_api_args(
+    args: &mut Vec<String>,
+    miner: Option<&catalog::MinerDef>,
+    preset: &Preset,
+    api_port: u16,
+) {
+    if api_port == 0 {
+        return;
+    }
+    let (port_flag, enable_flag, worker_flag, worker) = match miner {
+        Some(miner) => (
+            miner.api_port_flag.as_str(),
+            miner.api_enable_flag.as_str(),
+            miner.api_worker_flag.as_str(),
+            if miner.api_worker_flag.is_empty() {
+                ""
+            } else {
+                preset.worker.as_str()
+            },
+        ),
+        // A custom/imported miner has no catalogue entry. Keep the historical
+        // generic API shape when the user explicitly set a port.
+        None => ("--api-port", "", "", ""),
+    };
+    if !enable_flag.is_empty() {
+        args.push(enable_flag.to_string());
+    }
+    if !port_flag.is_empty() {
+        args.push(port_flag.to_string());
+        args.push(api_port.to_string());
+    }
+    if !worker_flag.is_empty() && !worker.is_empty() {
+        args.push(worker_flag.to_string());
+        args.push(worker.to_string());
+    }
 }
 
 fn append_options(args: &mut Vec<String>, miner: &catalog::MinerDef, preset: &Preset) {
@@ -299,11 +322,13 @@ fn endpoint_wallet(wallet: &str, worker: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, Preset};
+    use crate::config::{Config, GpuTuning, Preset};
 
     fn cfg_and_preset() -> (Config, Preset) {
-        let cfg = Config::default();
-        let preset = cfg.preset().unwrap().clone();
+        let mut cfg = Config::default();
+        let preset = Preset::new_pearl();
+        cfg.presets.insert(preset.id.clone(), preset.clone());
+        cfg.active_preset = Some(preset.id.clone());
         (cfg, preset)
     }
 
@@ -379,10 +404,12 @@ mod tests {
         assert!(contains_pair(&args, "--algorithm", "pearlhash"));
         assert!(contains_pair(&args, "--wallet", ".3080ti"));
         assert!(args.contains(&"--api-enable".to_string()));
+        assert!(contains_pair(&args, "--api-port", "21550"));
+        assert!(contains_pair(&args, "--api-rig-name", "3080ti"));
     }
 
     #[test]
-    fn onezero_uses_short_flags() {
+    fn onezero_uses_short_flags_and_default_api_port() {
         let (cfg, mut preset) = cfg_and_preset();
         preset.miner = "onezero".into();
         preset.miner_version = "1.2.0".into();
@@ -390,6 +417,24 @@ mod tests {
         let args = args(&cfg, &preset);
         assert_eq!(args[0], "-a");
         assert!(contains_pair(&args, "-w", "3080ti"));
+        assert!(contains_pair(&args, "--api-port", "3001"));
+    }
+
+    #[test]
+    fn explicit_api_port_overrides_the_catalogue_default() {
+        let (cfg, mut preset) = cfg_and_preset();
+        preset.api_port = 5555;
+        let args = args(&cfg, &preset);
+        assert!(contains_pair(&args, "--api-port", "5555"));
+    }
+
+    #[test]
+    fn zero_api_port_disables_the_api() {
+        let (cfg, mut preset) = cfg_and_preset();
+        preset.api_port = 0;
+        preset.miner = "private-build".into();
+        let args = args(&cfg, &preset);
+        assert!(!args.iter().any(|arg| arg == "--api-port"));
     }
 
     #[test]
@@ -448,8 +493,7 @@ mod tests {
 
     #[test]
     fn all_cards_participating_needs_no_device_flag() {
-        let cfg = Config::default();
-        let preset = cfg.preset().unwrap().clone();
+        let (cfg, preset) = cfg_and_preset();
         let gpus = [gpu(0, "GPU-a"), gpu(1, "GPU-b")];
         assert_eq!(device_plan(&cfg, &preset, &gpus).unwrap(), None);
         let args = args(&cfg, &preset);
@@ -458,19 +502,15 @@ mod tests {
 
     #[test]
     fn one_excluded_card_produces_an_explicit_list() {
-        let mut cfg = Config::default();
-        cfg.gpu_profiles
-            .get_mut("balanced")
-            .unwrap()
-            .per_gpu
-            .insert(
-                "GPU-b".into(),
-                crate::config::GpuTuning {
-                    enabled: false,
-                    ..Default::default()
-                },
-            );
-        let preset = cfg.preset().unwrap().clone();
+        let (mut cfg, mut preset) = cfg_and_preset();
+        preset.gpu.per_gpu.insert(
+            "GPU-b".into(),
+            GpuTuning {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        cfg.presets.insert(preset.id.clone(), preset.clone());
         let gpus = [gpu(0, "GPU-a"), gpu(1, "GPU-b")];
         assert_eq!(
             device_plan(&cfg, &preset, &gpus).unwrap(),
@@ -481,13 +521,9 @@ mod tests {
 
     #[test]
     fn every_card_excluded_is_an_error() {
-        let mut cfg = Config::default();
-        cfg.gpu_profiles
-            .get_mut("balanced")
-            .unwrap()
-            .default
-            .enabled = false;
-        let preset = cfg.preset().unwrap().clone();
+        let (mut cfg, mut preset) = cfg_and_preset();
+        preset.gpu.default.enabled = false;
+        cfg.presets.insert(preset.id.clone(), preset.clone());
         let gpus = [gpu(0, "GPU-a"), gpu(1, "GPU-b")];
         let err = device_plan(&cfg, &preset, &gpus).unwrap_err();
         assert!(!err.to_string().is_empty());
@@ -495,20 +531,16 @@ mod tests {
 
     #[test]
     fn an_unsupported_miner_is_refused_instead_of_mining_on_every_card() {
-        let mut cfg = Config::default();
-        cfg.gpu_profiles
-            .get_mut("balanced")
-            .unwrap()
-            .per_gpu
-            .insert(
-                "GPU-b".into(),
-                crate::config::GpuTuning {
-                    enabled: false,
-                    ..Default::default()
-                },
-            );
-        let mut preset = cfg.preset().unwrap().clone();
+        let (mut cfg, mut preset) = cfg_and_preset();
+        preset.gpu.per_gpu.insert(
+            "GPU-b".into(),
+            GpuTuning {
+                enabled: false,
+                ..Default::default()
+            },
+        );
         preset.miner = "private-build".into();
+        cfg.presets.insert(preset.id.clone(), preset.clone());
         let gpus = [gpu(0, "GPU-a"), gpu(1, "GPU-b")];
         let err = device_plan(&cfg, &preset, &gpus).unwrap_err();
         assert!(err.to_string().contains("private-build"), "{err}");

@@ -15,7 +15,9 @@ use futures_util::StreamExt;
 use gtk::{gdk, gio, glib};
 
 use trommel_core::catalog::{self, MinerOption, OptionKind};
-use trommel_core::config::{Appearance, Behavior, ChangeClass, Config, MinerInstall, Preset};
+use trommel_core::config::{
+    Appearance, Behavior, ChangeClass, Config, GpuPreset, GpuTuning, MinerInstall, Preset,
+};
 use trommel_core::dbus::MinerProxy;
 use trommel_core::i18n::{self, tr};
 use trommel_core::nvidia::GpuStats;
@@ -34,7 +36,7 @@ enum Cmd {
         /// (miner install, stock restore) that must not discard user edits.
         quiet: bool,
     },
-    /// Apply a draft and start the miner in one step (quick setup).
+    /// Apply a draft and start the miner in one step (hero Start).
     ApplyStart {
         json: String,
     },
@@ -346,10 +348,12 @@ struct App {
     config: RefCell<Config>,
     applied: RefCell<Config>,
     dirty: Cell<bool>,
+    /// A preset created by New but not saved yet. Cancel removes it again.
+    new_preset_id: RefCell<Option<String>>,
     action_button: gtk::Button,
     action_label: gtk::Label,
     action_icon: gtk::Image,
-    quick_button: gtk::Button,
+    create_button: gtk::Button,
     hero_hashrate: gtk::Label,
     hero_line: gtk::Label,
     hero_meta: gtk::Label,
@@ -358,13 +362,18 @@ struct App {
     total_gpus: adw::ActionRow,
     total_power: adw::ActionRow,
     total_temp: adw::ActionRow,
+    rig_preset: adw::ActionRow,
+    rig_edit: gtk::Button,
     gpu_host: gtk::Box,
     gpu_sig: RefCell<String>,
     /// Rolling GPU metrics behind the sparklines in the cards.
     history: Rc<RefCell<History>>,
     sparklines: RefCell<Vec<SparkEntry>>,
+    shares: adw::ActionRow,
     shares_ok: gtk::Label,
     shares_bad: gtk::Label,
+    shares_stale: gtk::Label,
+    pool_balance_row: adw::ActionRow,
     pool_balance_value: gtk::Label,
     pool_meta: adw::ActionRow,
     warnings: adw::ActionRow,
@@ -499,6 +508,11 @@ fn install_css() {
     }
 }
 
+fn string_list(values: &[String]) -> gtk::StringList {
+    let refs: Vec<&str> = values.iter().map(String::as_str).collect();
+    gtk::StringList::new(&refs)
+}
+
 fn label(text: &str, classes: &[&str]) -> gtk::Label {
     gtk::Label::builder()
         .label(text)
@@ -573,9 +587,8 @@ fn set_page_icon(stack: &adw::ViewStack, child: &impl IsA<gtk::Widget>, icon: &s
 /// runs as the single-instance app and can present a normal running window
 /// instead of rendering its own one. The `screenshot_hooks_cover_every_capture`
 /// test enforces the pairing.
-const SCREENSHOT_HOOKS: [&str; 6] = [
+const SCREENSHOT_HOOKS: [&str; 5] = [
     "TROMMEL_SCREENSHOT",
-    "TROMMEL_WIZARD_SCREENSHOT",
     "TROMMEL_TUNE_SCREENSHOT",
     "TROMMEL_INSTALL_SCREENSHOT",
     "TROMMEL_PRESET_SCREENSHOT",
@@ -810,32 +823,47 @@ fn build_ui(app: &adw::Application) {
     // accessible name from a plain label property; set it explicitly and keep
     // it in sync with the visible text.
     set_action_text(&action_button, &action_label, &tr("Start", "Запустить"));
+    let create_button = gtk::Button::builder()
+        .label(tr("Create preset", "Создать пресет"))
+        .css_classes(["flat", "pill"])
+        .valign(gtk::Align::Center)
+        .visible(false)
+        .build();
     let hero_footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     hero_footer.set_margin_top(2);
     hero_meta.set_hexpand(true);
     hero_meta.set_valign(gtk::Align::Center);
     hero_footer.append(&hero_meta);
+    hero_footer.append(&create_button);
     hero_footer.append(&action_button);
-    // Secondary affordance: the hero already carries the primary Start, and
-    // both paths open the same wizard on an unfinished install.
-    let quick_button = gtk::Button::builder()
-        .label(tr("Quick setup", "Быстрая настройка"))
-        .css_classes(["flat", "pill"])
-        .halign(gtk::Align::Start)
-        .build();
-    quick_button.set_visible(false);
     hero.append(&hero_top);
     hero.append(&hero_line);
     hero.append(&hero_rule);
     hero.append(&hero_footer);
-    hero.append(&quick_button);
     hero_group.add(&hero);
     dashboard_box.append(&hero_group);
 
     let rig_group = adw::PreferencesGroup::builder()
         .title(tr("Rig", "Риг"))
-        .description(tr("Per-GPU live state", "Живое состояние каждой карты"))
+        .description(tr(
+            "Cards in the active mining preset. The switch includes a card in this preset's session; Apply stores the change.",
+            "Карты активного пресета. Переключатель включает карту в сессию этого пресета; изменение сохраняется по Apply.",
+        ))
         .build();
+    let rig_preset = adw::ActionRow::builder()
+        .title(tr("No active preset", "Нет активного пресета"))
+        .subtitle(tr(
+            "Create a preset to choose cards for mining",
+            "Создайте пресет, чтобы выбрать карты для майнинга",
+        ))
+        .build();
+    let rig_edit = gtk::Button::builder()
+        .label(tr("Edit preset", "Изменить пресет"))
+        .css_classes(["flat", "pill"])
+        .valign(gtk::Align::Center)
+        .build();
+    rig_preset.add_suffix(&rig_edit);
+    rig_group.add(&rig_preset);
     let gpu_host = gtk::Box::new(gtk::Orientation::Vertical, 0);
     gpu_host.set_hexpand(true);
     gpu_host.set_margin_top(6);
@@ -843,9 +871,6 @@ fn build_ui(app: &adw::Application) {
     rig_group.add(&gpu_host);
     dashboard_box.append(&rig_group);
 
-    let totals_group = adw::PreferencesGroup::builder()
-        .title(tr("Totals", "Итого"))
-        .build();
     let total_gpus = adw::ActionRow::builder()
         .title(tr("Cards", "Карты"))
         .subtitle("—")
@@ -858,24 +883,23 @@ fn build_ui(app: &adw::Application) {
         .title(tr("Max temperature", "Макс. температура"))
         .subtitle("—")
         .build();
-    totals_group.add(&total_gpus);
-    totals_group.add(&total_power);
-    totals_group.add(&total_temp);
-    dashboard_box.append(&totals_group);
 
     let shares_group = adw::PreferencesGroup::builder()
-        .title(tr("Shares and pool", "Шары и пул"))
+        .title(tr("Pool and shares", "Пул и шары"))
         .build();
     let shares = adw::ActionRow::builder()
         .title(tr("Shares", "Шары"))
         .build();
     let shares_ok = label("0", &["caption", "success"]);
     let shares_bad = label("0", &["caption", "error"]);
+    let shares_stale = label("0", &["caption", "dim-label"]);
     let shares_value = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     shares_value.set_valign(gtk::Align::Center);
     shares_value.append(&shares_ok);
     shares_value.append(&label("/", &["caption", "dim-label"]));
     shares_value.append(&shares_bad);
+    shares_value.append(&label("/", &["caption", "dim-label"]));
+    shares_value.append(&shares_stale);
     shares.add_suffix(&shares_value);
     let pool_balance = adw::ActionRow::builder()
         .title(tr("Pool balance", "Баланс пула"))
@@ -930,10 +954,11 @@ fn build_ui(app: &adw::Application) {
         applied: RefCell::new(cfg.clone()),
         config: RefCell::new(cfg),
         dirty: Cell::new(false),
+        new_preset_id: RefCell::new(None),
         action_button: action_button.clone(),
         action_label: action_label.clone(),
         action_icon: action_icon.clone(),
-        quick_button: quick_button.clone(),
+        create_button: create_button.clone(),
         hero_hashrate,
         hero_line,
         hero_meta,
@@ -942,12 +967,17 @@ fn build_ui(app: &adw::Application) {
         total_gpus,
         total_power,
         total_temp,
+        rig_preset: rig_preset.clone(),
+        rig_edit: rig_edit.clone(),
         gpu_host,
         gpu_sig: RefCell::new(String::new()),
         history: Rc::new(RefCell::new(History::default())),
         sparklines: RefCell::new(Vec::new()),
+        shares: shares.clone(),
         shares_ok,
         shares_bad,
+        shares_stale: shares_stale.clone(),
+        pool_balance_row: pool_balance.clone(),
         pool_balance_value,
         pool_meta,
         warnings,
@@ -1031,13 +1061,6 @@ fn build_ui(app: &adw::Application) {
             } else {
                 schedule_screenshot(window.clone(), path.clone(), application.clone(), 0);
             }
-            glib::ControlFlow::Break
-        });
-    }
-    if std::env::var_os("TROMMEL_OPEN_WIZARD").is_some() {
-        let app_state = app_state.clone();
-        glib::timeout_add_seconds_local(3, move || {
-            quick_setup_wizard(&app_state);
             glib::ControlFlow::Break
         });
     }
@@ -1267,8 +1290,6 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     ] {
         behavior.add(row);
     }
-    behavior.add(&temp_limit);
-    behavior.add(&temp_resume);
     let appearance = adw::ComboRow::builder()
         .title(tr("Appearance", "Оформление"))
         .subtitle(tr(
@@ -1285,6 +1306,32 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     behavior.add(&language);
     behavior.add(&appearance);
     page.add(&behavior);
+
+    let gpu_group = adw::PreferencesGroup::builder()
+        .title(tr("GPU", "GPU"))
+        .description(tr(
+            "Global temperature policy and reusable per-card tuning presets.",
+            "Глобальная температурная политика и переиспользуемые пресеты настройки карт.",
+        ))
+        .build();
+    gpu_group.add(&temp_limit);
+    gpu_group.add(&temp_resume);
+    let presets_row = adw::ActionRow::builder()
+        .title(tr("GPU presets", "Пресеты GPU"))
+        .subtitle(tr(
+            "Per-card power and clock templates; manage or delete them here",
+            "Шаблоны питания и частот для карт; управление и удаление",
+        ))
+        .build();
+    let presets_button = gtk::Button::builder()
+        .label(tr("Manage…", "Управление…"))
+        .css_classes(["flat", "pill"])
+        .valign(gtk::Align::Center)
+        .build();
+    presets_row.add_suffix(&presets_button);
+    gpu_group.add(&presets_row);
+    page.add(&gpu_group);
+    GPU_PRESETS_BUTTON.with(|slot| *slot.borrow_mut() = Some(presets_button));
 
     let actions = adw::PreferencesGroup::builder()
         .title(tr("Actions", "Действия"))
@@ -1311,6 +1358,19 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
         ))
         .build();
     diagnostics_row.add_suffix(&diagnostics);
+    let report = gtk::Button::builder()
+        .label(tr("Report a problem", "Сообщить о проблеме"))
+        .css_classes(["flat", "pill"])
+        .valign(gtk::Align::Center)
+        .build();
+    let report_row = adw::ActionRow::builder()
+        .title(tr("Report an issue", "Сообщить об ошибке"))
+        .subtitle(tr(
+            "Open a prefilled GitHub issue with redacted diagnostics",
+            "Открыть GitHub issue с обезличенной диагностикой",
+        ))
+        .build();
+    report_row.add_suffix(&report);
     let stock = gtk::Button::builder()
         .label(tr("Restore stock", "Вернуть сток"))
         .css_classes(["destructive-action", "pill"])
@@ -1326,10 +1386,12 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     stock_row.add_suffix(&stock);
     actions.add(&save_row);
     actions.add(&diagnostics_row);
+    actions.add(&report_row);
     actions.add(&stock_row);
     page.add(&actions);
     SAVE_SETTINGS_BUTTON.with(|slot| *slot.borrow_mut() = Some(save));
     STOCK_BUTTON.with(|slot| *slot.borrow_mut() = Some(stock));
+    REPORT_BUTTON.with(|slot| *slot.borrow_mut() = Some(report));
 
     (
         page,
@@ -1354,6 +1416,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
 thread_local! {
     static SAVE_SETTINGS_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
     static STOCK_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
+    static GPU_PRESETS_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
+    static REPORT_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
     /// Set while the autostart switch is loaded, so it does not invoke
     /// `systemctl` and does not fight the user's stored choice.
     static DAEMON_AUTOSTART_SYNC: Cell<bool> = const { Cell::new(false) };
@@ -1506,10 +1570,12 @@ fn connect_signals(app: &Rc<App>) {
                 let _ = app.tx.send(Cmd::Toggle);
                 return;
             }
-            // A clean install has a preset but no wallet/miner. Starting it
-            // would only produce a toast; the wizard explains both steps.
-            if needs_setup(&app) {
-                quick_setup_wizard(&app);
+            if app.config.borrow().preset().is_none() {
+                create_preset_alert(&app);
+                return;
+            }
+            if let Some(problem) = preset_setup_problem(&app) {
+                setup_problem_alert(&app, &problem);
                 return;
             }
             // Apply the draft first: the header Start used to ask the daemon
@@ -1519,6 +1585,29 @@ fn connect_signals(app: &Rc<App>) {
             let _ = app.tx.send(Cmd::ApplyStart { json });
             label.set_text(&tr("Starting…", "Запускаю…"));
             button.set_sensitive(false);
+        });
+    }
+    {
+        let button = app.create_button.clone();
+        let app = app.clone();
+        button.connect_clicked(move |_| {
+            app.stack.set_visible_child_name("presets");
+            new_preset(&app);
+        });
+    }
+    {
+        let button = app.rig_edit.clone();
+        let app = app.clone();
+        button.connect_clicked(move |_| {
+            if app.config.borrow().preset().is_some() {
+                app.stack.set_visible_child_name("presets");
+                if let Some(id) = app.config.borrow().active_preset.clone() {
+                    preset_editor_dialog(&app, &id);
+                }
+            } else {
+                app.stack.set_visible_child_name("presets");
+                new_preset(&app);
+            }
         });
     }
     {
@@ -1533,13 +1622,6 @@ fn connect_signals(app: &Rc<App>) {
         let banner = app.oc_banner.clone();
         banner.connect_button_clicked(move |_| {
             restore_stock_dialog(&app);
-        });
-    }
-    {
-        let app = app.clone();
-        let button = app.quick_button.clone();
-        button.connect_clicked(move |_| {
-            quick_setup_wizard(&app);
         });
     }
     if let Some(button) = NEW_PRESET_BUTTON.with(|slot| slot.borrow().clone()) {
@@ -1565,6 +1647,19 @@ fn connect_signals(app: &Rc<App>) {
         let app = app.clone();
         button.connect_clicked(move |_| {
             restore_stock_dialog(&app);
+        });
+    }
+    if let Some(button) = GPU_PRESETS_BUTTON.with(|slot| slot.borrow().clone()) {
+        let app = app.clone();
+        button.connect_clicked(move |_| manage_gpu_presets_dialog(&app));
+    }
+    if let Some(button) = REPORT_BUTTON.with(|slot| slot.borrow().clone()) {
+        let app = app.clone();
+        button.connect_clicked(move |_| {
+            open_issue(
+                &app,
+                &tr("Describe the problem here.", "Опишите проблему здесь."),
+            );
         });
     }
     {
@@ -1820,12 +1915,17 @@ fn show_error_details(app: &Rc<App>, message: &str) {
         .label(tr("Copy", "Копировать"))
         .css_classes(["flat", "pill"])
         .build();
+    let report = gtk::Button::builder()
+        .label(tr("Report issue", "Сообщить об ошибке"))
+        .css_classes(["flat", "pill"])
+        .build();
     let close = gtk::Button::builder()
         .label(tr("Close", "Закрыть"))
         .css_classes(["suggested-action", "pill"])
         .build();
     let footer = dialog_footer();
     footer.append(&copy);
+    footer.append(&report);
     footer.append(&dialog_footer_spacer());
     footer.append(&close);
     let view = gtk::TextView::builder()
@@ -1863,11 +1963,41 @@ fn show_error_details(app: &Rc<App>, message: &str) {
             copy_button.set_label(&tr("Copied", "Скопировано"));
         });
     }
+    {
+        let app = app.clone();
+        let message = message.to_string();
+        let report_button = report.clone();
+        report.connect_clicked(move |_| {
+            if open_issue(&app, &message) {
+                report_button.set_label(&tr("Issue opened", "Issue открыт"));
+            } else {
+                report_button.set_label(&tr("Copy and open manually", "Скопируйте и откройте"));
+            }
+        });
+    }
     dialog.present(Some(&app.window));
 }
 
-fn pool_names() -> Vec<String> {
-    catalog::pools().iter().map(|p| p.name.clone()).collect()
+fn open_issue(app: &Rc<App>, message: &str) -> bool {
+    let url = {
+        let cfg = app.config.borrow();
+        let status = app.status.borrow();
+        trommel_core::diagnostics::issue_url(&cfg, status.as_ref(), message)
+    };
+    let launched =
+        gio::AppInfo::launch_default_for_uri(&url, None::<&gio::AppLaunchContext>).is_ok();
+    if !launched {
+        let text = {
+            let cfg = app.config.borrow();
+            let status = app.status.borrow();
+            serde_json::to_string_pretty(&trommel_core::diagnostics::report(&cfg, status.as_ref()))
+                .unwrap_or_default()
+        };
+        if let Some(display) = gdk::Display::default() {
+            display.clipboard().set_text(&text);
+        }
+    }
+    launched
 }
 
 fn miner_names() -> Vec<String> {
@@ -1881,11 +2011,89 @@ fn miner_index(id: &str) -> u32 {
         .unwrap_or(0) as u32
 }
 
-fn pool_index(id: &str) -> u32 {
-    catalog::pools()
+/// Catalogue coins selectable for a miner, followed by a custom entry.
+fn coin_choices(miner_id: &str) -> Vec<Option<&'static catalog::CoinDef>> {
+    let mut choices: Vec<Option<&'static catalog::CoinDef>> = catalog::coins_for_miner(miner_id)
+        .into_iter()
+        .map(Some)
+        .collect();
+    choices.push(None);
+    choices
+}
+
+fn coin_labels(miner_id: &str) -> Vec<String> {
+    coin_choices(miner_id)
+        .into_iter()
+        .map(|coin| match coin {
+            Some(coin) => format!("{} · {}", coin.symbol, coin.name),
+            None => tr("Custom…", "Своя монета…").to_string(),
+        })
+        .collect()
+}
+
+fn coin_index(miner_id: &str, coin_id: &str) -> u32 {
+    coin_choices(miner_id)
         .iter()
-        .position(|p| p.id == id)
+        .position(|coin| coin.map(|coin| coin.id == coin_id).unwrap_or(false))
+        .unwrap_or_else(|| coin_choices(miner_id).len().saturating_sub(1)) as u32
+}
+
+const HASHRATE_UNITS: [&str; 7] = ["auto", "H/s", "kH/s", "MH/s", "GH/s", "TH/s", "PH/s"];
+
+fn hashrate_unit_index(unit: &str) -> u32 {
+    HASHRATE_UNITS
+        .iter()
+        .position(|item| item.eq_ignore_ascii_case(unit))
         .unwrap_or(0) as u32
+}
+
+fn selected_coin(miner_id: &str, selected: u32) -> Option<&'static catalog::CoinDef> {
+    coin_choices(miner_id)
+        .get(selected as usize)
+        .copied()
+        .flatten()
+}
+
+fn coin_label(cfg: &Config, miner_id: &str, selected: u32) -> String {
+    match selected_coin(miner_id, selected) {
+        Some(coin) => format!("{} · {}", coin.symbol, coin.name),
+        None => cfg
+            .preset()
+            .map(|preset| format!("{} · {}", preset.symbol(), preset.coin_name))
+            .unwrap_or_else(|| tr("Custom coin", "Своя монета").to_string()),
+    }
+}
+
+fn apply_coin_selection(preset: &mut Preset, miner_id: &str, selected: u32, algo: &str) {
+    if let Some(coin) = selected_coin(miner_id, selected) {
+        preset.coin = coin.id.clone();
+        preset.coin_symbol = coin.symbol.clone();
+        preset.coin_name = coin.name.clone();
+        preset.wallet_prefix = coin.wallet_prefix.clone();
+        preset.hashrate_unit = coin.hashrate_unit.clone();
+        if !algo.trim().is_empty() {
+            preset.algo = algo.trim().to_string();
+        } else if preset.algo.is_empty() {
+            preset.algo = coin.algos.first().cloned().unwrap_or_default();
+        }
+    } else {
+        if catalog::coin(&preset.coin).is_some() {
+            preset.coin = "custom".into();
+        }
+        preset.algo = algo.trim().to_string();
+    }
+    if let Some(def) = catalog::miner(miner_id) {
+        let fee = def.fee_for(&preset.algo);
+        preset.miner_fee_pct = fee.pct;
+        if !fee.configurable {
+            preset.miner_fee_override_pct = None;
+        }
+    }
+}
+
+fn rebuild_editor_coins(miner_id: &str, coin_row: &adw::ComboRow, preferred: &str) {
+    coin_row.set_model(Some(&string_list(&coin_labels(miner_id))));
+    coin_row.set_selected(coin_index(miner_id, preferred));
 }
 
 /// Selectable versions for a miner: catalogue versions first, then installed
@@ -1962,11 +2170,25 @@ fn refresh_preset_list(app: &Rc<App>) {
         app.preset_group.remove(&row);
     }
     let cfg = app.config.borrow();
+    if cfg.presets.is_empty() {
+        let empty = adw::ActionRow::builder()
+            .title(tr("No mining presets yet", "Пресетов майнинга пока нет"))
+            .subtitle(tr(
+                "Create a preset to choose a coin, pool, wallet, miner and GPU settings.",
+                "Создайте пресет, чтобы выбрать монету, пул, кошелёк, майнер и настройки GPU.",
+            ))
+            .build();
+        app.preset_group.add(&empty);
+        app.preset_rows.borrow_mut().push(empty);
+    }
     for (id, preset) in &cfg.presets {
         let install_hint = preset_install_hint(&cfg, preset);
         let mut subtitle = format!(
             "{} · {} · {} {}",
-            preset.coin, preset.pool, preset.miner, preset.miner_version
+            preset.symbol(),
+            preset.pool_display_name(),
+            preset.miner,
+            preset.miner_version
         );
         if let Some((hint, _)) = &install_hint {
             subtitle.push('\n');
@@ -2009,13 +2231,26 @@ fn refresh_preset_list(app: &Rc<App>) {
             let app_use = app.clone();
             let id_use = id.clone();
             use_button.connect_clicked(move |_| {
+                let previous_active = app_use.config.borrow().active_preset.clone();
                 {
                     let mut cfg = app_use.config.borrow_mut();
                     cfg.active_preset = Some(id_use.clone());
                 }
                 mark_dirty(&app_use);
                 refresh_preset_list(&app_use);
-                save_and_apply(&app_use);
+                let app_cancel = app_use.clone();
+                let on_cancel = Rc::new(move || {
+                    app_cancel.config.borrow_mut().active_preset = previous_active.clone();
+                    let dirty = *app_cancel.config.borrow() != *app_cancel.applied.borrow();
+                    app_cancel.dirty.set(dirty);
+                    update_dirty(&app_cancel);
+                    refresh_preset_list(&app_cancel);
+                    app_cancel.toast.add_toast(adw::Toast::new(&tr(
+                        "Preset switch cancelled",
+                        "Переключение пресета отменено",
+                    )));
+                });
+                save_and_apply_with(&app_use, Some(on_cancel));
             });
             row.add_suffix(&use_button);
         }
@@ -2136,6 +2371,7 @@ fn preset_editor_info(
     app: &Rc<App>,
     miner_row: &adw::ComboRow,
     version_row: &adw::ComboRow,
+    algo: &adw::EntryRow,
     pool_fee: &adw::SpinRow,
     miner_fee: &adw::SpinRow,
     info_desc: &adw::ActionRow,
@@ -2149,15 +2385,16 @@ fn preset_editor_info(
     let version = selected_version(app, miner_row, version_row);
     let install = app.config.borrow().install(&def.id, &version).cloned();
     info_desc.set_subtitle(def.short_description());
-    let miner_fee_pct = if def.fee_configurable {
+    let fee = def.fee_for(algo.text().trim());
+    let miner_fee_pct = if fee.configurable {
         miner_fee.value()
     } else {
-        def.fee_pct
+        fee.pct
     };
     info_fee.set_subtitle(&format!(
         "{}: {:.2}% · {}: {:.2}% · {}: <b>{:.2}%</b>",
         tr("miner", "майнер"),
-        def.fee_pct,
+        fee.pct,
         tr("pool", "пул"),
         pool_fee.value(),
         tr("total", "всего"),
@@ -2178,7 +2415,7 @@ fn preset_editor_info(
             state.set_css_classes(&["caption", "warning"]);
         }
     }
-    miner_fee.set_sensitive(def.fee_configurable);
+    miner_fee.set_sensitive(fee.configurable);
 }
 
 /// Modal editor for one preset. The main window keeps the list; everything
@@ -2258,10 +2495,14 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         .title(tr("Name", "Название"))
         .text(&base.name)
         .build();
-    let pool = adw::ComboRow::builder()
-        .title(tr("Pool", "Пул"))
-        .model(&string_list(&pool_names()))
-        .selected(pool_index(&base.pool))
+    let coin = adw::ComboRow::builder()
+        .title(tr("Coin", "Монета"))
+        .model(&string_list(&coin_labels(&base.miner)))
+        .selected(coin_index(&base.miner, &base.coin))
+        .build();
+    let algo = adw::EntryRow::builder()
+        .title(tr("Algorithm", "Алгоритм"))
+        .text(&base.algo)
         .build();
     let pool_url = adw::EntryRow::builder()
         .title(tr("Pool address", "Адрес пула"))
@@ -2275,6 +2516,16 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     let version = adw::ComboRow::builder()
         .title(tr("Version", "Версия"))
         .build();
+    let install_version = gtk::Button::builder()
+        .label(tr("Install…", "Установить…"))
+        .css_classes(["flat", "pill"])
+        .valign(gtk::Align::Center)
+        .tooltip_text(tr(
+            "Install any version, including one that is not in the catalogue",
+            "Установить любую версию, включая отсутствующую в каталоге",
+        ))
+        .build();
+    version.add_suffix(&install_version);
     let wallet = adw::EntryRow::builder()
         .title(tr("Wallet", "Кошелёк"))
         .text(&base.wallet)
@@ -2303,21 +2554,93 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         0.0,
         100.0,
     );
+    let coin_symbol = adw::EntryRow::builder()
+        .title(tr("Coin symbol", "Символ монеты"))
+        .text(&base.coin_symbol)
+        .build();
+    let coin_name = adw::EntryRow::builder()
+        .title(tr("Coin name", "Название монеты"))
+        .text(&base.coin_name)
+        .build();
+    let wallet_prefix = adw::EntryRow::builder()
+        .title(tr("Wallet prefix", "Префикс кошелька"))
+        .text(&base.wallet_prefix)
+        .build();
+    let unit = adw::ComboRow::builder()
+        .title(tr("Hashrate unit", "Единица хешрейта"))
+        .subtitle(tr(
+            "Preferred display unit; auto scales when the value is far away",
+            "Предпочтительная единица; auto подбирает масштаб, если значение далеко",
+        ))
+        .model(&string_list(
+            &HASHRATE_UNITS
+                .iter()
+                .map(|unit| unit.to_string())
+                .collect::<Vec<_>>(),
+        ))
+        .selected(hashrate_unit_index(&base.hashrate_unit))
+        .build();
+    let custom_group = adw::PreferencesGroup::builder()
+        .title(tr("Custom coin", "Своя монета"))
+        .description(tr(
+            "Used when the selected miner does not know this coin yet. Leave the prefix empty to skip address validation.",
+            "Используется, когда выбранный майнер ещё не знает эту монету. Пустой префикс отключает проверку адреса.",
+        ))
+        .build();
+    custom_group.add(&coin_symbol);
+    custom_group.add(&coin_name);
+    custom_group.add(&wallet_prefix);
+    custom_group.add(&unit);
+    custom_group.set_visible(selected_coin(&base.miner, coin.selected()).is_none());
+    let pool_hint = adw::ActionRow::builder()
+        .title(tr("Known pool", "Известный пул"))
+        .visible(false)
+        .build();
+    let use_known_fee = gtk::Button::builder()
+        .label(tr("Use fee", "Взять комиссию"))
+        .css_classes(["flat", "pill"])
+        .valign(gtk::Align::Center)
+        .visible(false)
+        .build();
+    pool_hint.add_suffix(&use_known_fee);
+    let pool_api_url = adw::EntryRow::builder()
+        .title(tr("Pool API URL", "API пула"))
+        .text(&base.pool_api_url)
+        .build();
+    pool_api_url.set_tooltip_text(Some(&tr(
+        "Optional documented JSON endpoint with a {wallet} placeholder; HTTPS only. A known pool fills this automatically.",
+        "Необязательный документированный JSON endpoint с подстановкой {wallet}; только HTTPS. Для известного пула подставляется автоматически.",
+    )));
+    let api_port = spin_row(
+        &tr("Miner API port", "Порт API майнера"),
+        &tr(
+            "0 = the miner catalogue default; used for hashrate and shares",
+            "0 = значение из каталога; используется для хешрейта и шаров",
+        ),
+        base.api_port as f64,
+        0.0,
+        65535.0,
+    );
     let extra = adw::EntryRow::builder()
         .title(tr("Extra arguments", "Доп. аргументы"))
         .text(&base.extra_args)
         .build();
     form_group.add(&name);
-    form_group.add(&pool);
+    form_group.add(&coin);
+    form_group.add(&algo);
     form_group.add(&pool_url);
     form_group.add(&miner);
     form_group.add(&version);
     form_group.add(&wallet);
     form_group.add(&worker);
     form_group.add(&pool_fee);
+    form_group.add(&pool_hint);
+    form_group.add(&pool_api_url);
     form_group.add(&miner_fee);
+    form_group.add(&api_port);
     form_group.add(&extra);
     page.add(&form_group);
+    page.add(&custom_group);
 
     let options_group = adw::PreferencesGroup::builder()
         .title(tr("Miner options", "Настройки майнера"))
@@ -2332,6 +2655,8 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     options_group.set_visible(!simple);
     extra.set_visible(!simple);
     miner_fee.set_visible(!simple);
+    pool_api_url.set_visible(!simple);
+    api_port.set_visible(!simple);
 
     let actions_group = adw::PreferencesGroup::new();
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -2356,12 +2681,14 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     dialog.set_child(Some(&toolbar));
 
     let options: Rc<RefCell<Vec<OptionRow>>> = Rc::new(RefCell::new(Vec::new()));
+    rebuild_editor_coins(&base.miner, &coin, &base.coin);
     preset_editor_versions(app, &miner, &version, &base.miner_version);
     rebuild_editor_options(app, id, &miner, &miner_fee, &options_box, &options);
     preset_editor_info(
         app,
         &miner,
         &version,
+        &algo,
         &pool_fee,
         &miner_fee,
         &info_desc,
@@ -2374,6 +2701,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         let app = app.clone();
         let miner = miner.clone();
         let version = version.clone();
+        let algo = algo.clone();
         let pool_fee = pool_fee.clone();
         let miner_fee = miner_fee.clone();
         let info_desc = info_desc.clone();
@@ -2385,6 +2713,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
                 &app,
                 &miner,
                 &version,
+                &algo,
                 &pool_fee,
                 &miner_fee,
                 &info_desc,
@@ -2399,28 +2728,129 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         let app = app.clone();
         let id = id.to_string();
         let version_row = version.clone();
+        let coin_row = coin.clone();
+        let custom_group = custom_group.clone();
         let miner_fee = miner_fee.clone();
         let options_box = options_box.clone();
         let options = options.clone();
         let refresh_info = refresh_info.clone();
         miner.connect_notify_local(Some("selected"), move |row, _| {
+            let def = catalog::miners().get(row.selected() as usize);
+            if let Some(def) = def {
+                rebuild_editor_coins(&def.id, &coin_row, "");
+                custom_group.set_visible(selected_coin(&def.id, coin_row.selected()).is_none());
+            }
             preset_editor_versions(&app, row, &version_row, "");
             rebuild_editor_options(&app, &id, row, &miner_fee, &options_box, &options);
             refresh_info();
         });
     }
     {
-        let refresh_info = refresh_info.clone();
-        version.connect_notify_local(Some("selected"), move |_, _| refresh_info());
+        let refresh_version = refresh_info.clone();
+        version.connect_notify_local(Some("selected"), move |_, _| refresh_version());
+        let refresh_algo = refresh_info.clone();
+        algo.connect_changed(move |_| refresh_algo());
     }
     {
-        let pool_url = pool_url.clone();
+        let app = app.clone();
+        let miner = miner.clone();
+        let version = version.clone();
+        let refresh_info = refresh_info.clone();
+        install_version.connect_clicked(move |_| {
+            let Some(def) = catalog::miners().get(miner.selected() as usize) else {
+                return;
+            };
+            let version_text = selected_version(&app, &miner, &version);
+            let app_done = app.clone();
+            let miner_done = miner.clone();
+            let version_done = version.clone();
+            let refresh_done = refresh_info.clone();
+            let on_done: Rc<dyn Fn()> = Rc::new(move || {
+                let current = selected_version(&app_done, &miner_done, &version_done);
+                preset_editor_versions(&app_done, &miner_done, &version_done, &current);
+                refresh_done();
+            });
+            miner_install_dialog(&app, &def.id, version_text, Some(on_done));
+        });
+    }
+    {
+        let pool_url_widget = pool_url.clone();
+        let pool_hint = pool_hint.clone();
+        let use_known_fee_widget = use_known_fee.clone();
         let pool_fee = pool_fee.clone();
-        pool.connect_notify_local(Some("selected"), move |row, _| {
-            if let Some(def) = catalog::pools().get(row.selected() as usize) {
-                pool_url.set_text(&def.url);
-                pool_fee.set_value(def.fee_pct);
+        let update_hint = Rc::new(
+            move || match catalog::pool_for_url(&pool_url_widget.text()) {
+                Some(pool) => {
+                    pool_hint.set_visible(true);
+                    pool_hint.set_title(&format!(
+                        "{}: {}",
+                        tr("Known pool", "Известный пул"),
+                        pool.name
+                    ));
+                    pool_hint.set_subtitle(&format!(
+                        "{} {:.2}% · {}",
+                        tr("suggested fee", "предлагаемая комиссия"),
+                        pool.fee_pct,
+                        if pool.api_url.is_empty() {
+                            tr("no account API", "нет API аккаунта")
+                        } else {
+                            tr("account API available", "API аккаунта доступен")
+                        }
+                    ));
+                    use_known_fee_widget.set_visible(true);
+                }
+                None => {
+                    pool_hint.set_visible(false);
+                    use_known_fee_widget.set_visible(false);
+                }
+            },
+        );
+        let update_hint_for_url = update_hint.clone();
+        let pool_url_for_signal = pool_url.clone();
+        pool_url_for_signal.connect_changed(move |_| update_hint_for_url());
+        {
+            let pool_fee = pool_fee.clone();
+            let pool_url = pool_url.clone();
+            let use_known_fee = use_known_fee.clone();
+            use_known_fee.connect_clicked(move |_| {
+                if let Some(pool) = catalog::pool_for_url(&pool_url.text()) {
+                    pool_fee.set_value(pool.fee_pct);
+                }
+            });
+        }
+        update_hint();
+    }
+    {
+        let miner = miner.clone();
+        let coin = coin.clone();
+        let algo = algo.clone();
+        let custom_group = custom_group.clone();
+        let coin_symbol = coin_symbol.clone();
+        let coin_name = coin_name.clone();
+        let wallet_prefix = wallet_prefix.clone();
+        let unit = unit.clone();
+        let refresh_info = refresh_info.clone();
+        coin.connect_notify_local(Some("selected"), move |row, _| {
+            let Some(def) = catalog::miners().get(miner.selected() as usize) else {
+                return;
+            };
+            if let Some(selected) = selected_coin(&def.id, row.selected()) {
+                custom_group.set_visible(false);
+                if let Some(first) = selected.algos.first() {
+                    if algo.text().trim().is_empty()
+                        || !selected.algos.contains(&algo.text().trim().to_string())
+                    {
+                        algo.set_text(first);
+                    }
+                }
+                coin_symbol.set_text(&selected.symbol);
+                coin_name.set_text(&selected.name);
+                wallet_prefix.set_text(&selected.wallet_prefix);
+                unit.set_selected(hashrate_unit_index(&selected.hashrate_unit));
+            } else {
+                custom_group.set_visible(true);
             }
+            refresh_info();
         });
     }
     {
@@ -2434,25 +2864,27 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         let miner = miner.clone();
         let version = version.clone();
         let name = name.clone();
-        let pool = pool.clone();
-        let coin = base.coin.clone();
+        let coin = coin.clone();
+        let pool_url = pool_url.clone();
         let refresh_info = refresh_info.clone();
         install_button.connect_clicked(move |_| {
             let Some(def) = catalog::miners().get(miner.selected() as usize) else {
                 return;
             };
             let version_text = selected_version(&app, &miner, &version);
-            let pool_id = catalog::pools()
-                .get(pool.selected() as usize)
-                .map(|item| item.id.clone())
-                .unwrap_or_default();
             let mut preset_name = name.text().trim().to_string();
             if preset_name.is_empty() {
                 preset_name = tr("Preset", "Пресет").to_string();
             }
             let target = MinerLibraryTarget {
                 name: preset_name,
-                subtitle: format!("{} · {} · {} {}", coin, pool_id, def.id, version_text),
+                subtitle: format!(
+                    "{} · {} · {} {}",
+                    coin_label(&app.config.borrow(), &def.id, coin.selected()),
+                    pool_url.text(),
+                    def.id,
+                    version_text
+                ),
                 miner: def.id.clone(),
                 version: version_text,
             };
@@ -2475,8 +2907,15 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         let dialog = dialog.clone();
         let id = id.to_string();
         let name = name.clone();
-        let pool = pool.clone();
+        let coin = coin.clone();
+        let algo = algo.clone();
         let pool_url = pool_url.clone();
+        let pool_api_url = pool_api_url.clone();
+        let api_port = api_port.clone();
+        let coin_symbol = coin_symbol.clone();
+        let coin_name = coin_name.clone();
+        let wallet_prefix = wallet_prefix.clone();
+        let unit = unit.clone();
         let miner = miner.clone();
         let version = version.clone();
         let wallet = wallet.clone();
@@ -2495,10 +2934,6 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
             for row in options.borrow().iter() {
                 values.insert(row.key.clone(), row.value());
             }
-            let pool_id = catalog::pools()
-                .get(pool.selected() as usize)
-                .map(|item| item.id.clone())
-                .unwrap_or_else(|| "pearlhash".into());
             let mut preset_name = name.text().trim().to_string();
             if preset_name.is_empty() {
                 preset_name = tr("Preset", "Пресет").to_string();
@@ -2507,17 +2942,33 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
                 let mut cfg = app.config.borrow_mut();
                 if let Some(preset) = cfg.presets.get_mut(&id) {
                     preset.name = preset_name;
-                    preset.pool = pool_id;
                     preset.pool_url = pool_url.text().to_string();
                     preset.pool_fee_pct = pool_fee.value();
+                    let miner_id_for_coin = miner_id.clone();
+                    apply_coin_selection(
+                        preset,
+                        &miner_id_for_coin,
+                        coin.selected(),
+                        algo.text().as_str(),
+                    );
+                    if selected_coin(&miner_id_for_coin, coin.selected()).is_none() {
+                        preset.coin = "custom".into();
+                        preset.coin_symbol = coin_symbol.text().trim().to_string();
+                        preset.coin_name = coin_name.text().trim().to_string();
+                        preset.wallet_prefix = wallet_prefix.text().trim().to_string();
+                        preset.hashrate_unit = HASHRATE_UNITS[unit.selected() as usize].to_string();
+                    }
+                    preset.pool_api_url = pool_api_url.text().to_string();
+                    preset.api_port = api_port.value() as u16;
                     preset.miner = miner_id;
                     preset.miner_version = version_text;
                     preset.wallet = wallet.text().to_string();
                     preset.worker = worker.text().to_string();
                     preset.extra_args = extra.text().to_string();
                     preset.miner_options = values;
-                    preset.miner_fee_pct = def.fee_pct;
-                    preset.miner_fee_override_pct = if def.fee_configurable {
+                    preset.miner_fee_pct = def.fee_for(algo.text().trim()).pct;
+                    preset.miner_fee_override_pct = if def.fee_for(algo.text().trim()).configurable
+                    {
                         Some(miner_fee.value())
                     } else {
                         None
@@ -2525,6 +2976,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
                     preset.updated_at = util::now_unix();
                 }
             }
+            *app.new_preset_id.borrow_mut() = None;
             mark_dirty(&app);
             refresh_preset_list(&app);
             dialog.close();
@@ -2549,10 +3001,18 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         delete.connect_clicked(move |_| delete_preset(&app, &dialog, &id));
     }
     {
+        let app = app.clone();
         let dialog = dialog.clone();
+        let id = id.to_string();
         cancel.connect_clicked(move |_| {
+            discard_new_preset(&app, &id);
             dialog.close();
         });
+    }
+    {
+        let app = app.clone();
+        let id = id.to_string();
+        dialog.connect_closed(move |_| discard_new_preset(&app, &id));
     }
     dialog.present(Some(&app.window));
     if let Some(path) = std::env::var_os("TROMMEL_PRESET_SCREENSHOT") {
@@ -2568,10 +3028,27 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     }
 }
 
+fn discard_new_preset(app: &Rc<App>, id: &str) {
+    if app.new_preset_id.borrow().as_deref() != Some(id) {
+        return;
+    }
+    {
+        let mut cfg = app.config.borrow_mut();
+        cfg.presets.remove(id);
+        if cfg.active_preset.as_deref() == Some(id) {
+            cfg.active_preset = cfg.presets.keys().next().cloned();
+        }
+    }
+    *app.new_preset_id.borrow_mut() = None;
+    let dirty = *app.config.borrow() != *app.applied.borrow();
+    app.dirty.set(dirty);
+    update_dirty(app);
+    refresh_preset_list(app);
+}
+
 fn new_preset(app: &Rc<App>) {
     let id = {
         let mut cfg = app.config.borrow_mut();
-        let base = cfg.preset().cloned().unwrap_or_else(Preset::new_pearl);
         let now = util::now_unix();
         let mut id = format!("preset-{now}");
         let mut suffix = 1;
@@ -2579,15 +3056,16 @@ fn new_preset(app: &Rc<App>) {
             id = format!("preset-{now}-{suffix}");
             suffix += 1;
         }
-        let mut preset = base;
+        let mut preset = Preset::new_draft();
         preset.id = id.clone();
         preset.name = tr("New preset", "Новый пресет");
-        preset.created_at = util::now_unix();
-        preset.updated_at = preset.created_at;
+        preset.created_at = now;
+        preset.updated_at = now;
         cfg.presets.insert(id.clone(), preset);
         cfg.active_preset = Some(id.clone());
         id
     };
+    *app.new_preset_id.borrow_mut() = Some(id.clone());
     mark_dirty(app);
     refresh_preset_list(app);
     preset_editor_dialog(app, &id);
@@ -2743,7 +3221,10 @@ impl MinerLibraryTarget {
             name: preset.name.clone(),
             subtitle: format!(
                 "{} · {} · {} {}",
-                preset.coin, preset.pool, preset.miner, preset.miner_version
+                preset.symbol(),
+                preset.pool_display_name(),
+                preset.miner,
+                preset.miner_version
             ),
             miner: preset.miner.clone(),
             version: preset.miner_version.clone(),
@@ -3136,6 +3617,30 @@ fn refresh_miners(app: &Rc<App>) {
                 verify.connect_clicked(move |_| verify_miner_version(&app, &miner, &version));
             }
             version_row.add_suffix(&verify);
+            if let Some(def) = catalog::miner(&item.miner) {
+                if !def.algorithm_probe_arg.is_empty() {
+                    let check = gtk::Button::builder()
+                        .icon_name("system-search-symbolic")
+                        .css_classes(["flat"])
+                        .valign(gtk::Align::Center)
+                        .tooltip_text(tr(
+                            "Ask the installed binary which algorithms it advertises",
+                            "Спросить установленный бинарник, какие алгоритмы он заявляет",
+                        ))
+                        .build();
+                    {
+                        let app = app.clone();
+                        let miner = item.miner.clone();
+                        let version = item.version.clone();
+                        let path = item.path.clone();
+                        let argument = def.algorithm_probe_arg.clone();
+                        check.connect_clicked(move |_| {
+                            check_miner_capabilities(&app, &miner, &version, &path, &argument);
+                        });
+                    }
+                    version_row.add_suffix(&check);
+                }
+            }
             let remove = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
                 .css_classes(["flat"])
@@ -3159,6 +3664,33 @@ fn refresh_miners(app: &Rc<App>) {
     }
 
     refresh_preset_version_rows(app, &cfg);
+}
+
+fn check_miner_capabilities(app: &Rc<App>, miner: &str, version: &str, path: &str, argument: &str) {
+    match versions::probe_algorithms(std::path::Path::new(path), argument) {
+        Ok(found) => {
+            let name = catalog::miner(miner)
+                .map(|def| def.name.clone())
+                .unwrap_or_else(|| miner.to_string());
+            let body = if found.is_empty() {
+                tr(
+                    "The miner answered, but no known algorithm names were found in its output.",
+                    "Майнер ответил, но известных названий алгоритмов в выводе не найдено.",
+                )
+                .to_string()
+            } else {
+                found.join(" · ")
+            };
+            let dialog = adw::AlertDialog::builder()
+                .heading(format!("{name} {version}"))
+                .body(body)
+                .build();
+            dialog.add_response("close", &tr("Close", "Закрыть"));
+            dialog.set_close_response("close");
+            dialog.present(Some(&app.window));
+        }
+        Err(err) => show_error_details(app, &err.to_string()),
+    }
 }
 
 /// Subtitle of one installed-version row: who pins it, binary state and the
@@ -3653,18 +4185,33 @@ fn copy_diagnostics(app: &Rc<App>) {
 }
 
 fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
+    if app.config.borrow().preset().is_none() {
+        create_preset_alert(app);
+        return;
+    }
     let uuid = gpu.uuid.clone();
     let name = gpu.name.clone();
-    let default_power = gpu.power_default_w.or(gpu.power_limit_w);
-    let profile = app
+    let (profile, active_preset_name) = {
+        let cfg = app.config.borrow();
+        (
+            cfg.gpu_profile().cloned().unwrap_or_default(),
+            cfg.preset()
+                .map(|preset| preset.name.clone())
+                .unwrap_or_default(),
+        )
+    };
+    let tuning = profile.tuning_for(&uuid);
+    let enabled = tuning.enabled;
+    let base_tuning = tuning.clone();
+    let selected_preset: Rc<RefCell<String>> = Rc::new(RefCell::new(tuning.gpu_preset.clone()));
+    let saved_presets: Vec<_> = app
         .config
         .borrow()
-        .gpu_profile()
+        .gpu_presets
+        .values()
+        .filter(|preset| preset.gpu_uuid == uuid || preset.gpu_name == name)
         .cloned()
-        .unwrap_or_default();
-    let tuning = profile.tuning_for(&uuid);
-    let custom = profile.is_custom(&uuid);
-    let enabled = tuning.enabled;
+        .collect();
     let (same_uuids, all_uuids) = {
         let status = app.status.borrow();
         match status.as_ref() {
@@ -3687,46 +4234,27 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         .content_width(540)
         .build();
     let header = adw::HeaderBar::new();
+    header.set_show_end_title_buttons(false);
     let title = label(&format!("GPU #{} · {name}", gpu.index), &["heading"]);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     header.set_title_widget(Some(&title));
+
+    let cancel = gtk::Button::builder()
+        .label(tr("Cancel", "Отмена"))
+        .css_classes(["flat", "pill"])
+        .build();
     let presets_popover = gtk::Popover::new();
     let presets_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
     presets_box.set_margin_top(6);
     presets_box.set_margin_bottom(6);
     presets_box.set_margin_start(6);
     presets_box.set_margin_end(6);
-    let recommended = gtk::Button::builder()
-        .label(tr("Recommended", "Рекомендуемый"))
-        .tooltip_text(tr(
-            "80 % of the stock power limit; clock locks are turned off",
-            "80 % от стокового лимита питания; локи частот выключаются",
-        ))
-        .css_classes(["flat"])
-        .halign(gtk::Align::Fill)
-        .build();
-    let profile_default = gtk::Button::builder()
-        .label(tr("Profile default", "Профиль по умолчанию"))
-        .tooltip_text(tr(
-            "Remove this card's override; it will follow the built-in profile (auto power, no clock locks)",
-            "Убрать настройку этой карты; останутся базовые значения профиля (авто-питание, без локов частот)",
-        ))
-        .css_classes(["flat"])
-        .halign(gtk::Align::Fill)
-        .visible(custom)
-        .build();
-    presets_box.append(&recommended);
-    presets_box.append(&profile_default);
-    presets_popover.set_child(Some(&presets_box));
-    {
-        let popover = presets_popover.clone();
-        recommended.connect_clicked(move |_| popover.popdown());
-    }
-    // The tuning presets are content, not window chrome: a labelled menu in
-    // the footer, next to the Save it feeds into.
     let presets = gtk::MenuButton::builder()
-        .label(tr("Presets", "Пресеты"))
-        .tooltip_text(tr("Tuning presets", "Пресеты настройки"))
+        .label(tr("GPU presets", "Пресеты GPU"))
+        .tooltip_text(tr(
+            "Stock or a saved per-card tuning; nothing is applied until Save",
+            "Сток или сохранённая настройка карты; применяется только по Save",
+        ))
         .css_classes(["flat", "pill"])
         .always_show_arrow(true)
         .popover(&presets_popover)
@@ -3736,6 +4264,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         .css_classes(["suggested-action", "pill"])
         .build();
     let footer = dialog_footer();
+    footer.append(&cancel);
     footer.append(&presets);
     footer.append(&dialog_footer_spacer());
     footer.append(&save);
@@ -3744,7 +4273,10 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
 
     let group = adw::PreferencesGroup::builder()
         .title(format!("GPU #{} · {name}", gpu.index))
-        .description(uuid.clone())
+        .description(format!(
+            "{}: {active_preset_name}",
+            tr("Active preset", "Активный пресет")
+        ))
         .build();
     let now = adw::ActionRow::builder()
         .title(tr("Now", "Сейчас"))
@@ -3842,28 +4374,15 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     sync_lock_row(&core_lock, &core, !simple);
     sync_lock_row(&memory_lock, &memory, !simple);
 
-    let source_hint = label(
-        &if custom {
-            tr(
-                "These values are this card's own override.",
-                "Эти значения — собственная настройка этой карты.",
-            )
-        } else {
-            tr(
-                "These values come from the default profile. Saving creates a per-card override.",
-                "Эти значения взяты из профиля по умолчанию. Сохранение создаст настройку для этой карты.",
-            )
-        },
-        &["caption", "dim-label"],
-    );
+    let source_hint = label("", &["caption", "dim-label"]);
     source_hint.set_margin_start(6);
     source_hint.set_margin_top(6);
     source_hint.set_wrap(true);
     group.add(&source_hint);
     let global_hint = label(
         &tr(
-            "Temperature limit is global (Settings → Behavior); fan speed is a miner option in the preset editor.",
-            "Порог температуры — глобальный (Настройки → Поведение); вентилятор — опция майнера в редакторе пресета.",
+            "Temperature limit is global (Settings → GPU); fan speed is a miner option in the preset editor.",
+            "Порог температуры — глобальный (Настройки → GPU); вентилятор — опция майнера в редакторе пресета.",
         ),
         &["caption", "dim-label"],
     );
@@ -3871,12 +4390,8 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     global_hint.set_margin_top(4);
     global_hint.set_wrap(true);
     group.add(&global_hint);
-    let base_tuning = tuning.clone();
     page.add(&group);
 
-    // "Apply to" only makes sense with more than one card. On a single-GPU
-    // machine the old group contained nothing but a sentence, which looked
-    // like a broken, half-cut section at the bottom of the dialog.
     let mut apply_similar = None;
     let mut apply_all = None;
     if all_uuids.len() > 1 {
@@ -3902,8 +4417,8 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         group.add(&all);
         let hint = label(
             &tr(
-                "Each card has its own settings. Use the switches to copy this profile.",
-                "У каждой карты свои настройки. Переключатели копируют этот профиль.",
+                "Each card has its own settings. Use the switches to copy these values; copied cards become custom.",
+                "У каждой карты свои настройки. Переключатели копируют значения; копии становятся custom.",
             ),
             &["caption", "dim-label"],
         );
@@ -3922,21 +4437,191 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     toolbar.set_content(Some(&dialog_body(&page, &footer)));
     dialog.set_child(Some(&toolbar));
 
+    let make_tuning: Rc<dyn Fn() -> GpuTuning> = {
+        let power = power.clone();
+        let core = core.clone();
+        let core_lock = core_lock.clone();
+        let memory = memory.clone();
+        let memory_lock = memory_lock.clone();
+        let base_tuning = base_tuning.clone();
+        Rc::new(move || {
+            let mut tuning = base_tuning.clone();
+            tuning.custom = true;
+            tuning.gpu_preset.clear();
+            tuning.power_limit_w = nonzero(power.value() as u32);
+            tuning.core_clock_mhz = if core_lock.is_active() && core.value() as u32 >= 100 {
+                Some(core.value() as u32)
+            } else {
+                None
+            };
+            tuning.memory_clock_mhz = if memory_lock.is_active() && memory.value() as u32 >= 100 {
+                Some(memory.value() as u32)
+            } else {
+                None
+            };
+            tuning
+        })
+    };
+    let set_tuning: Rc<dyn Fn(&GpuTuning)> = {
+        let power = power.clone();
+        let core = core.clone();
+        let core_lock = core_lock.clone();
+        let memory = memory.clone();
+        let memory_lock = memory_lock.clone();
+        Rc::new(move |tuning: &GpuTuning| {
+            power.set_value(tuning.power_limit_w.unwrap_or(0) as f64);
+            core_lock.set_active(tuning.core_clock_mhz.is_some());
+            core.set_value(tuning.core_clock_mhz.unwrap_or(1620) as f64);
+            memory_lock.set_active(tuning.memory_clock_mhz.is_some());
+            memory.set_value(tuning.memory_clock_mhz.unwrap_or(810) as f64);
+        })
+    };
+    let describe_source: Rc<dyn Fn()> = {
+        let app = app.clone();
+        let selected = selected_preset.clone();
+        let base_tuning = base_tuning.clone();
+        let make_tuning = make_tuning.clone();
+        let source_hint = source_hint.clone();
+        Rc::new(move || {
+            let current = make_tuning();
+            let selected_id = selected.borrow().clone();
+            let text = if !selected_id.is_empty() {
+                let name = app
+                    .config
+                    .borrow()
+                    .gpu_presets
+                    .get(&selected_id)
+                    .map(|preset| preset.name.clone())
+                    .unwrap_or_else(|| tr("Unknown preset", "Неизвестный пресет").to_string());
+                format!("{}: {name}", tr("GPU preset", "Пресет GPU"))
+            } else if current.has_tuning() || current.enabled != base_tuning.enabled {
+                tr(
+                    "Custom values for this card; they are stored with the active mining preset.",
+                    "Свои значения для этой карты; они хранятся в активном пресете майнинга.",
+                )
+                .to_string()
+            } else {
+                tr(
+                    "Stock: driver auto power and clocks. The card still belongs to the active preset.",
+                    "Сток: авто-питание и частоты драйвера. Карта по-прежнему относится к активному пресету.",
+                )
+                .to_string()
+            };
+            source_hint.set_text(&tr(&text, &text));
+        })
+    };
+    describe_source();
+
+    let stock = gtk::Button::builder()
+        .label(tr("Stock (default)", "Сток (по умолчанию)"))
+        .tooltip_text(tr(
+            "Driver auto power, no clock locks",
+            "Авто-питание драйвера, без локов частот",
+        ))
+        .css_classes(["flat"])
+        .halign(gtk::Align::Fill)
+        .build();
     {
-        let power_row = power.clone();
-        let core_row = core.clone();
-        let memory_row = memory.clone();
-        let core_lock_row = core_lock.clone();
-        let memory_lock_row = memory_lock.clone();
-        let base = default_power.unwrap_or(300.0);
-        recommended.connect_clicked(move |_| {
-            power_row.set_value((base * 0.8).max(50.0).round());
-            core_lock_row.set_active(false);
-            memory_lock_row.set_active(false);
-            core_row.set_value(1620.0);
-            memory_row.set_value(810.0);
+        let set_tuning = set_tuning.clone();
+        let selected = selected_preset.clone();
+        let describe = describe_source.clone();
+        let popover = presets_popover.clone();
+        stock.connect_clicked(move |_| {
+            let tuning = GpuTuning {
+                enabled,
+                ..Default::default()
+            };
+            set_tuning(&tuning);
+            selected.borrow_mut().clear();
+            describe();
+            popover.popdown();
         });
     }
+    presets_box.append(&stock);
+    if !saved_presets.is_empty() {
+        presets_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        for preset in &saved_presets {
+            let selected_id = selected_preset.borrow().clone();
+            let check = if !selected_id.is_empty() && selected_id == preset.id {
+                "✓ "
+            } else {
+                ""
+            };
+            let button = gtk::Button::builder()
+                .label(format!("{check}{}", preset.name))
+                .tooltip_text(format!(
+                    "{} · {}",
+                    preset.gpu_name,
+                    tuning_summary(&preset.tuning)
+                ))
+                .css_classes(["flat"])
+                .halign(gtk::Align::Fill)
+                .build();
+            let set_tuning = set_tuning.clone();
+            let selected = selected_preset.clone();
+            let describe = describe_source.clone();
+            let id = preset.id.clone();
+            let preset_tuning = preset.tuning.clone();
+            let popover = presets_popover.clone();
+            button.connect_clicked(move |_| {
+                set_tuning(&preset_tuning);
+                *selected.borrow_mut() = id.clone();
+                describe();
+                popover.popdown();
+            });
+            presets_box.append(&button);
+        }
+    }
+    let separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+    presets_box.append(&separator);
+    let save_as = gtk::Button::builder()
+        .label(tr("Save as GPU preset…", "Сохранить как пресет GPU…"))
+        .css_classes(["flat"])
+        .halign(gtk::Align::Fill)
+        .build();
+    {
+        let app = app.clone();
+        let uuid = uuid.clone();
+        let gpu_name = name.clone();
+        let make_tuning = make_tuning.clone();
+        let selected = selected_preset.clone();
+        let describe = describe_source.clone();
+        save_as.connect_clicked(move |_| {
+            let tuning = make_tuning();
+            let app = app.clone();
+            let uuid = uuid.clone();
+            let gpu_name = gpu_name.clone();
+            let selected = selected.clone();
+            let describe = describe.clone();
+            save_gpu_preset_dialog(
+                &app,
+                &uuid,
+                &gpu_name,
+                &tuning,
+                Rc::new(move |id| {
+                    *selected.borrow_mut() = id;
+                    describe();
+                }),
+            );
+        });
+    }
+    presets_box.append(&save_as);
+    let manage = gtk::Button::builder()
+        .label(tr("Manage GPU presets…", "Управление пресетами GPU…"))
+        .css_classes(["flat"])
+        .halign(gtk::Align::Fill)
+        .build();
+    {
+        let app = app.clone();
+        manage.connect_clicked(move |_| manage_gpu_presets_dialog(&app));
+    }
+    presets_box.append(&manage);
+    {
+        let popover = presets_popover.clone();
+        manage_click_close(&manage, &popover);
+    }
+    presets_popover.set_child(Some(&presets_box));
+
     {
         let core_row = core.clone();
         let memory_row = memory.clone();
@@ -3970,24 +4655,21 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
             });
             sync_lock_row(row, &memory_row, true);
         });
+        let describe = describe_source.clone();
+        power.connect_notify_local(Some("value"), move |_, _| describe());
+        let describe = describe_source.clone();
+        core.connect_notify_local(Some("value"), move |_, _| describe());
+        let describe = describe_source.clone();
+        memory.connect_notify_local(Some("value"), move |_, _| describe());
+        let describe = describe_source.clone();
+        core_lock.connect_notify_local(Some("active"), move |_, _| describe());
+        let describe = describe_source.clone();
+        memory_lock.connect_notify_local(Some("active"), move |_, _| describe());
     }
     {
-        let app = app.clone();
         let dialog = dialog.clone();
-        let uuid = uuid.clone();
-        profile_default.connect_clicked(move |_| {
-            {
-                let mut cfg = app.config.borrow_mut();
-                let profile = cfg.gpu_profile_mut();
-                profile.per_gpu.remove(&uuid);
-            }
-            mark_dirty(&app);
+        cancel.connect_clicked(move |_| {
             dialog.close();
-            app.toast.add_toast(adw::Toast::new(&tr(
-                "Card follows the profile default again",
-                "Карта снова использует профиль по умолчанию",
-            )));
-            save_and_apply(&app);
         });
     }
     {
@@ -3996,26 +4678,10 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         let uuid = uuid.clone();
         let same_uuids = same_uuids.clone();
         let all_uuids = all_uuids.clone();
-        let base_tuning = base_tuning.clone();
+        let selected = selected_preset.clone();
+        let make_tuning = make_tuning.clone();
         save.connect_clicked(move |_| {
-            let core_value = core.value() as u32;
-            let memory_value = memory.value() as u32;
-            // Keep the fields this dialog does not own (fan/temperature are
-            // global and are edited elsewhere).
-            let mut tuning = base_tuning.clone();
-            tuning.enabled = enabled;
-            tuning.custom = true;
-            tuning.power_limit_w = nonzero(power.value() as u32);
-            tuning.core_clock_mhz = if core_lock.is_active() && core_value >= 100 {
-                Some(core_value)
-            } else {
-                None
-            };
-            tuning.memory_clock_mhz = if memory_lock.is_active() && memory_value >= 100 {
-                Some(memory_value)
-            } else {
-                None
-            };
+            let mut tuning = make_tuning();
             let mut targets = vec![uuid.clone()];
             if apply_all
                 .as_ref()
@@ -4032,23 +4698,43 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
             }
             targets.sort();
             targets.dedup();
+            let selected_id = selected.borrow().clone();
+            if !selected_id.is_empty() {
+                if let Some(preset) = app.config.borrow().gpu_presets.get(&selected_id) {
+                    if !same_tuning(&preset.tuning, &tuning) {
+                        tuning.gpu_preset.clear();
+                    } else {
+                        tuning.gpu_preset = selected_id;
+                    }
+                } else {
+                    tuning.gpu_preset.clear();
+                }
+            }
             {
                 let mut cfg = app.config.borrow_mut();
-                let profile = cfg.gpu_profile_mut();
+                let Some(profile) = cfg.gpu_profile_mut() else {
+                    return;
+                };
+                let before = profile.tuning_for(&uuid);
                 for target in &targets {
-                    profile.per_gpu.insert(target.clone(), tuning.clone());
+                    let mut value = tuning.clone();
+                    if target != &uuid {
+                        value.gpu_preset.clear();
+                    }
+                    profile.per_gpu.insert(target.clone(), value);
+                }
+                let after = profile.tuning_for(&uuid);
+                let only_metadata = same_values(&before, &after)
+                    && targets.len() == 1
+                    && before.gpu_preset == after.gpu_preset;
+                drop(cfg);
+                if only_metadata {
+                    dialog.close();
+                    return;
                 }
             }
             mark_dirty(&app);
             dialog.close();
-            app.toast.add_toast(adw::Toast::new(&format!(
-                "{}: {}",
-                tr(
-                    "GPU tuning saved; applying…",
-                    "Настройка GPU сохранена; применяю…"
-                ),
-                targets.len()
-            )));
             save_and_apply(&app);
         });
     }
@@ -4066,752 +4752,350 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     }
 }
 
-// ------------------------------------------------------------ quick setup
-
-/// One card row of the quick-setup wizard: the enable switch, its power limit
-/// and the stock limit used by the "80%" helper.
-struct SetupCard {
-    uuid: String,
-    row: adw::ExpanderRow,
-    power: adw::SpinRow,
-    stock_w: Option<f64>,
+fn same_values(left: &GpuTuning, right: &GpuTuning) -> bool {
+    left.enabled == right.enabled
+        && left.power_limit_w == right.power_limit_w
+        && left.core_clock_mhz == right.core_clock_mhz
+        && left.memory_clock_mhz == right.memory_clock_mhz
 }
 
-/// Subtitle of a wizard card row: stock limit plus the currently chosen limit,
-/// so filling the 80 % value is visible without expanding the row.
-fn setup_card_subtitle(stock: Option<f64>, limit_w: u32) -> String {
-    let limit = if limit_w == 0 {
-        tr("auto", "авто")
-    } else {
-        format!("{limit_w} W")
-    };
-    match stock {
-        Some(watts) => format!(
-            "{}: {:.0} W · {}: {}",
-            tr("stock", "сток"),
-            watts,
-            tr("limit", "лимит"),
-            limit
-        ),
-        None => format!("{}: {}", tr("limit", "лимит"), limit),
-    }
+fn same_tuning(left: &GpuTuning, right: &GpuTuning) -> bool {
+    same_values(left, right)
 }
 
-fn string_list(values: &[String]) -> gtk::StringList {
-    let refs: Vec<&str> = values.iter().map(String::as_str).collect();
-    gtk::StringList::new(&refs)
+fn tuning_summary(tuning: &GpuTuning) -> String {
+    let power = tuning
+        .power_limit_w
+        .map(|value| format!("{value} W"))
+        .unwrap_or_else(|| tr("auto power", "авто-питание").to_string());
+    let core = tuning
+        .core_clock_mhz
+        .map(|value| format!("{value} MHz core"))
+        .unwrap_or_else(|| tr("auto core", "авто ядро").to_string());
+    let memory = tuning
+        .memory_clock_mhz
+        .map(|value| format!("{value} MHz mem"))
+        .unwrap_or_else(|| tr("auto mem", "авто память").to_string());
+    format!("{power} · {core} · {memory}")
 }
 
-fn setup_miner_versions(app: &Rc<App>, miner_row: &adw::ComboRow, version_row: &adw::ComboRow) {
-    let previous = version_row.selected() as usize;
-    let Some(def) = catalog::miners().get(miner_row.selected() as usize) else {
-        version_row.set_model(Some(&string_list(&[])));
-        return;
-    };
-    let installed = catalog::installed_versions(&app.config.borrow(), &def.id);
-    let labels: Vec<String> = miner_version_list(&app.config.borrow(), def)
-        .into_iter()
-        .map(|version| {
-            if installed.contains(&version) {
-                format!("{version} ✓")
-            } else {
-                version
-            }
-        })
-        .collect();
-    version_row.set_model(Some(&string_list(&labels)));
-    if !labels.is_empty() {
-        version_row.set_selected(previous.min(labels.len() - 1) as u32);
-    }
+fn manage_click_close(button: &gtk::Button, popover: &gtk::Popover) {
+    let popover = popover.clone();
+    button.connect_clicked(move |_| popover.popdown());
 }
 
-fn setup_miner_state(
+fn save_gpu_preset_dialog(
     app: &Rc<App>,
-    miner_row: &adw::ComboRow,
-    version_row: &adw::ComboRow,
-    install_row: &adw::ActionRow,
-    fee_row: &adw::ActionRow,
+    gpu_uuid: &str,
+    gpu_name: &str,
+    tuning: &GpuTuning,
+    on_saved: Rc<dyn Fn(String)>,
 ) {
-    let Some(def) = catalog::miners().get(miner_row.selected() as usize) else {
-        install_row.set_subtitle(&tr("Choose a miner", "Выберите майнера"));
-        fee_row.set_subtitle("—");
-        return;
-    };
-    let version = selected_version(app, miner_row, version_row);
-    let installed = app.config.borrow().install(&def.id, &version).is_some();
-    let state = if installed {
-        tr("Installed", "Установлен")
-    } else {
-        tr("Not installed", "Не установлен")
-    };
-    install_row.set_subtitle(&format!("{state} · {} {version}", def.id));
-    install_row.set_subtitle_lines(2);
-    fee_row.set_subtitle(&format!(
-        "{:.2}% · {}",
-        def.fee_pct,
-        if def.fee_configurable {
-            tr("editable per preset", "меняется в пресете")
-        } else {
-            tr("fixed by the miner", "фиксирована майнером")
-        }
-    ));
-}
-
-fn show_setup_step(
-    step: u32,
-    stack: &gtk::Stack,
-    title: &adw::WindowTitle,
-    back: &gtk::Button,
-    next: &gtk::Button,
-    status: &gtk::Label,
-) {
-    let pages = ["cards", "miner", "wallet"];
-    let titles = [
-        tr("Step 1 of 3 · Cards", "Шаг 1 из 3 · Карты"),
-        tr("Step 2 of 3 · Miner", "Шаг 2 из 3 · Майнер"),
-        tr("Step 3 of 3 · Wallet", "Шаг 3 из 3 · Кошелёк"),
-    ];
-    let index = (step as usize).min(pages.len() - 1);
-    stack.set_visible_child_name(pages[index]);
-    title.set_subtitle(&titles[index]);
-    let back_text = if index == 0 {
-        tr("Cancel", "Отмена")
-    } else {
-        tr("Back", "Назад")
-    };
-    back.set_label(&back_text);
-    let next_text = if index == pages.len() - 1 {
-        tr("Start mining", "Запустить майнинг")
-    } else {
-        tr("Next", "Далее")
-    };
-    next.set_label(&next_text);
-    set_status_text(status, "", "");
-}
-
-/// Three-step wizard for a first start: cards → miner → wallet → Start.
-fn quick_setup_wizard(app: &Rc<App>) {
-    let gpus: Vec<GpuStats> = app
-        .status
-        .borrow()
-        .as_ref()
-        .map(|status| status.gpus.clone())
-        .unwrap_or_default();
-    let (preset, profile) = {
-        let cfg = app.config.borrow();
-        (
-            cfg.preset().cloned().unwrap_or_else(Preset::new_pearl),
-            cfg.gpu_profile().cloned().unwrap_or_default(),
-        )
-    };
-
     let dialog = adw::Dialog::builder()
-        .title(tr("Quick setup", "Быстрая настройка"))
-        .content_width(620)
+        .title(tr("Save GPU preset", "Сохранить пресет GPU"))
+        .content_width(420)
         .build();
     let header = adw::HeaderBar::new();
-    // The step name is a subtitle, not a page title: the header stays a plain
-    // title bar, and Cancel/Back/Next live in the footer.
-    let window_title = adw::WindowTitle::new(
-        &tr("Quick setup", "Быстрая настройка"),
-        &tr("Step 1 of 3 · Cards", "Шаг 1 из 3 · Карты"),
-    );
-    header.set_title_widget(Some(&window_title));
     header.set_show_end_title_buttons(false);
-    let back = gtk::Button::builder()
+    let name = adw::EntryRow::builder()
+        .title(tr("Preset name", "Название пресета"))
+        .build();
+    let group = adw::PreferencesGroup::builder()
+        .title(format!("{gpu_name} · {gpu_uuid}"))
+        .description(tuning_summary(tuning))
+        .build();
+    group.add(&name);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+    let cancel = gtk::Button::builder()
         .label(tr("Cancel", "Отмена"))
         .css_classes(["flat", "pill"])
         .build();
-    let next = gtk::Button::builder()
-        .label(tr("Next", "Далее"))
+    let save = gtk::Button::builder()
+        .label(tr("Save", "Сохранить"))
         .css_classes(["suggested-action", "pill"])
         .build();
+    let status = label("", &["caption", "dim-label"]);
     let footer = dialog_footer();
-    footer.append(&back);
+    footer.append(&cancel);
+    footer.append(&status);
     footer.append(&dialog_footer_spacer());
-    footer.append(&next);
-
-    let stack = gtk::Stack::new();
-    stack.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
-    stack.set_transition_duration(180);
-    stack.set_vexpand(true);
-
-    // Step 1 — cards and power limits.
-    let cards: Rc<RefCell<Vec<SetupCard>>> = Rc::new(RefCell::new(Vec::new()));
-    let cards_page = adw::PreferencesPage::new();
-    let cards_group = adw::PreferencesGroup::builder()
-        .title(tr("Cards to mine on", "Карты для майнинга"))
-        .description(tr(
-            "Each card keeps its own power limit. Untick a card to exclude it from mining: it is not passed to the miner and is not tuned.",
-            "У каждой карты свой лимит питания. Снимите галочку, чтобы исключить карту из майнинга: она не передаётся майнеру и не разгоняется.",
-        ))
-        .build();
-    for gpu in &gpus {
-        // The wizard writes per-card overrides, so it must start from the
-        // per-card value (or "auto"), not from a default profile that may have
-        // been tuned for another model.
-        let explicit = profile.per_gpu.get(&gpu.uuid).cloned();
-        let stock = gpu.power_default_w.or(gpu.power_limit_w);
-        let limit = explicit
-            .as_ref()
-            .and_then(|tuning| tuning.power_limit_w)
-            .unwrap_or(0);
-        let enabled = explicit
-            .as_ref()
-            .map(|tuning| tuning.enabled)
-            .unwrap_or(true);
-        let row = adw::ExpanderRow::builder()
-            .title(format!("GPU #{} · {}", gpu.index, gpu.name))
-            .subtitle(setup_card_subtitle(stock, limit))
-            .build();
-        row.set_show_enable_switch(true);
-        row.set_enable_expansion(enabled);
-        row.set_expanded(false);
-        let power = spin_row(
-            &tr("Power limit", "Лимит питания"),
-            &tr("W — 0 = driver auto", "Вт — 0 = авто драйвера"),
-            limit as f64,
-            0.0,
-            1000.0,
-        );
-        row.add_row(&power);
-        {
-            let row = row.clone();
-            power.connect_notify_local(Some("value"), move |spin, _| {
-                row.set_subtitle(&setup_card_subtitle(stock, spin.value() as u32));
-            });
-        }
-        cards_group.add(&row);
-        cards.borrow_mut().push(SetupCard {
-            uuid: gpu.uuid.clone(),
-            row,
-            power,
-            stock_w: stock,
+    footer.append(&save);
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&dialog_body(&page, &footer)));
+    dialog.set_child(Some(&toolbar));
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| {
+            dialog.close();
         });
     }
-    if gpus.is_empty() {
-        cards_group.add(
+    {
+        let app = app.clone();
+        let dialog = dialog.clone();
+        let name = name.clone();
+        let status = status.clone();
+        let gpu_uuid = gpu_uuid.to_string();
+        let gpu_name = gpu_name.to_string();
+        let mut tuning = tuning.clone();
+        tuning.custom = true;
+        tuning.gpu_preset.clear();
+        save.connect_clicked(move |_| {
+            let preset_name = name.text().trim().to_string();
+            if preset_name.is_empty() {
+                set_status_text(
+                    &status,
+                    &tr("Enter a preset name.", "Введите название."),
+                    "warning",
+                );
+                return;
+            }
+            if app
+                .config
+                .borrow()
+                .gpu_presets
+                .values()
+                .any(|preset| preset.name.eq_ignore_ascii_case(&preset_name))
+            {
+                set_status_text(
+                    &status,
+                    &tr(
+                        "A GPU preset with this name already exists.",
+                        "Пресет GPU с таким именем уже есть.",
+                    ),
+                    "warning",
+                );
+                return;
+            }
+            let now = util::now_unix();
+            let id = format!("gpu-{now}-{}", app.config.borrow().gpu_presets.len());
+            let preset = GpuPreset {
+                id: id.clone(),
+                name: preset_name,
+                gpu_uuid: gpu_uuid.clone(),
+                gpu_name: gpu_name.clone(),
+                tuning: tuning.clone(),
+                created_at: now,
+                updated_at: now,
+            };
+            app.config
+                .borrow_mut()
+                .gpu_presets
+                .insert(id.clone(), preset);
+            mark_dirty(&app);
+            dialog.close();
+            on_saved(id);
+            app.toast.add_toast(adw::Toast::new(&tr(
+                "GPU preset saved; press Save to store it in this mining preset.",
+                "Пресет GPU сохранён; нажмите Save, чтобы закрепить его за этим пресетом.",
+            )));
+        });
+    }
+    dialog.present(Some(&app.window));
+}
+
+fn manage_gpu_presets_dialog(app: &Rc<App>) {
+    let dialog = adw::Dialog::builder()
+        .title(tr("GPU presets", "Пресеты GPU"))
+        .content_width(540)
+        .content_height(520)
+        .build();
+    let header = adw::HeaderBar::new();
+    header.set_show_end_title_buttons(false);
+    let close = gtk::Button::builder()
+        .label(tr("Close", "Закрыть"))
+        .css_classes(["flat", "pill"])
+        .build();
+    let footer = dialog_footer();
+    footer.append(&dialog_footer_spacer());
+    footer.append(&close);
+    let page = adw::PreferencesPage::new();
+    let group = adw::PreferencesGroup::builder()
+        .title(tr("Saved GPU presets", "Сохранённые пресеты GPU"))
+        .description(tr(
+            "Per-card power and clock templates. Deleting one keeps the values already stored in mining presets.",
+            "Шаблоны питания и частот для карт. Удаление не меняет значения, уже сохранённые в пресетах майнинга.",
+        ))
+        .build();
+    let presets: Vec<_> = app.config.borrow().gpu_presets.values().cloned().collect();
+    if presets.is_empty() {
+        group.add(
             &adw::ActionRow::builder()
-                .title(tr("No GPU detected", "Карты не обнаружены"))
+                .title(tr("No saved GPU presets", "Нет сохранённых пресетов GPU"))
                 .subtitle(tr(
-                    "The service is offline or nvidia-smi failed. The preset is still saved.",
-                    "Сервис недоступен или nvidia-smi не отвечает. Пресет всё равно сохранится.",
+                    "Open a card's Tune dialog and use Save as GPU preset.",
+                    "Откройте настройку карты и выберите «Сохранить как пресет GPU».",
                 ))
                 .build(),
         );
     }
-    cards_page.add(&cards_group);
-
-    let safe_group = adw::PreferencesGroup::builder()
-        .title(tr("Safe start", "Безопасный старт"))
-        .description(tr(
-            "Recommended is 80% of the stock power limit with clock locks off. It is a safe start, not a promise of maximum hashrate.",
-            "«Рекомендуемый» — 80% стокового лимита питания без локов частот. Это безопасный старт, а не обещание максимального хешрейта.",
-        ))
-        .build();
-    let fill_row = adw::ActionRow::builder()
-        .title(tr("80% of stock power", "80% стокового питания"))
-        .subtitle(tr(
-            "Fills the limit row of every ticked card",
-            "Заполняет лимит каждой отмеченной карты",
-        ))
-        .build();
-    let fill = gtk::Button::builder()
-        .label(tr("Apply 80 %", "Поставить 80 %"))
-        .css_classes(["flat", "pill"])
-        .valign(gtk::Align::Center)
-        .build();
-    fill_row.add_suffix(&fill);
-    safe_group.add(&fill_row);
-    let auto_row = adw::ActionRow::builder()
-        .title(tr("Driver auto", "Авто драйвера"))
-        .subtitle(tr(
-            "No power limit; the driver decides",
-            "Без лимита питания; решает драйвер",
-        ))
-        .build();
-    let clear = gtk::Button::builder()
-        .label(tr("Use auto", "Авто"))
-        .css_classes(["flat", "pill"])
-        .valign(gtk::Align::Center)
-        .build();
-    auto_row.add_suffix(&clear);
-    safe_group.add(&auto_row);
-    cards_page.add(&safe_group);
-    stack.add_named(&cards_page, Some("cards"));
-    {
-        let cards = cards.clone();
-        let fill_row = fill_row.clone();
-        fill.connect_clicked(move |_| {
-            let mut applied = Vec::new();
-            for card in cards.borrow().iter() {
-                if !card.row.enables_expansion() {
-                    continue;
-                }
-                let Some(stock) = card.stock_w else {
-                    continue;
-                };
-                let watts = (stock * 0.8).round().max(50.0);
-                card.power.set_value(watts);
-                card.row.set_expanded(true);
-                applied.push(format!("{watts:.0} W"));
-            }
-            if applied.is_empty() {
-                fill_row.set_subtitle(&tr(
-                    "Tick a card with a known stock limit first.",
-                    "Сначала отметьте карту с известным стоковым лимитом.",
-                ));
-            } else {
-                fill_row.set_subtitle(&format!(
-                    "{}: {}",
-                    tr("Applied", "Применено"),
-                    applied.join(" · ")
-                ));
-            }
-        });
-    }
-    {
-        let cards = cards.clone();
-        clear.connect_clicked(move |_| {
-            for card in cards.borrow().iter() {
-                card.power.set_value(0.0);
-            }
-        });
-    }
-
-    // Step 2 — miner and version.
-    let miner_page = adw::PreferencesPage::new();
-    let miner_group = adw::PreferencesGroup::builder()
-        .title(tr("Miner", "Майнер"))
-        .description(tr(
-            "Install once; every preset can reuse it. Only one miner runs at a time.",
-            "Установите один раз; все пресеты могут его использовать. Одновременно работает один майнер.",
-        ))
-        .build();
-    let miner_row = adw::ComboRow::builder()
-        .title(tr("Miner", "Майнер"))
-        .model(&string_list(&miner_names()))
-        .selected(miner_index(&preset.miner))
-        .build();
-    let version_row = adw::ComboRow::builder()
-        .title(tr("Version", "Версия"))
-        .build();
-    let fee_row = adw::ActionRow::builder()
-        .title(tr("Fee", "Комиссия"))
-        .build();
-    let install_row = adw::ActionRow::builder()
-        .title(tr("Installation", "Установка"))
-        .build();
-    let install_button = gtk::Button::builder()
-        .label(tr("Install…", "Установить…"))
-        .css_classes(["flat", "pill"])
-        .valign(gtk::Align::Center)
-        .build();
-    install_row.add_suffix(&install_button);
-    miner_group.add(&miner_row);
-    miner_group.add(&version_row);
-    miner_group.add(&fee_row);
-    miner_group.add(&install_row);
-    miner_page.add(&miner_group);
-    stack.add_named(&miner_page, Some("miner"));
-    setup_miner_versions(app, &miner_row, &version_row);
-    if let Some(def) = catalog::miner(&preset.miner) {
-        let versions = miner_version_list(&app.config.borrow(), def);
-        if let Some(index) = versions.iter().position(|v| *v == preset.miner_version) {
-            version_row.set_selected(index as u32);
+    for preset in presets {
+        let used = app
+            .config
+            .borrow()
+            .presets
+            .values()
+            .filter(|mining| {
+                mining
+                    .gpu
+                    .per_gpu
+                    .values()
+                    .any(|tuning| tuning.gpu_preset == preset.id)
+            })
+            .count();
+        let row = adw::ActionRow::builder()
+            .title(&preset.name)
+            .subtitle(format!(
+                "{} · {} · {} {}",
+                preset.gpu_name,
+                tuning_summary(&preset.tuning),
+                tr("used by", "используется"),
+                used
+            ))
+            .build();
+        let rename = gtk::Button::builder()
+            .label(tr("Rename", "Переименовать"))
+            .css_classes(["flat", "pill"])
+            .valign(gtk::Align::Center)
+            .build();
+        let delete = gtk::Button::builder()
+            .label(tr("Delete…", "Удалить…"))
+            .css_classes(["destructive-action", "pill"])
+            .valign(gtk::Align::Center)
+            .build();
+        row.add_suffix(&rename);
+        row.add_suffix(&delete);
+        group.add(&row);
+        {
+            let app = app.clone();
+            let preset = preset.clone();
+            rename.connect_clicked(move |_| rename_gpu_preset_dialog(&app, &preset));
+        }
+        {
+            let app = app.clone();
+            let dialog = dialog.clone();
+            let preset = preset.clone();
+            delete.connect_clicked(move |_| {
+                delete_gpu_preset_dialog(&app, &preset, Some(&dialog));
+            });
         }
     }
-    setup_miner_state(app, &miner_row, &version_row, &install_row, &fee_row);
+    page.add(&group);
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&dialog_body(&page, &footer)));
+    dialog.set_child(Some(&toolbar));
     {
-        let app = app.clone();
-        let miner_row = miner_row.clone();
-        let version_row = version_row.clone();
-        let install_row = install_row.clone();
-        let fee_row = fee_row.clone();
-        miner_row.connect_notify_local(Some("selected"), move |row, _| {
-            setup_miner_versions(&app, row, &version_row);
-            setup_miner_state(&app, row, &version_row, &install_row, &fee_row);
+        let dialog = dialog.clone();
+        close.connect_clicked(move |_| {
+            dialog.close();
         });
     }
-    {
-        let app = app.clone();
-        let miner_row = miner_row.clone();
-        let install_row = install_row.clone();
-        let fee_row = fee_row.clone();
-        version_row.connect_notify_local(Some("selected"), move |row, _| {
-            setup_miner_state(&app, &miner_row, row, &install_row, &fee_row);
-        });
-    }
-    {
-        let app = app.clone();
-        let miner_row = miner_row.clone();
-        let version_row = version_row.clone();
-        let install_row = install_row.clone();
-        let fee_row = fee_row.clone();
-        install_button.connect_clicked(move |_| {
-            let id = catalog::miners()
-                .get(miner_row.selected() as usize)
-                .map(|def| def.id.clone())
-                .unwrap_or_else(|| "wildrig".into());
-            let version = selected_version(&app, &miner_row, &version_row);
-            let app_done = app.clone();
-            let miner_done = miner_row.clone();
-            let version_done = version_row.clone();
-            let install_done = install_row.clone();
-            let fee_done = fee_row.clone();
-            let on_done: Rc<dyn Fn()> = Rc::new(move || {
-                setup_miner_state(
-                    &app_done,
-                    &miner_done,
-                    &version_done,
-                    &install_done,
-                    &fee_done,
-                );
-            });
-            miner_install_dialog(&app, &id, version, Some(on_done));
-        });
-    }
+    dialog.present(Some(&app.window));
+}
 
-    // Step 3 — wallet and pool.
-    let wallet_page = adw::PreferencesPage::new();
-    let form_group = adw::PreferencesGroup::builder()
-        .title(tr("Wallet and pool", "Кошелёк и пул"))
-        .description(tr(
-            "Nothing reaches the daemon until you press Start mining.",
-            "Ничего не передаётся сервису, пока вы не нажмёте «Запустить майнинг».",
-        ))
+fn rename_gpu_preset_dialog(app: &Rc<App>, preset: &GpuPreset) {
+    let dialog = adw::Dialog::builder()
+        .title(tr("Rename GPU preset", "Переименовать пресет GPU"))
+        .content_width(420)
         .build();
-    let name_row = adw::EntryRow::builder()
+    let header = adw::HeaderBar::new();
+    header.set_show_end_title_buttons(false);
+    let name = adw::EntryRow::builder()
         .title(tr("Preset name", "Название пресета"))
         .text(&preset.name)
         .build();
-    let wallet_row = adw::EntryRow::builder()
-        .title(tr("Wallet", "Кошелёк"))
-        .text(&preset.wallet)
+    let group = adw::PreferencesGroup::new();
+    group.add(&name);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+    let cancel = gtk::Button::builder()
+        .label(tr("Cancel", "Отмена"))
+        .css_classes(["flat", "pill"])
         .build();
-    let worker_row = adw::EntryRow::builder()
-        .title(tr("Worker", "Воркер"))
-        .text(&preset.worker)
+    let save = gtk::Button::builder()
+        .label(tr("Rename", "Переименовать"))
+        .css_classes(["suggested-action", "pill"])
         .build();
-    let pool_row = adw::ComboRow::builder()
-        .title(tr("Pool", "Пул"))
-        .model(&string_list(&pool_names()))
-        .selected(pool_index(&preset.pool))
-        .build();
-    let pool_url_row = adw::EntryRow::builder()
-        .title(tr("Pool address", "Адрес пула"))
-        .text(&preset.pool_url)
-        .build();
-    form_group.add(&name_row);
-    form_group.add(&wallet_row);
-    form_group.add(&worker_row);
-    form_group.add(&pool_row);
-    form_group.add(&pool_url_row);
-    wallet_page.add(&form_group);
-    let summary_group = adw::PreferencesGroup::new();
-    summary_group.add(
-        &adw::ActionRow::builder()
-            .title(tr("On Start", "По кнопке «Запустить»"))
-            .subtitle(tr(
-                "Trommel saves the preset, applies the power limits and starts the miner.",
-                "Trommel сохранит пресет, применит лимиты питания и запустит майнер.",
-            ))
-            .build(),
-    );
-    wallet_page.add(&summary_group);
-    stack.add_named(&wallet_page, Some("wallet"));
-    {
-        let pool_url_row = pool_url_row.clone();
-        pool_row.connect_notify_local(Some("selected"), move |row, _| {
-            if let Some(pool) = catalog::pools().get(row.selected() as usize) {
-                pool_url_row.set_text(&pool.url);
-            }
-        });
-    }
-
-    let status = label("", &["caption", "dim-label"]);
-    status.set_margin_top(8);
-    status.set_margin_bottom(10);
-    status.set_margin_start(12);
-    status.set_margin_end(12);
-    status.set_wrap(true);
-    status.set_halign(gtk::Align::Start);
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&stack);
-    content.append(&status);
-    content.append(&footer);
+    let footer = dialog_footer();
+    footer.append(&cancel);
+    footer.append(&dialog_footer_spacer());
+    footer.append(&save);
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
-    toolbar.set_content(Some(&content));
+    toolbar.set_content(Some(&dialog_body(&page, &footer)));
     dialog.set_child(Some(&toolbar));
-
-    let step = Rc::new(Cell::new(0u32));
     {
         let dialog = dialog.clone();
-        let step = step.clone();
-        let stack = stack.clone();
-        let window_title = window_title.clone();
-        let back_button = back.clone();
-        let next_button = next.clone();
-        let status = status.clone();
-        back.connect_clicked(move |_| {
-            if step.get() == 0 {
-                dialog.close();
-                return;
-            }
-            step.set(step.get() - 1);
-            show_setup_step(
-                step.get(),
-                &stack,
-                &window_title,
-                &back_button,
-                &next_button,
-                &status,
-            );
+        cancel.connect_clicked(move |_| {
+            dialog.close();
         });
     }
     {
         let app = app.clone();
         let dialog = dialog.clone();
-        let step = step.clone();
-        let stack = stack.clone();
-        let window_title = window_title.clone();
-        let back_button = back.clone();
-        let next_button = next.clone();
-        let status = status.clone();
-        let cards = cards.clone();
-        let miner_row = miner_row.clone();
-        let version_row = version_row.clone();
-        let install_row = install_row.clone();
-        let fee_row = fee_row.clone();
-        let name_row = name_row.clone();
-        let wallet_row = wallet_row.clone();
-        let worker_row = worker_row.clone();
-        let pool_row = pool_row.clone();
-        let pool_url_row = pool_url_row.clone();
-        next.connect_clicked(move |_| match step.get() {
-            0 => {
-                let picked = cards
-                    .borrow()
-                    .iter()
-                    .any(|card| card.row.enables_expansion());
-                if !picked && !cards.borrow().is_empty() {
-                    set_status_text(
-                        &status,
-                        &tr(
-                            "Tick at least one card, or leave the wizard and tune cards later.",
-                            "Отметьте хотя бы одну карту или настройте карты позже.",
-                        ),
-                        "warning",
-                    );
-                    return;
-                }
-                step.set(1);
-                show_setup_step(
-                    1,
-                    &stack,
-                    &window_title,
-                    &back_button,
-                    &next_button,
-                    &status,
-                );
+        let id = preset.id.clone();
+        let name = name.clone();
+        save.connect_clicked(move |_| {
+            let next = name.text().trim().to_string();
+            if next.is_empty() {
+                return;
             }
-            1 => {
-                setup_miner_state(&app, &miner_row, &version_row, &install_row, &fee_row);
-                step.set(2);
-                show_setup_step(
-                    2,
-                    &stack,
-                    &window_title,
-                    &back_button,
-                    &next_button,
-                    &status,
-                );
+            if let Some(preset) = app.config.borrow_mut().gpu_presets.get_mut(&id) {
+                preset.name = next;
+                preset.updated_at = util::now_unix();
             }
-            _ => {
-                finish_quick_setup(
-                    &app,
-                    &dialog,
-                    &cards,
-                    &miner_row,
-                    &version_row,
-                    &name_row,
-                    &wallet_row,
-                    &worker_row,
-                    &pool_row,
-                    &pool_url_row,
-                    &status,
-                );
-            }
+            mark_dirty(&app);
+            dialog.close();
+            save_and_apply(&app);
         });
-    }
-
-    // Documentation screenshots can open a later step directly.
-    if let Some(initial) = std::env::var("TROMMEL_WIZARD_STEP")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-    {
-        let initial = initial.min(2);
-        if initial > 0 {
-            step.set(initial);
-            show_setup_step(initial, &stack, &window_title, &back, &next, &status);
-        }
     }
     dialog.present(Some(&app.window));
-    if let Some(path) = std::env::var_os("TROMMEL_WIZARD_SCREENSHOT") {
-        let path = path.to_string_lossy().into_owned();
-        let capture = app.window.clone();
-        let application = app.window.application();
-        glib::timeout_add_seconds_local(3, move || {
-            if let Some(application) = application.clone() {
-                schedule_screenshot(capture.clone(), path.clone(), application, 0);
-            }
-            glib::ControlFlow::Break
-        });
-    }
 }
 
-/// Commit the wizard draft, then start the miner (or offer apply when running).
-#[allow(clippy::too_many_arguments)]
-fn finish_quick_setup(
-    app: &Rc<App>,
-    dialog: &adw::Dialog,
-    cards: &Rc<RefCell<Vec<SetupCard>>>,
-    miner_row: &adw::ComboRow,
-    version_row: &adw::ComboRow,
-    name_row: &adw::EntryRow,
-    wallet_row: &adw::EntryRow,
-    worker_row: &adw::EntryRow,
-    pool_row: &adw::ComboRow,
-    pool_url_row: &adw::EntryRow,
-    status: &gtk::Label,
-) -> bool {
-    let Some(def) = catalog::miners()
-        .get(miner_row.selected() as usize)
-        .cloned()
-    else {
-        set_status_text(
-            status,
-            &tr("Choose a miner.", "Выберите майнера."),
-            "warning",
-        );
-        return false;
-    };
-    let version = selected_version(app, miner_row, version_row);
-    if app.config.borrow().install(&def.id, &version).is_none() {
-        set_status_text(
-            status,
-            &tr(
-                "Install the selected miner version first — use Install.",
-                "Сначала установите выбранную версию майнера — кнопка «Установить».",
-            ),
-            "warning",
-        );
-        return false;
-    }
-    let wallet = wallet_row.text().trim().to_string();
-    if wallet.is_empty() {
-        set_status_text(
-            status,
-            &tr(
-                "Enter the wallet address — mining cannot start without it.",
-                "Введите адрес кошелька — без него майнинг не запустится.",
-            ),
-            "warning",
-        );
-        return false;
-    }
-    let pool_url = pool_url_row.text().trim().to_string();
-    if !pool_url.contains(':') {
-        set_status_text(
-            status,
-            &tr(
-                "The pool address needs a port, for example pool.pearlhash.xyz:9000.",
-                "В адресе пула нужен порт, например pool.pearlhash.xyz:9000.",
-            ),
-            "warning",
-        );
-        return false;
-    }
-    let pool_id = catalog::pools()
-        .get(pool_row.selected() as usize)
-        .map(|pool| pool.id.clone())
-        .unwrap_or_else(|| "pearlhash".into());
-    let running = app
-        .status
-        .borrow()
-        .as_ref()
-        .map(|status| status.state.running)
-        .unwrap_or(false);
-    let mut preset_name = name_row.text().trim().to_string();
-    if preset_name.is_empty() {
-        preset_name = tr("Quick setup", "Быстрая настройка").to_string();
-    }
-    {
-        let mut cfg = app.config.borrow_mut();
-        let id = cfg
-            .active_preset
-            .clone()
-            .unwrap_or_else(|| trommel_core::config::DEFAULT_PRESET_ID.to_string());
-        let mut preset = cfg
-            .presets
-            .get(&id)
-            .cloned()
-            .unwrap_or_else(Preset::new_pearl);
-        preset.id = id.clone();
-        preset.name = preset_name;
-        preset.wallet = wallet;
-        preset.worker = worker_row.text().to_string();
-        preset.pool = pool_id.clone();
-        preset.pool_url = pool_url;
-        preset.pool_fee_pct = catalog::pool_fee_pct(&pool_id);
-        if preset.miner != def.id {
-            preset.miner_options = def.default_options();
+fn delete_gpu_preset_dialog(app: &Rc<App>, preset: &GpuPreset, parent: Option<&adw::Dialog>) {
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr("Delete GPU preset?", "Удалить пресет GPU?"))
+        .body(format!(
+            "{} «{}». {}",
+            tr("This removes", "Удаляется"),
+            preset.name,
+            tr(
+                "Values already stored in mining presets stay; only the saved template and its links are removed.",
+                "Значения в пресетах майнинга останутся; удаляется только сохранённый шаблон и ссылки на него.",
+            )
+        ))
+        .build();
+    dialog.add_response("cancel", &tr("Cancel", "Отмена"));
+    dialog.add_response("delete", &tr("Delete", "Удалить"));
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    dialog.set_close_response("cancel");
+    let app = app.clone();
+    let preset = preset.clone();
+    let parent = parent.cloned();
+    let window = app.window.clone();
+    dialog.choose(Some(&window), None::<&gio::Cancellable>, move |response| {
+        if response != "delete" {
+            return;
         }
-        preset.miner = def.id.clone();
-        preset.miner_version = version;
-        preset.miner_fee_pct = def.fee_pct;
-        preset.miner_fee_override_pct = None;
-        preset.updated_at = util::now_unix();
-        cfg.presets.insert(id.clone(), preset);
-        cfg.active_preset = Some(id);
         {
-            let profile = cfg.gpu_profile_mut();
-            let default_power = profile.default.power_limit_w;
-            let default_enabled = profile.default.enabled;
-            for card in cards.borrow().iter() {
-                let was_custom = profile.is_custom(&card.uuid);
-                let mut tuning = profile.tuning_for(&card.uuid);
-                tuning.enabled = card.row.enables_expansion();
-                tuning.power_limit_w = nonzero(card.power.value() as u32);
-                // Only an actual difference from the default is an override;
-                // otherwise the card keeps following the profile defaults.
-                tuning.custom = was_custom
-                    || tuning.power_limit_w != default_power
-                    || tuning.enabled != default_enabled;
-                profile.per_gpu.insert(card.uuid.clone(), tuning);
+            let mut cfg = app.config.borrow_mut();
+            cfg.gpu_presets.remove(&preset.id);
+            for mining in cfg.presets.values_mut() {
+                for tuning in mining.gpu.per_gpu.values_mut() {
+                    if tuning.gpu_preset == preset.id {
+                        tuning.gpu_preset.clear();
+                    }
+                }
             }
         }
-    }
-    mark_dirty(app);
-    refresh_preset_list(app);
-    dialog.close();
-    app.stack.set_visible_child_name("dashboard");
-    if running {
-        app.toast.add_toast(adw::Toast::new(&tr(
-            "Setup saved; apply it to the running miner.",
-            "Настройка сохранена; примените её к запущенному майнеру.",
-        )));
-        save_and_apply(app);
-    } else {
-        let json = serde_json::to_string(&*app.config.borrow()).unwrap_or_default();
-        let _ = app.tx.send(Cmd::ApplyStart { json });
-        app.toast.add_toast(adw::Toast::new(&tr(
-            "Starting the miner…",
-            "Запускаю майнер…",
-        )));
-    }
-    true
+        mark_dirty(&app);
+        if let Some(parent) = parent {
+            parent.close();
+        }
+        save_and_apply(&app);
+    });
 }
 
 // ------------------------------------------------------- miner installation
@@ -4840,9 +5124,9 @@ fn prefill_miner_source(
     }
 }
 
-/// The one place that installs a miner. The miner library, the preset editor
-/// and the quick-setup wizard all open this dialog, so version handling,
-/// download, import and the installed state live here exactly once.
+/// The one place that installs a miner. The miner library and the preset
+/// editor open this dialog, so version handling, download, import and the
+/// installed state live here exactly once.
 fn miner_install_dialog(
     app: &Rc<App>,
     miner_id: &str,
@@ -5401,14 +5685,12 @@ fn load_settings(app: &Rc<App>) {
             Appearance::Light => 1,
             Appearance::Dark => 2,
         });
-    if let Some(profile) = cfg.gpu_profile() {
-        app.settings
-            .temp_limit
-            .set_value(profile.default.temp_limit_c as f64);
-        app.settings
-            .temp_resume
-            .set_value(profile.default.temp_resume_c as f64);
-    }
+    app.settings
+        .temp_limit
+        .set_value(cfg.behavior.temp_limit_c as f64);
+    app.settings
+        .temp_resume
+        .set_value(cfg.behavior.temp_resume_c as f64);
 }
 
 fn apply_appearance(appearance: Appearance) {
@@ -5438,9 +5720,8 @@ fn save_settings(app: &Rc<App>) {
         2 => Appearance::Dark,
         _ => Appearance::System,
     };
-    let profile = cfg.gpu_profile_mut();
-    profile.default.temp_limit_c = app.settings.temp_limit.value() as u32;
-    profile.default.temp_resume_c = app.settings.temp_resume.value() as u32;
+    cfg.behavior.temp_limit_c = app.settings.temp_limit.value() as u32;
+    cfg.behavior.temp_resume_c = app.settings.temp_resume.value() as u32;
     set_mining_autostart_unit(app.settings.start_login.is_active());
     mark_dirty(app);
 }
@@ -5499,19 +5780,96 @@ fn nonzero(value: u32) -> Option<u32> {
     }
 }
 
-/// True when a first start would only fail validation: no preset, no wallet,
-/// or no miner binary on disk.
-fn needs_setup(app: &Rc<App>) -> bool {
+/// A concrete reason Start cannot proceed, with a button that opens the
+/// preset editor instead of an old quick-setup wizard.
+struct SetupProblem {
+    heading: String,
+    body: String,
+}
+
+fn preset_setup_problem(app: &Rc<App>) -> Option<SetupProblem> {
     let cfg = app.config.borrow();
-    let Some(preset) = cfg.preset() else {
-        return true;
-    };
+    let preset = cfg.preset()?;
     if preset.wallet.trim().is_empty() {
-        return true;
+        return Some(SetupProblem {
+            heading: tr("Add a wallet", "Добавьте кошелёк"),
+            body: tr(
+                "This preset has no wallet address yet. Open the preset, fill in the wallet and save it.",
+                "В пресете ещё нет адреса кошелька. Откройте пресет, укажите кошелёк и сохраните.",
+            ),
+        });
     }
-    !cfg.miner_path(preset)
+    if !preset.pool_url.contains(':') {
+        return Some(SetupProblem {
+            heading: tr("Add a pool address", "Добавьте адрес пула"),
+            body: tr(
+                "The preset has no valid pool address (expected host:port). Open the preset and enter the endpoint your pool gave you.",
+                "В пресете нет корректного адреса пула (ожидается host:port). Откройте пресет и укажите endpoint, который выдал пул.",
+            ),
+        });
+    }
+    if !cfg
+        .miner_path(preset)
         .map(|path| path.exists())
         .unwrap_or(false)
+    {
+        return Some(SetupProblem {
+            heading: tr("Install the miner version", "Установите версию майнера"),
+            body: format!(
+                "{} {} {}",
+                tr(
+                    "The preset pins a miner version that is not installed:",
+                    "Пресет закрепляет неустановленную версию майнера:"
+                ),
+                preset.miner,
+                preset.miner_version
+            ),
+        });
+    }
+    None
+}
+
+fn create_preset_alert(app: &Rc<App>) {
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr("Create a mining preset first", "Сначала создайте пресет"))
+        .body(tr(
+            "A preset stores the coin, pool, wallet, miner and GPU settings. Create one to start mining.",
+            "Пресет хранит монету, пул, кошелёк, майнер и настройки GPU. Создайте его, чтобы начать майнинг.",
+        ))
+        .build();
+    dialog.add_response("cancel", &tr("Cancel", "Отмена"));
+    dialog.add_response("create", &tr("Create preset", "Создать пресет"));
+    dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+    dialog.set_close_response("cancel");
+    let app = app.clone();
+    let window = app.window.clone();
+    dialog.choose(Some(&window), None::<&gio::Cancellable>, move |response| {
+        if response == "create" {
+            app.stack.set_visible_child_name("presets");
+            new_preset(&app);
+        }
+    });
+}
+
+fn setup_problem_alert(app: &Rc<App>, problem: &SetupProblem) {
+    let dialog = adw::AlertDialog::builder()
+        .heading(&problem.heading)
+        .body(&problem.body)
+        .build();
+    dialog.add_response("cancel", &tr("Cancel", "Отмена"));
+    dialog.add_response("open", &tr("Open preset", "Открыть пресет"));
+    dialog.set_response_appearance("open", adw::ResponseAppearance::Suggested);
+    dialog.set_close_response("cancel");
+    let app = app.clone();
+    let window = app.window.clone();
+    dialog.choose(Some(&window), None::<&gio::Cancellable>, move |response| {
+        if response == "open" {
+            app.stack.set_visible_child_name("presets");
+            if let Some(id) = app.config.borrow().active_preset.clone() {
+                preset_editor_dialog(&app, &id);
+            }
+        }
+    });
 }
 
 fn save_and_apply(app: &Rc<App>) {
@@ -5533,12 +5891,21 @@ fn save_and_apply_with(app: &Rc<App>, on_cancel: Option<Rc<dyn Fn()>>) {
         .unwrap_or(false);
     let diff = applied.diff(&draft);
     if running && diff.class == ChangeClass::RestartRequired {
-        let dialog = adw::AlertDialog::builder()
-            .heading(tr("Apply changes?", "Применить изменения?"))
-            .body(tr(
+        let switching_preset = applied.active_preset != draft.active_preset;
+        let body = if switching_preset {
+            tr(
+                "The current miner will be stopped and the stock GPU state restored first, then the new preset is applied and started. Apply and restart, or apply and stop?",
+                "Сначала текущий майнер будет остановлен и сток GPU возвращён, затем новый пресет применится и запустится. Применить и перезапустить или применить и остановить?",
+            )
+        } else {
+            tr(
                 "The miner is running. GPU/miner changes need a restart. Apply and restart, or apply and stop?",
                 "Майнер запущен. Изменения GPU/майнера требуют перезапуска. Применить и перезапустить или применить и остановить?",
-            ))
+            )
+        };
+        let dialog = adw::AlertDialog::builder()
+            .heading(tr("Apply changes?", "Применить изменения?"))
+            .body(body)
             .build();
         dialog.add_response("cancel", &tr("Cancel", "Отмена"));
         dialog.add_response("stop", &tr("Apply and stop", "Применить и остановить"));
@@ -6085,18 +6452,27 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool, status: &Status) -> 
     header.append(&titles);
 
     let toggle = gtk::Switch::new();
+    let has_preset = app.config.borrow().preset().is_some();
     let enabled = app
         .config
         .borrow()
         .gpu_profile()
         .map(|profile| profile.tuning_for(&gpu.uuid).enabled)
-        .unwrap_or(true);
+        .unwrap_or(false);
     toggle.set_active(enabled);
+    toggle.set_sensitive(has_preset);
     toggle.set_valign(gtk::Align::Center);
-    toggle.set_tooltip_text(Some(&tr(
-        "Mine with this GPU. An excluded card is not passed to the miner and is not tuned.",
-        "Майнить на этой карте. Исключённая карта не передаётся майнеру и не разгоняется.",
-    )));
+    toggle.set_tooltip_text(Some(&if has_preset {
+        tr(
+            "Include this card in the active preset. An excluded card is not passed to the miner and is not tuned.",
+            "Включить карту в активный пресет. Исключённая карта не передаётся майнеру и не разгоняется.",
+        )
+    } else {
+        tr(
+            "Create a mining preset first; GPU participation belongs to the active preset.",
+            "Сначала создайте пресет майнинга; участие карты относится к активному пресету.",
+        )
+    }));
     let switch_label = tr(
         &format!("GPU {} mining", gpu.index),
         &format!("Карта {} в майнинге", gpu.index),
@@ -6128,12 +6504,15 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool, status: &Status) -> 
             }
             {
                 let mut cfg = app.config.borrow_mut();
-                let profile = cfg.gpu_profile_mut();
-                let custom = profile.is_custom(&uuid);
-                let mut tuning = profile.tuning_for(&uuid);
-                tuning.custom = custom;
-                tuning.enabled = new_enabled;
-                profile.per_gpu.insert(uuid.clone(), tuning);
+                if let Some(profile) = cfg.gpu_profile_mut() {
+                    let custom = profile.is_custom(&uuid);
+                    let mut tuning = profile.tuning_for(&uuid);
+                    tuning.custom = custom;
+                    tuning.enabled = new_enabled;
+                    profile.per_gpu.insert(uuid.clone(), tuning);
+                } else {
+                    return;
+                }
             }
             mark_dirty(&app);
             let app_for_cancel = app.clone();
@@ -6143,13 +6522,14 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool, status: &Status) -> 
             let on_cancel = Rc::new(move || {
                 {
                     let mut cfg = app_for_cancel.config.borrow_mut();
-                    let profile = cfg.gpu_profile_mut();
-                    match previous.clone() {
-                        Some(previous) => {
-                            profile.per_gpu.insert(uuid_for_cancel.clone(), previous);
-                        }
-                        None => {
-                            profile.per_gpu.remove(&uuid_for_cancel);
+                    if let Some(profile) = cfg.gpu_profile_mut() {
+                        match previous.clone() {
+                            Some(previous) => {
+                                profile.per_gpu.insert(uuid_for_cancel.clone(), previous);
+                            }
+                            None => {
+                                profile.per_gpu.remove(&uuid_for_cancel);
+                            }
                         }
                     }
                 }
@@ -6255,16 +6635,21 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool, status: &Status) -> 
         .util_pct
         .map(|value| format!("{value}%"))
         .unwrap_or_else(|| "—".into());
-    let tuning_label = if app
-        .config
-        .borrow()
-        .gpu_profile()
-        .map(|profile| profile.is_custom(&gpu.uuid))
-        .unwrap_or(false)
-    {
-        tr("custom", "своя")
-    } else {
-        tr("profile default", "профиль")
+    let tuning_label = {
+        let cfg = app.config.borrow();
+        match cfg.gpu_profile() {
+            None => tr("no preset", "нет пресета"),
+            Some(profile) => {
+                let tuning = profile.tuning_for(&gpu.uuid);
+                if !tuning.gpu_preset.is_empty() {
+                    tr("gpu preset", "пресет GPU")
+                } else if tuning.has_tuning() {
+                    tr("tuned", "настроено")
+                } else {
+                    tr("stock", "сток")
+                }
+            }
+        }
     };
     let stats = gtk::Grid::new();
     stats.set_column_spacing(if wide { 10 } else { 8 });
@@ -6319,7 +6704,9 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool, status: &Status) -> 
     let mining = role.map(|card| card.mining).unwrap_or(false);
     // The chip describes the applied session, not the draft switch. A card
     // whose switch was just turned off still says "mining" until Apply.
-    let (role_text, role_class) = if status.state.external {
+    let (role_text, role_class) = if !has_preset {
+        (String::new(), "")
+    } else if status.state.external {
         (tr("external", "вручную"), "trommel-warm")
     } else if !role_enabled {
         (tr("excluded", "исключена"), "trommel-muted")
@@ -6342,6 +6729,18 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool, status: &Status) -> 
     let tune = gtk::Button::builder()
         .label(tr("Tune", "Настроить"))
         .css_classes(["pill", "flat"])
+        .sensitive(has_preset)
+        .tooltip_text(if has_preset {
+            tr(
+                "Tune this card inside the active preset",
+                "Настроить карту в активном пресете",
+            )
+        } else {
+            tr(
+                "Create a mining preset first",
+                "Сначала создайте пресет майнинга",
+            )
+        })
         .build();
     {
         let app = app.clone();
@@ -6531,18 +6930,41 @@ fn apply_status(app: &Rc<App>, status: Status) {
     } else {
         (tr("stopped", "остановлен"), "trommel-pill-stopped")
     };
-    app.pill.set_text(&pill_text);
-    app.pill
-        .set_css_classes(&["caption", "trommel-pill", pill_class]);
+    if !app.config.borrow().preset().is_some() {
+        app.pill.set_text(&tr("no preset", "нет пресета"));
+        app.pill
+            .set_css_classes(&["caption", "trommel-pill", "trommel-pill-stopped"]);
+    } else {
+        app.pill.set_text(&pill_text);
+        app.pill
+            .set_css_classes(&["caption", "trommel-pill", pill_class]);
+    }
     let hashrate_value = status
         .total
         .hashrate
         .or(status.miner.primary())
         .filter(|value| *value > 0.0);
-    let hashrate = hashrate_value
-        .map(util::format_hashrate)
-        .unwrap_or_else(|| "0 TH/s".into());
+    let unit = if status.coin.hashrate_unit.is_empty() {
+        "auto"
+    } else {
+        status.coin.hashrate_unit.as_str()
+    };
+    let has_preset = app.config.borrow().preset().is_some();
+    let hashrate = if !has_preset {
+        "—".to_string()
+    } else {
+        hashrate_value
+            .map(|value| util::format_hashrate_in(value, unit))
+            .unwrap_or_else(|| {
+                if unit == "auto" {
+                    "0 H/s".to_string()
+                } else {
+                    format!("0 {unit}")
+                }
+            })
+    };
     app.hero_hashrate.set_text(&hashrate);
+    app.create_button.set_visible(!has_preset);
     app.hero_hashrate
         .set_tooltip_text(Some(&if hashrate_value.is_some() {
             tr("Current miner hashrate", "Текущий хешрейт майнера")
@@ -6563,15 +6985,28 @@ fn apply_status(app: &Rc<App>, status: Status) {
             "dim-label"
         },
     ]);
-    if status.miner_info.name.is_empty() {
+    if !has_preset {
+        app.hero_line.set_text(&tr(
+            "Create a mining preset to start",
+            "Создайте пресет майнинга, чтобы начать",
+        ));
+    } else if status.miner_info.name.is_empty() {
         app.hero_line
             .set_text(&tr("Setup is not finished", "Настройка не завершена"));
     } else {
+        let coin = status.coin.symbol.as_str();
+        let coin_prefix = if coin.is_empty() {
+            String::new()
+        } else {
+            format!("{coin} · ")
+        };
         app.hero_line.set_text(&format!(
-            "{} · {} {} · {:.2}%",
+            "{}: {} · {} {} · {} {:.2}%",
+            tr("Preset", "Пресет"),
             status.state.preset_name,
             status.miner_info.name,
             status.miner_info.version,
+            coin_prefix,
             status.miner_info.total_fee_pct
         ));
     }
@@ -6585,14 +7020,50 @@ fn apply_status(app: &Rc<App>, status: Status) {
         tick: running && !status.state.external,
     });
     render_hero_meta(app, status_uptime(&status, util::now_unix()));
-    app.quick_button.set_visible(
-        !running
-            && (status.miner_info.id.is_empty()
-                || !status.miner_info.installed
-                || status.warnings.iter().any(|warning| {
-                    warning.to_lowercase().contains("wallet") || warning.contains("Кошелёк")
-                })),
-    );
+    {
+        let cfg = app.config.borrow();
+        if let Some(preset) = cfg.preset() {
+            let profile = &preset.gpu;
+            let enabled = status
+                .participation
+                .iter()
+                .filter(|card| card.enabled)
+                .count();
+            let total = status.participation.len();
+            let tuning = if profile.has_tuning() {
+                tr("tuned", "настроено")
+            } else {
+                tr("stock", "сток")
+            };
+            app.rig_preset.set_title(&format!(
+                "{}: {}",
+                tr("Active preset", "Активный пресет"),
+                preset.name
+            ));
+            app.rig_preset.set_subtitle(&format!(
+                "{} · {} · {} {}/{} · {}",
+                preset.symbol(),
+                preset.pool_display_name(),
+                tr("cards", "карт"),
+                enabled,
+                total,
+                tuning
+            ));
+            app.rig_edit.set_sensitive(true);
+            app.rig_edit
+                .set_label(&tr("Edit preset", "Изменить пресет"));
+        } else {
+            app.rig_preset
+                .set_title(&tr("No active preset", "Нет активного пресета"));
+            app.rig_preset.set_subtitle(&tr(
+                "Create a preset to choose cards for mining",
+                "Создайте пресет, чтобы выбрать карты для майнинга",
+            ));
+            app.rig_edit
+                .set_label(&tr("Create preset", "Создать пресет"));
+            app.rig_edit.set_sensitive(true);
+        }
+    }
     let selected = status.total.gpus_enabled;
     let total = status.total.gpus_total;
     let role_word = if status.state.external {
@@ -6687,14 +7158,33 @@ fn apply_status(app: &Rc<App>, status: Status) {
         ),
         &temp_lines,
     )));
-    app.shares_ok
-        .set_text(&status.miner.accepted.unwrap_or(0).to_string());
-    app.shares_bad
-        .set_text(&status.miner.rejected.unwrap_or(0).to_string());
+    let accepted = status.miner.accepted.unwrap_or(0);
+    let rejected = status.miner.rejected.unwrap_or(0);
+    let stale = status.miner.stale.unwrap_or(0);
+    app.shares_ok.set_text(&accepted.to_string());
+    app.shares_bad.set_text(&rejected.to_string());
+    app.shares_stale.set_text(&stale.to_string());
+    let acceptance = status.acceptance_pct().map(|pct| format!("{pct:.2}%"));
+    app.shares.set_subtitle(&format!(
+        "{} {} · {} {} · {} {} · {} {}",
+        tr("accepted", "принято"),
+        accepted,
+        tr("rejected", "отклонено"),
+        rejected,
+        tr("stale", "устарело"),
+        stale,
+        tr("acceptance", "принятие"),
+        acceptance.unwrap_or_else(|| "—".into())
+    ));
     let pool_balance = status.pool.as_ref().and_then(|pool| pool.balance);
+    let symbol = if status.coin.symbol.is_empty() {
+        "—"
+    } else {
+        status.coin.symbol.as_str()
+    };
     let (balance_text, balance_class, balance_tip) = if let Some(balance) = pool_balance {
         (
-            format!("{balance:.3} PRL"),
+            format!("{balance:.3} {symbol}"),
             "accent",
             tr("Pending pool balance", "Баланс пула к выплате"),
         )
@@ -6707,16 +7197,16 @@ fn apply_status(app: &Rc<App>, status: Status) {
             .unwrap_or(false);
         if has_wallet {
             (
-                "0.000 PRL".to_string(),
+                format!("0.000 {symbol}"),
                 "dim-label",
                 tr(
-                    "No pool data yet; the miner is not running",
-                    "Данных пула пока нет; майнер не запущен",
+                    "No pool data yet; the miner is not running or the pool has no API",
+                    "Данных пула пока нет; майнер не запущен или у пула нет API",
                 ),
             )
         } else {
             (
-                "0 PRL".to_string(),
+                format!("0 {symbol}"),
                 "dim-label",
                 tr("Wallet is not set", "Кошелёк не задан"),
             )
@@ -6726,32 +7216,58 @@ fn apply_status(app: &Rc<App>, status: Status) {
     app.pool_balance_value
         .set_css_classes(&["caption", balance_class]);
     app.pool_balance_value.set_tooltip_text(Some(&balance_tip));
-    let (pool_endpoint, pool_fee) = app
-        .config
-        .borrow()
-        .preset()
-        .map(|preset| {
-            (
-                preset.pool_url.clone(),
-                status
-                    .pool
-                    .as_ref()
-                    .map(|pool| pool.fee_pct)
-                    .unwrap_or(preset.pool_fee_pct),
-            )
-        })
-        .unwrap_or_default();
-    if pool_endpoint.is_empty() {
+    if let Some(view) = &status.pool_view {
+        app.pool_meta.set_title(&view.name);
+        app.pool_meta.set_subtitle(&format!(
+            "{} · {} {:.2}% · {}",
+            view.url,
+            tr("pool fee", "комиссия пула"),
+            view.fee_pct,
+            if view.api_available {
+                tr("API on", "API вкл.")
+            } else {
+                tr("no API", "без API")
+            }
+        ));
+        app.pool_meta.set_tooltip_text(Some(&tr(
+            "Pool endpoint and total pool fee; a known pool supplies its documented JSON API automatically",
+            "Адрес пула и комиссия пула; известный пул подставляет документированный JSON API автоматически",
+        )));
+    } else {
+        app.pool_meta.set_title(&tr("Pool", "Пул"));
         app.pool_meta
             .set_subtitle(&tr("Pool is not selected", "Пул не выбран"));
-    } else {
-        app.pool_meta
-            .set_subtitle(&format!("{pool_endpoint} · {pool_fee:.2}%"));
     }
-    app.pool_meta.set_tooltip_text(Some(&tr(
-        "Pool endpoint and total pool fee",
-        "Адрес пула и комиссия пула",
-    )));
+    if let Some(pool) = &status.pool {
+        let paid = pool
+            .paid
+            .map(|value| format!("{value:.3} {symbol}"))
+            .unwrap_or_else(|| "—".into());
+        let immature = pool
+            .immature
+            .map(|value| format!("{value:.3} {symbol}"))
+            .unwrap_or_else(|| "—".into());
+        let workers = pool
+            .workers_online
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "—".into());
+        let min_payout = pool
+            .min_payout
+            .map(|value| format!("{value} {symbol}"))
+            .unwrap_or_else(|| "—".into());
+        app.pool_balance_row.set_subtitle(&format!(
+            "{} {paid} · {} {immature} · {} {workers} · {} {min_payout}",
+            tr("paid", "выплачено"),
+            tr("immature", "незрелых"),
+            tr("workers", "воркеров"),
+            tr("min payout", "мин. выплата")
+        ));
+    } else {
+        app.pool_balance_row.set_subtitle(&tr(
+            "No live pool account data; the configured endpoint is shown above.",
+            "Живых данных аккаунта пула нет; настроенный endpoint показан выше.",
+        ));
+    }
     app.oc_banner.set_revealed(status.oc.needs_restore);
     if status.oc.needs_restore {
         let title = if status.oc.last_error.is_some() {

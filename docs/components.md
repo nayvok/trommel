@@ -41,8 +41,8 @@ The largest module and the shape of everything else.
 
 | Item | Contract |
 | --- | --- |
-| `SCHEMA_VERSION` | `3`; `Config::load` migrates v1 configs and infers the v2→v3 `custom` flag |
-| `Config` | `active_preset`, `presets`, `gpu_profiles`, `miner_installs`, `custom_miners`/`pools` (reserved), `behavior` |
+| `SCHEMA_VERSION` | `4`; `Config::load` migrates v1/v2/v3, embeds GPU settings into presets and moves temperature into `Behavior` |
+| `Config` | `active_preset`, `presets` (including `Preset::gpu`), `gpu_presets`, `miner_installs`, `behavior` |
 | `Preset` | Coin/algo/miner/version/pool/wallet/worker/profile, `miner_options`, fee fields, `extra_args`, `env` |
 | `GpuTuning` | `enabled` (participation, not just tuning), optional `power_limit_w`, `core_clock_mhz`, `memory_clock_mhz`, `fan_pct`, global `temp_limit_c`/`temp_resume_c`, and `custom` (per-GPU entries only) |
 | `GpuProfile` | `default` tuning plus `per_gpu` entries keyed by GPU UUID; `tuning_for(uuid)` inherits the default unless the entry is `custom`; a `false` `enabled` excludes the card from the miner and from tuning |
@@ -64,9 +64,9 @@ Key functions:
   `custom` on every per-GPU entry: an entry with no power/clock values inherits
   the default; an entry with values is custom only when they differ from the
   default.
-- `Config::preset()` / `preset_mut()` / `ensure_preset()` — active preset access;
+- `Config::preset()` / `preset_mut()` — active preset access; a fresh config has none;
   `ensure_preset` clones the default when the map is empty.
-- `Config::gpu_profile()` / `gpu_profile_mut()` — active profile access.
+- `Config::gpu_profile()` / `gpu_profile_mut()` — active preset GPU access (both return `Option`).
 - `Config::install(miner, version)` / `install_for(preset)` / `miner_path(preset)`
   — global install lookup; `install_for` uses `install_key`.
 - `Config::add_install()` / `remove_install()` / `install_users()` — install
@@ -562,7 +562,7 @@ executes commands. It never blocks the GTK main loop.
 | Function | Surface |
 | --- | --- |
 | `build_ui` | Window, header view switcher, dashboard hero action, three pages, banners, `AdwDialog` host |
-| dashboard block in `build_ui` | Hero card, GPU `AdwWrapBox`, totals, shares, pool, warnings |
+| dashboard block in `build_ui` | Hero card, Active preset row, GPU `AdwWrapBox`, pool/shares, warnings |
 | `build_presets_page` / `refresh_preset_list` | Preset list, missing-version hint and Install entry, miner library row; rows open the editor |
 | `miner_library_dialog` / `refresh_miners` | Modal miner library and version manager: miner rows, one row per installed version with usage/verify/remove, preset version switches, benchmark; refreshed while open |
 | `version_row_subtitle` | One version row's usage, binary state and recorded-checksum fact |
@@ -574,13 +574,13 @@ executes commands. It never blocks the GTK main loop.
 | `build_settings_page` / `load_settings` / `save_settings` | Behaviour (incl. the global temperature policy), appearance, actions |
 | `preset_editor_dialog` | Preset editor `AdwDialog` (save/cancel/duplicate/delete, opens the library) |
 | `miner_install_dialog` | The only miner install UI (catalogue, custom version, download, import) |
-| `gpu_tune_dialog` | Per-card tuning `AdwDialog`, “Now” row, copy to similar/all GPUs |
-| `quick_setup_wizard` | Three-step first-run flow (cards → miner → wallet) |
+| `gpu_tune_dialog` | Per-card tuning `AdwDialog`, “Now” row, stock/named GPU presets, copy to similar/all GPUs |
+| `create_preset_alert` / `preset_setup_problem` | First-run prompt and concrete Start blockers; no wizard |
 | `dialog_footer` / `dialog_body` | Shared dialog chrome: header keeps the title, actions go in a footer below the content |
 | `save_and_apply_with` | Diff + restart/stop alert; `on_cancel` restores optimistic changes |
 | `apply_status` | Renders a `Status` into every widget, including empty states and participation; records sparkline samples |
 | `History` / `sparkline` / `update_sparklines` | Per-GPU five-minute ring buffer and the Cairo sparklines drawn on the GPU bubble floor |
-| `copy_diagnostics` | Redacted bundle to the clipboard |
+| `copy_diagnostics` / `open_issue` | Redacted bundle to the clipboard and a prefilled GitHub issue |
 
 Rules that are easy to break:
 
@@ -593,7 +593,7 @@ Rules that are easy to break:
   immediately, and **Cancel** in the restart/stop alert must undo it.
 - The GPU participation switch and the tuning dialog share one profile; there is
   no second source of truth in the UI. The switch edits the draft; the card
-  chip (`mining` / `excluded`) and the Totals row describe the applied session,
+  chip (`mining` / `excluded`) and the Active preset row describe the applied session,
   so a switch change never pretends the miner already restarted.
 - Dialogs never put actions in the header: build them with `dialog_footer()` so
   the title stays clean, actions never scroll away and the primary button sits
@@ -607,9 +607,9 @@ Environment variables read by the GUI are a supported test surface; keep them
 documented in [development.md](development.md#ui-hooks) when adding one:
 `TROMMEL_COLOR_SCHEME`, `TROMMEL_WINDOW_WIDTH`, `TROMMEL_WINDOW_HEIGHT`,
 `TROMMEL_SCREENSHOT`, `TROMMEL_SCREENSHOT_PAGE`, `TROMMEL_SCREENSHOT_DELAY`,
-`TROMMEL_SCREENSHOT_SCROLL`, `TROMMEL_OPEN_WIZARD`, `TROMMEL_OPEN_PRESET`,
+`TROMMEL_SCREENSHOT_SCROLL`, `TROMMEL_OPEN_PRESET`,
 `TROMMEL_OPEN_LIBRARY`, `TROMMEL_OPEN_INSTALL`, `TROMMEL_OPEN_TUNE`,
-`TROMMEL_WIZARD_STEP`, `TROMMEL_WIZARD_SCREENSHOT`, `TROMMEL_TUNE_SCREENSHOT`,
+`TROMMEL_TUNE_SCREENSHOT`,
 `TROMMEL_PRESET_SCREENSHOT`, `TROMMEL_LIBRARY_SCREENSHOT`,
 `TROMMEL_INSTALL_SCREENSHOT`.
 `scripts/screenshots.sh` is the canonical driver.

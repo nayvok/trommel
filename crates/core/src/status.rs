@@ -12,7 +12,7 @@ use crate::pool::{self, PoolStats};
 use crate::state::State;
 use crate::util;
 
-pub const CONTRACT_VERSION: u32 = 3;
+pub const CONTRACT_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct StateView {
@@ -41,6 +41,24 @@ pub struct MinerInfo {
     pub total_fee_pct: f64,
     pub fee_configurable: bool,
     pub fee_source: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CoinView {
+    pub id: String,
+    pub symbol: String,
+    pub name: String,
+    pub algo: String,
+    pub wallet_prefix: String,
+    pub hashrate_unit: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PoolView {
+    pub name: String,
+    pub url: String,
+    pub fee_pct: f64,
+    pub api_available: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -86,7 +104,7 @@ pub struct OcView {
 }
 
 fn default_temp_limit() -> u32 {
-    90
+    85
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -105,6 +123,15 @@ pub struct Status {
     pub total: TotalView,
     pub miner: MinerStats,
     pub pool: Option<PoolStats>,
+    /// Applied coin metadata; empty when no preset is active.
+    #[serde(default)]
+    pub coin: CoinView,
+    /// Applied pool endpoint and whether an account API is available.
+    #[serde(default)]
+    pub pool_view: Option<PoolView>,
+    /// Last pool API error, when one occurred and the snapshot kept a value.
+    #[serde(default)]
+    pub pool_error: Option<String>,
     pub oc: OcView,
     pub warnings: Vec<String>,
     pub total_fee_pct: f64,
@@ -307,31 +334,35 @@ impl Status {
         let gpu = gpus.first().cloned();
 
         let miner = if state.running {
-            minerapi::query_api(preset.map(|p| p.api_port).unwrap_or(0)).unwrap_or_else(|_| {
-                let tail = read_tail(&crate::paths::log_path(), 96 * 1024);
-                let mut stats = minerapi::parse_log(&tail);
-                if stats.is_empty() {
-                    stats.source = "no data".to_string();
-                }
-                stats
-            })
+            minerapi::query_api(preset.map(|p| p.effective_api_port()).unwrap_or(0)).unwrap_or_else(
+                |_| {
+                    let tail = read_tail(&crate::paths::log_path(), 96 * 1024);
+                    let mut stats = minerapi::parse_log(&tail);
+                    if stats.is_empty() {
+                        stats.source = "no data".to_string();
+                    }
+                    stats
+                },
+            )
         } else {
             MinerStats::default()
         };
 
-        let pool = if state.running || state.external {
-            pool::query_cached(cfg)
+        let (pool, pool_error) = if state.running || state.external {
+            let snapshot = pool::query_cached(cfg);
+            (snapshot.stats, snapshot.error)
         } else {
-            None
+            (None, None)
         };
 
         let profile = cfg.gpu_profile();
-        let temp_limit = profile
-            .map(|p| p.default.temp_limit_c)
-            .unwrap_or_else(default_temp_limit);
+        let temp_limit = cfg.behavior.temp_limit_c;
         let gpus_total = gpus.len() as u32;
         let running_ours = state.running && !state.external;
-        let participation = participation_view(profile, &gpus, running_ours);
+        let participation = match profile {
+            Some(profile) => participation_view(Some(profile), &gpus, running_ours),
+            None => Vec::new(),
+        };
         let gpus_enabled = participation.iter().filter(|card| card.enabled).count() as u32;
         let power = total_power(&gpus);
         let temp_max = hottest_gpu(&gpus).and_then(|gpu| gpu.temp_c);
@@ -364,7 +395,9 @@ impl Status {
                     miner_fee_pct: preset.effective_miner_fee_pct(),
                     pool_fee_pct: preset.pool_fee_pct,
                     total_fee_pct: preset.total_fee_pct(),
-                    fee_configurable: def.map(|m| m.fee_configurable).unwrap_or(false),
+                    fee_configurable: def
+                        .map(|m| m.fee_for(&preset.algo).configurable)
+                        .unwrap_or(false),
                     fee_source: if preset.miner_fee_override_pct.is_some() {
                         "override".into()
                     } else {
@@ -407,6 +440,23 @@ impl Status {
             was_tuned: first.map(|gpu| gpu.was_tuned).unwrap_or(false),
         };
 
+        let coin = preset
+            .map(|preset| CoinView {
+                id: preset.coin.clone(),
+                symbol: preset.symbol().to_string(),
+                name: preset.coin_name.clone(),
+                algo: preset.algo.clone(),
+                wallet_prefix: preset.wallet_prefix().to_string(),
+                hashrate_unit: preset.hashrate_unit().to_string(),
+            })
+            .unwrap_or_default();
+        let pool_view = preset.map(|preset| PoolView {
+            name: pool::display_name(preset),
+            url: preset.pool_url.clone(),
+            fee_pct: preset.pool_fee_pct,
+            api_available: pool::api_url(preset).is_some(),
+        });
+
         let ts = util::now_unix();
         let mut warnings = cfg.warnings();
         if let Some(warning) = enabled_gpu_warning(cfg, &gpus) {
@@ -418,6 +468,12 @@ impl Status {
         warnings.extend(lock_warnings(cfg, &gpus, running_ours, state.uptime_s()));
         if let Some(warning) = temp_warning(&gpus, temp_limit) {
             warnings.push(warning);
+        }
+        if let Some(error) = &pool_error {
+            warnings.push(format!(
+                "{} {error}",
+                tr("Pool API error:", "Ошибка API пула:")
+            ));
         }
         if oc.needs_restore {
             warnings.push(tr(
@@ -462,6 +518,9 @@ impl Status {
             },
             miner,
             pool,
+            coin,
+            pool_view,
+            pool_error,
             oc,
             warnings,
             total_fee_pct,
@@ -486,12 +545,25 @@ impl Status {
                 ..Default::default()
             },
             preset: cfg.active_preset.clone(),
+            coin: preset
+                .map(|preset| CoinView {
+                    id: preset.coin.clone(),
+                    symbol: preset.symbol().to_string(),
+                    name: preset.coin_name.clone(),
+                    algo: preset.algo.clone(),
+                    wallet_prefix: preset.wallet_prefix().to_string(),
+                    hashrate_unit: preset.hashrate_unit().to_string(),
+                })
+                .unwrap_or_default(),
+            pool_view: preset.map(|preset| PoolView {
+                name: pool::display_name(preset),
+                url: preset.pool_url.clone(),
+                fee_pct: preset.pool_fee_pct,
+                api_available: pool::api_url(preset).is_some(),
+            }),
             total_fee_pct: cfg.total_fee_pct(),
             expected_hashrate: preset.and_then(|p| p.expected_hashrate).unwrap_or(0.0),
-            temp_limit: cfg
-                .gpu_profile()
-                .map(|p| p.default.temp_limit_c)
-                .unwrap_or_else(default_temp_limit),
+            temp_limit: cfg.behavior.temp_limit_c,
             ts,
             ts_iso: util::iso8601_utc(ts),
             version: crate::VERSION.to_string(),
@@ -579,9 +651,17 @@ mod tests {
         assert!(read_tail(Path::new("/nonexistent/file.log"), 1024).is_empty());
     }
 
-    fn tuned_config(uuid: &str) -> Config {
+    fn config_with_preset() -> Config {
         let mut cfg = Config::default();
-        let profile = cfg.gpu_profiles.get_mut("balanced").unwrap();
+        let preset = crate::config::Preset::new_pearl();
+        cfg.presets.insert(preset.id.clone(), preset);
+        cfg.active_preset = Some(crate::config::DEFAULT_PRESET_ID.to_string());
+        cfg
+    }
+
+    fn tuned_config(uuid: &str) -> Config {
+        let mut cfg = config_with_preset();
+        let profile = &mut cfg.preset_mut().unwrap().gpu;
         profile.per_gpu.insert(
             uuid.to_string(),
             crate::config::GpuTuning {
@@ -648,9 +728,9 @@ mod tests {
     fn disabled_gpu_does_not_warn() {
         let uuid = "GPU-test";
         let mut cfg = tuned_config(uuid);
-        cfg.gpu_profiles
-            .get_mut("balanced")
+        cfg.preset_mut()
             .unwrap()
+            .gpu
             .per_gpu
             .get_mut(uuid)
             .unwrap()
@@ -664,9 +744,9 @@ mod tests {
     fn all_gpus_disabled_warns_even_with_an_enabled_default() {
         let uuid = "GPU-test";
         let mut cfg = tuned_config(uuid);
-        cfg.gpu_profiles
-            .get_mut("balanced")
+        cfg.preset_mut()
             .unwrap()
+            .gpu
             .per_gpu
             .get_mut(uuid)
             .unwrap()
@@ -727,18 +807,14 @@ mod tests {
     }
 
     fn excluded_config(uuid: &str) -> Config {
-        let mut cfg = Config::default();
-        cfg.gpu_profiles
-            .get_mut("balanced")
-            .unwrap()
-            .per_gpu
-            .insert(
-                uuid.to_string(),
-                crate::config::GpuTuning {
-                    enabled: false,
-                    ..Default::default()
-                },
-            );
+        let mut cfg = config_with_preset();
+        cfg.preset_mut().unwrap().gpu.per_gpu.insert(
+            uuid.to_string(),
+            crate::config::GpuTuning {
+                enabled: false,
+                ..Default::default()
+            },
+        );
         cfg
     }
 
@@ -795,11 +871,7 @@ mod tests {
     #[test]
     fn an_all_excluded_rig_does_not_repeat_the_warning() {
         let mut cfg = excluded_config("GPU-1");
-        cfg.gpu_profiles
-            .get_mut("balanced")
-            .unwrap()
-            .default
-            .enabled = false;
+        cfg.preset_mut().unwrap().gpu.default.enabled = false;
         let gpus = [card(0, None, None), card(1, None, None)];
         assert!(participation_warnings(&cfg, &gpus).is_empty());
         assert!(enabled_gpu_warning(&cfg, &gpus).is_some());

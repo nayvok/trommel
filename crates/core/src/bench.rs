@@ -9,7 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::catalog;
-use crate::config::{Config, Preset};
+use crate::config::Config;
 use crate::minerapi;
 use crate::miners;
 use crate::paths;
@@ -117,19 +117,17 @@ pub fn run(cfg: &Config, profiles: &[String], seconds: u64) -> BenchReport {
         }
 
         let mut bench_cfg = cfg.clone();
-        {
-            let preset = bench_cfg.ensure_preset();
-            preset.miner = miner_id.clone();
-            preset.miner_version = version.clone();
-            preset.miner_fee_pct = entry.miner_fee_pct;
-            preset.miner_fee_override_pct = None;
-        }
+        let mut bench_preset = base_preset.clone();
+        bench_preset.miner = miner_id.clone();
+        bench_preset.miner_version = version.clone();
+        bench_preset.miner_fee_pct = entry.miner_fee_pct;
+        bench_preset.miner_fee_override_pct = None;
+        bench_cfg
+            .presets
+            .insert(bench_preset.id.clone(), bench_preset.clone());
+        bench_cfg.active_preset = Some(bench_preset.id.clone());
         let log_path = paths::bench_dir().join(format!("bench-{miner_id}.log"));
         let _ = std::fs::create_dir_all(paths::bench_dir());
-        let bench_preset = bench_cfg
-            .preset()
-            .cloned()
-            .unwrap_or_else(Preset::new_pearl);
         let devices = match miners::device_plan(&bench_cfg, &bench_preset, &gpus) {
             Ok(devices) => devices,
             Err(err) => {
@@ -298,7 +296,10 @@ mod tests {
 
     #[test]
     fn missing_install_is_reported() {
-        let cfg = Config::default();
+        let mut cfg = Config::default();
+        let preset = crate::config::Preset::new_pearl();
+        cfg.presets.insert(preset.id.clone(), preset);
+        cfg.active_preset = Some(crate::config::DEFAULT_PRESET_ID.to_string());
         let report = run(&cfg, &["onezero".to_string()], 30);
         assert!(report.entries[0].error.is_some());
     }

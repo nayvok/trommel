@@ -4,6 +4,7 @@ name = "PearlHash"
 url = "pool.pearlhash.xyz:9000"
 fee_pct = 1.0
 api_kind = "pearlhash"
+api_url = "https://pearlhash.xyz/api/account/{wallet}"
 min_payout = 1.0
 verified = true
 note_en = "Community pool used by the original setup; API supports balance and workers."

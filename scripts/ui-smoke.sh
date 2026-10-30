@@ -81,8 +81,8 @@ cfg = {
         "pearl-wildrig": {
             "id": "pearl-wildrig", "name": "Pearl WildRig", "coin": "pearl",
             "algo": "pearlhash", "miner": "wildrig", "miner_version": "0.51.8",
-            "pool": "pearlhash", "pool_url": "pool.pearlhash.xyz:9000",
-            "wallet": "", "worker": "smoke", "gpu_profile": "balanced",
+            "pool_url": "pool.pearlhash.xyz:9000",
+            "wallet": "prl1testwallet", "worker": "smoke", "gpu_profile": "balanced",
             "api_port": 0, "expected_hashrate": None, "miner_options": {},
             "miner_fee_override_pct": None, "miner_fee_pct": 0.0,
             "pool_fee_pct": 1.0, "extra_args": "", "env": {},
@@ -91,8 +91,8 @@ cfg = {
         "second": {
             "id": "second", "name": "Second", "coin": "pearl",
             "algo": "pearlhash", "miner": "wildrig", "miner_version": "0.51.8",
-            "pool": "pearlhash", "pool_url": "pool.pearlhash.xyz:9000",
-            "wallet": "", "worker": "smoke2", "gpu_profile": "balanced",
+            "pool_url": "pool.pearlhash.xyz:9000",
+            "wallet": "prl1testwallet", "worker": "smoke2", "gpu_profile": "balanced",
             "api_port": 0, "expected_hashrate": None, "miner_options": {},
             "miner_fee_override_pct": None, "miner_fee_pct": 0.0,
             "pool_fee_pct": 1.0, "extra_args": "", "env": {},
@@ -193,7 +193,7 @@ start_gui() {
     GUI_PID=""
     rm -f "$WORK/gui.pid"
     (
-        unset TROMMEL_OPEN_PRESET TROMMEL_OPEN_WIZARD TROMMEL_OPEN_TUNE TROMMEL_OPEN_INSTALL TROMMEL_SCREENSHOT
+        unset TROMMEL_OPEN_PRESET TROMMEL_OPEN_TUNE TROMMEL_OPEN_INSTALL TROMMEL_SCREENSHOT
         case "$phase" in
             editor) export TROMMEL_OPEN_PRESET=1 ;;
             tune) export TROMMEL_OPEN_TUNE=1 ;;

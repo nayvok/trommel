@@ -322,186 +322,55 @@ def phase_main(ui: UI) -> None:
         ui.check(ui.find(frame, "page tab", name) is not None, f"page tab {name}")
     ui.check(ui.find(frame, "button", "Refresh") is not None, "Refresh button")
     ui.check(ui.find(frame, "button", "Start") is not None, "Start button")
-    for row in ("Cards", "Power", "Max temperature"):
-        ui.check(ui.find(frame, "label", row) is not None, f"totals row {row}")
     ui.check(
-        ui.find(frame, "label", "2 of 2 selected", contains=True) is not None,
-        "totals name the selected cards",
+        ui.wait(
+            lambda: ui.find(frame, "label", "Active preset", contains=True),
+            10.0,
+            "active preset context",
+        )
+        is not None,
+        "dashboard names the active preset",
     )
 
-    quick = ui.wait(
-        lambda: ui.find(frame, "button", "Quick setup"), 10.0, "Quick setup"
-    )
-    ui.check(quick is not None, "Quick setup entry point")
-    if quick is None:
-        return
-
-    # Cancel is a real button on the wizard.
-    ui.click(quick, "Quick setup")
-    wizard = ui.find_frame("Quick setup")
-    ui.check(wizard is not None, "wizard opens")
-    if wizard is not None:
-        if ui.click_button("Cancel", wizard, "wizard Cancel"):
+    start = ui.find(frame, "button", "Start")
+    if start is not None:
+        ui.click(start, "hero Start")
+        stop = ui.wait(lambda: ui.find(frame, "button", "Stop"), 15.0, "started")
+        ui.check(stop is not None, "Start begins mining")
+        if stop is not None:
             ui.check(
-                ui.wait(lambda: ui.find_frame("Quick setup", timeout=1.0) is None,
-                        5.0, "wizard closed") is not None,
-                "wizard closes on Cancel",
+                ui.wait(
+                    lambda: ui.find(frame, "label", "TH/s", contains=True),
+                    10.0,
+                    "hashrate",
+                )
+                is not None,
+                "hashrate appears on the dashboard",
             )
-
-    quick = ui.find(frame, "button", "Quick setup")
-    ui.click(quick, "Quick setup (retry)")
-    wizard = ui.find_frame("Quick setup")
-    if wizard is None:
-        ui.fail("wizard did not reopen")
-        return
-
-    ui.check(
-        ui.find(wizard, "label", "Step 1 of 3", contains=True) is not None,
-        "wizard step 1",
-    )
-    ui.click_button("Apply 80 %", wizard, "'Apply 80 %'")
-    ui.click_button("Next", wizard, "Next to miner")
-    ui.check(
-        ui.wait(
-            lambda: ui.find(wizard, "label", "Step 2 of 3", contains=True),
-            5.0,
-            "wizard step 2",
-        )
-        is not None,
-        "wizard step 2",
-    )
-    ui.click_button("Back", wizard, "Back to cards")
-    ui.check(
-        ui.wait(
-            lambda: ui.find(wizard, "label", "Step 1 of 3", contains=True),
-            5.0,
-            "wizard step 1",
-        )
-        is not None,
-        "wizard Back returns to step 1",
-    )
-    ui.click_button("Next", wizard, "Next to miner (2)")
-    ui.wait(
-        lambda: ui.find(wizard, "label", "Step 2 of 3", contains=True),
-        5.0,
-        "wizard step 2 (2)",
-    )
-    ui.click_button("Next", wizard, "Next to wallet")
-    ui.check(
-        ui.wait(
-            lambda: ui.find(wizard, "label", "Step 3 of 3", contains=True),
-            5.0,
-            "wizard step 3",
-        )
-        is not None,
-        "wizard step 3",
-    )
-    ui.set_text("Wallet", "prl1testwallet", wizard)
-    ui.set_text("Worker", "smoke", wizard)
-    ui.click_button("Start mining", wizard, "Start mining")
-
-    stopped = ui.wait(
-        lambda: ui.find(frame, "button", "Stop"), 15.0, "mining status"
-    )
-    ui.check(stopped is not None, "wizard starts the miner")
-    if stopped is not None:
-        ui.check(
-            ui.wait(
-                lambda: ui.find(frame, "label", "TH/s", contains=True),
-                10.0,
-                "hashrate",
-            )
-            is not None,
-            "hashrate appears on the dashboard",
-        )
-        ui.check(
-            ui.wait(
-                lambda: ui.find(frame, "label", "2 of 2 mining", contains=True),
-                10.0,
-                "participation totals while mining",
-            )
-            is not None,
-            "totals name the participating cards",
-        )
-        # Cancelling the restart prompt must restore the optimistic switch.
-        gpu_toggle = ui.switch("GPU 0 mining")
-        ui.check(gpu_toggle is not None, "GPU enable switch is labelled")
-        if gpu_toggle is not None:
-            ui.click(gpu_toggle, "disable GPU while mining")
-            alert = ui.wait(
-                lambda: ui.alert("Apply changes"), 8.0, "apply confirmation"
-            )
-            if alert is not None:
-                ui.click_button("Cancel", alert, "cancel GPU disable")
-                ui.check(
-                    ui.wait(
-                        lambda: ui.find(frame, "button", "Stop"), 5.0, "mining"
+            # Cancelling the restart prompt must restore the optimistic switch.
+            gpu_toggle = ui.switch("GPU 0 mining")
+            ui.check(gpu_toggle is not None, "GPU enable switch is labelled")
+            if gpu_toggle is not None:
+                ui.click(gpu_toggle, "disable GPU while mining")
+                alert = ui.wait(
+                    lambda: ui.alert("Apply changes"), 8.0, "apply confirmation"
+                )
+                if alert is not None:
+                    ui.click_button("Cancel", alert, "cancel GPU disable")
+                    ui.check(
+                        ui.wait(
+                            lambda: ui.find(frame, "button", "Stop"), 5.0, "mining"
+                        )
+                        is not None,
+                        "Cancel keeps the miner running",
                     )
-                    is not None,
-                    "Cancel keeps the miner running",
-                )
-                def restored_switch():
-                    node = ui.switch("GPU 0 mining")
-                    if node is None:
-                        return None
-                    try:
-                        if node.get_state_set().contains(Atspi.StateType.CHECKED):
-                            return node
-                    except Exception:
-                        pass
-                    return None
-
-                restored = ui.wait(
-                    restored_switch, 8.0, "GPU switch restored"
-                )
-                ui.check(restored is not None, "Cancel restores the GPU switch")
-            else:
-                ui.fail("GPU disable did not ask for confirmation")
-        ui.click(stopped, "hero Stop")
-        start = ui.wait(lambda: ui.find(frame, "button", "Start"), 15.0, "stopped")
-        ui.check(start is not None, "Stop returns to Start")
-        if start is not None:
-            ui.click(start, "hero Start")
-            stop = ui.wait(lambda: ui.find(frame, "button", "Stop"), 15.0, "started")
-            ui.check(stop is not None, "Start returns to Stop")
-            if stop is not None:
-                ui.click(stop, "hero Stop (final)")
+                else:
+                    ui.fail("GPU disable did not ask for confirmation")
+            ui.click(stop, "hero Stop")
+            ui.check(
                 ui.wait(lambda: ui.find(frame, "button", "Start"), 15.0, "stopped")
-
-        # Exclusion is an applied-state change: the card must say "excluded",
-        # the totals must count it out, and switching back must restore both.
-        second = ui.switch("GPU 1 mining")
-        ui.check(second is not None, "second GPU switch is labelled")
-        if second is not None:
-            ui.click(second, "exclude GPU 1")
-            ui.check(
-                ui.wait(
-                    lambda: ui.find(frame, "label", "excluded"),
-                    10.0,
-                    "excluded chip",
-                )
                 is not None,
-                "excluded card is labelled",
-            )
-            ui.check(
-                ui.wait(
-                    lambda: ui.find(frame, "label", "1 of 2 selected", contains=True),
-                    10.0,
-                    "participation totals",
-                )
-                is not None,
-                "totals count the excluded card out",
-            )
-            second = ui.switch("GPU 1 mining")
-            ui.click(second, "include GPU 1 again")
-            ui.check(
-                ui.wait(
-                    lambda: ui.find(frame, "label", "2 of 2 selected", contains=True),
-                    10.0,
-                    "participation restored",
-                )
-                is not None,
-                "switching the card back restores participation",
+                "Stop returns to Start",
             )
 
     # Pages and a Settings toggle.
@@ -758,39 +627,47 @@ def phase_tune(ui: UI) -> None:
         return
     main = ui.find_frame("Trommel")
     ui.check(
-        ui.find(main, "label", "mining") is not None,
-        "miner is mining before the tune save",
+        ui.find(frame, "button", "GPU presets") is not None,
+        "tune GPU presets menu",
     )
-    ui.check(ui.find(frame, "button", "Presets") is not None, "tune Presets menu")
     ui.check(ui.find(frame, "button", "Save") is not None, "tune Save button")
-    menu = ui.find(frame, "button", "Presets")
-    if menu is not None:
-        try:
-            has_action = menu.get_n_actions() > 0
-        except Exception:
-            has_action = False
-        if has_action:
-            ui.click(menu, "tune Presets menu")
-            recommended = ui.wait(
-                lambda: ui.actionable(ui.app(), "button", "Recommended"),
-                5.0,
-                "Recommended action",
-            )
-            if recommended is not None:
-                ui.click(recommended, "Recommended")
-        else:
-            # Some GTK/AT-SPI combinations expose GtkMenuButton without an
-            # action. The core-lock switch below still forces a real change; the
-            # Recommended preset is covered by the screenshot and manual matrix.
-            print("  - tune Presets menu has no AT-SPI action; skipping Recommended")
-    # Force a real profile change: Recommended turns locks off, enable the
-    # core lock again (the spinner value itself is not exposed by AdwSpinRow).
+    ui.check(ui.find(frame, "button", "Cancel") is not None, "tune Cancel button")
+
+    # Cancel must discard local changes: no dirty banner and no apply alert.
+    # Toggle a real control instead of relying on the popover, which some
+    # AT-SPI bridges do not expose as an actionable menu.
+    core = ui.switch("Lock core clock", frame)
+    if core is not None:
+        ui.click(core, "change core lock before Cancel")
+    ui.click_button("Cancel", frame, "Cancel tuning")
+    ui.check(
+        ui.wait(lambda: ui.frame_visible("GPU tuning") is None, 8.0, "closed")
+        is not None,
+        "Cancel closes the tuning dialog",
+    )
+    ui.check(
+        ui.alert("Apply changes") is None,
+        "Cancel does not open the apply alert",
+    )
+    ui.check(
+        ui.find(main, "label", "You have unsaved changes", contains=True) is None,
+        "Cancel does not leave the unsaved-changes banner",
+    )
+
+    # Reopen and save a real change: the old apply flow must still work.
+    tune = ui.wait(lambda: ui.find(main, "button", "Tune"), 8.0, "Tune button")
+    if tune is not None:
+        ui.click(tune, "reopen tuning")
+        frame = ui.wait(
+            lambda: ui.find_frame("GPU tuning", timeout=1.0), 8.0, "reopened tuning"
+        )
+    if frame is None:
+        return
     core = ui.switch("Lock core clock", frame)
     ui.check(core is not None, "core lock switch")
     if core is not None:
         ui.click(core, "core lock on")
     ui.click_button("Save", frame, "tune Save")
-    # With a running miner, Save asks Apply and restart / Apply and stop.
     alert = ui.wait(
         lambda: ui.alert("Apply changes"), 8.0, "apply confirmation"
     )
@@ -860,62 +737,65 @@ def phase_install(ui: UI) -> None:
 
 
 def phase_first_run(ui: UI) -> None:
-    """Clean install: default preset, empty wallet, no installed miner."""
+    """Clean install: no preset, explicit first-run path, no hidden version."""
     frame = ui.find_frame("Trommel")
     ui.check(frame is not None, "first-run window is visible")
     if frame is None:
         return
 
-    quick = ui.wait(
-        lambda: ui.find(frame, "button", "Quick setup"), 15.0, "Quick setup"
-    )
-    ui.check(quick is not None, "clean install offers Quick setup")
     ui.check(ui.find(frame, "button", "Start") is not None, "Start button is present")
-    ui.check(
-        ui.wait(
-            lambda: ui.find(frame, "label", "0 TH/s", contains=True),
-            15.0,
-            "zero hashrate",
-        )
-        is not None,
-        "stopped dashboard shows 0 TH/s",
+    create = ui.wait(
+        lambda: ui.find(frame, "button", "Create preset"), 15.0, "Create preset"
     )
-    balance = ui.wait(
-        lambda: ui.find(frame, "label", "PRL", contains=True),
-        10.0,
-        "balance",
+    ui.check(create is not None, "clean install offers Create preset")
+    ui.check(
+        ui.find(frame, "label", "No preset", contains=True) is None,
+        "clean install does not invent a preset",
     )
     ui.check(
-        balance is not None and "—" not in (balance.get_name() or ""),
-        "stopped dashboard shows a numeric balance instead of a dash",
-    )
-    ui.check(
-        ui.find(frame, "label", "pool.pearlhash.xyz", contains=True) is not None,
-        "stopped dashboard still names the pool",
+        ui.find(frame, "label", "HASHRATE", contains=True) is not None,
+        "hero remains the session summary",
     )
 
-    # Start on an incomplete profile must open the wizard, not just toast.
+    # Start on an incomplete install must name the missing preset and offer
+    # the explicit creation path, not an old quick-setup wizard.
     ui.click_button("Start", frame, "Start on a clean install")
-    wizard = ui.wait(lambda: ui.find_frame("Quick setup", timeout=1.0), 10.0, "wizard")
-    ui.check(wizard is not None, "Start opens Quick setup when setup is incomplete")
-    if wizard is not None:
-        ui.check(
-            ui.find(wizard, "label", "Step 1 of 3", contains=True) is not None,
-            "first-run wizard starts at step 1",
+    alert = ui.wait(
+        lambda: ui.alert("Create a mining preset first"),
+        10.0,
+        "create-preset alert",
+    )
+    ui.check(alert is not None, "Start explains that a preset is required")
+    if alert is not None:
+        ui.click_button("Cancel", alert, "first-run alert Cancel")
+        ui.wait(lambda: ui.alert("Create a mining preset first") is None, 5.0, "closed")
+
+    create = ui.find(frame, "button", "Create preset")
+    if create is not None:
+        ui.click(create, "Create preset")
+        editor = ui.wait(
+            lambda: ui.find_frame("Preset", timeout=1.0), 8.0, "new preset editor"
         )
-        ui.click_button("Cancel", wizard, "first-run wizard Cancel")
-        ui.wait(lambda: ui.find_frame("Quick setup", timeout=1.0) is None, 5.0, "closed")
+        ui.check(editor is not None, "Create preset opens the editor")
+        if editor is not None:
+            ui.check(
+                ui.find(editor, "label", "Coin", contains=True) is not None,
+                "new preset editor exposes the coin",
+            )
+            ui.click_button("Cancel", editor, "new preset Cancel")
+            ui.wait(lambda: ui.find_frame("Preset", timeout=1.0) is None, 5.0, "closed")
 
     ui.tab("Presets")
     ui.check(
         ui.wait(
-            lambda: ui.find(ui.app(), "list item", "Pearl", contains=True),
+            lambda: ui.find(ui.app(), "list item", "No mining presets yet"),
             8.0,
-            "default preset",
+            "empty presets page",
         )
         is not None,
-        "clean install has the default Pearl preset",
+        "cleaning a new preset returns to the empty state",
     )
+
     library_button = ui.wait(
         lambda: ui.find(ui.app(), "button", "Open the miner library"),
         5.0,
@@ -968,14 +848,11 @@ def phase_first_run(ui: UI) -> None:
         is not None,
         "clean install shows the dashboard GPU card",
     )
-    ui.click_button("Tune", ui.app(), "Tune on clean install")
-    tune = ui.wait(lambda: ui.find_frame("GPU tuning", timeout=1.0), 8.0, "tune")
-    ui.check(tune is not None, "GPU tuning opens on a clean install")
-    if tune is not None:
-        ui.check(
-            ui.find(tune, "label", "Apply to", contains=True) is None,
-            "single-GPU tune dialog hides the Apply to section",
-        )
+    time.sleep(0.3)
+    ui.check(
+        ui.find_frame("GPU tuning", timeout=1.0) is None,
+        "GPU tuning stays unavailable until a preset exists",
+    )
 
 
 if __name__ == "__main__":

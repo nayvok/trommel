@@ -122,10 +122,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
                 let interval = dbus::poll_interval(&cfg);
-                let temp_limit = cfg
-                    .gpu_profile()
-                    .map(|p| p.default.temp_limit_c)
-                    .unwrap_or(90);
+                let temp_limit = cfg.behavior.temp_limit_c;
                 let notify_enabled = cfg.behavior.notifications;
                 let tray_cfg = cfg.clone();
 

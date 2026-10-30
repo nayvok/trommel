@@ -295,22 +295,6 @@ library_shot() {
   [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
 }
 
-wizard_shot() {
-  local theme="$1" language="$2" target="$3" step="${4:-0}"
-  wanted "$target" || return 0
-  configure "$language" 1
-  local attempt
-  for attempt in 1 2; do
-    rm -f "$target"
-    TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_WIZARD=1 TROMMEL_WIZARD_SCREENSHOT="$target" \
-      TROMMEL_WINDOW_HEIGHT=820 \
-      TROMMEL_WIZARD_STEP="$step" timeout 50 "$BIN/trommel" > "$WORK/gui-wizard-$theme-$language-$step.log" 2>&1 || true
-    [ -f "$target" ] && break
-    echo "  … retrying $(basename "$target")" >&2
-  done
-  [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
-}
-
 shot dark en dashboard "$DOCS/dashboard-en-dark.png" 1 "" 960
 shot dark en presets "$DOCS/presets-en-dark.png"
 shot dark en settings "$DOCS/settings-en-dark.png"
@@ -319,8 +303,6 @@ preset_shot dark en "$DOCS/preset-editor-en-dark.png"
 library_shot dark en "$DOCS/miner-library-en-dark.png"
 install_shot dark en "$DOCS/miner-install-en-dark.png"
 tune_shot dark en "$DOCS/gpu-tune-en-dark.png"
-wizard_shot dark en "$DOCS/setup-en-dark.png"
-wizard_shot dark en "$DOCS/setup-wallet-en-dark.png" 2
 shot dark ru dashboard "$DOCS/dashboard-ru-dark.png" 1 "" 960
 shot dark ru settings "$DOCS/settings-ru-dark.png"
 shot light en dashboard "$DOCS/dashboard-en-light.png" 1 "" 960

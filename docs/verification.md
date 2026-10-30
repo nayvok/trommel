@@ -16,8 +16,8 @@ needs a real rig. Run the commands from the repository root; see
 | `./scripts/e2e.sh` | CLI lifecycle on a private bus: start/stop/toggle, config v3, per-card inheritance vs custom overrides, apply modes, power read-back, ignored power/clock locks, restore snapshot/defaults, restore-on-stop off, helper timeout, snapshot/restore, stale external state. Fault-tolerance: SIGKILL + emergency-stop, startup recovery of an orphan, helper lease (live/replaced/dead), partial apply with and without a failed rollback, failed restore retried by startup recovery, custom-named binary stopped by path, a legacy state without `miner_path` never signalled by name, external miner left alive, an external miner appearing during the restart backoff cancels the restart, benchmark refusal, restart budget, guard, a lost session bus, and a restart-class `SetConfig` call that is refused without touching the running miner. Per-GPU participation: one excluded card means the miner receives only `--gpu-list 0`, the excluded card is neither tuned nor restored, a previously tuned excluded card is returned to stock, emergency-stop touches only the participating card, and a miner without a documented device flag refuses the partial rig without spawning. Version manager: installing an older build does not rewrite a preset, `miner verify` reports the real binary and only a real digest, a pinned version cannot be removed, an unused version is deleted with `--yes`, and diagnostics report the remaining install. A stub `org.freedesktop.Notifications` service (Python/Gio; the step is skipped when `python3-gi` is missing) proves the daemon sends desktop notifications without a shell applet. A failure prints every harness artifact, `daemon.log`, `miner.log` and the `✗` lines through `scripts/e2e-diagnostics.sh` |
 | `./scripts/test-oc-helper.sh` | The real Bash helper against a stateful fake `nvidia-smi`: apply/reset, ignored power rejection, failing `-rgc`, range/UUID validation |
 | `./scripts/test-mcp.sh` | MCP initialize/ping/tools/list/tools/call, read-only default, `--allow-write` gating, rejected arguments, wallet redaction, installed-version status and absence of invented checksums |
-| `./scripts/ui-smoke.sh` | AT-SPI click-through with a fake two-GPU rig: quick setup, start/stop, GPU participation switch (excluded chip and Totals), settings, preset editor, GPU tuning, miner install, version manager (installed row, verify chip, blocked removal alert, preset version switches), alerts, and SIGKILLing the GUI while mining continues. CI runs it headlessly with `xvfb-run` and a private AT-SPI bus |
-| `./scripts/first-run-smoke.sh` | Pristine install: empty XDG dirs, no config, no wallet, no installed miner, one fake GPU; dashboard placeholders, wizard, single-GPU tuning. Also headless in CI |
+| `./scripts/ui-smoke.sh` | AT-SPI click-through with a fake two-GPU rig: first-run preset creation, start/stop, active-preset context, GPU participation switch, settings, preset editor, GPU tuning, miner install, version manager (installed row, verify chip, blocked removal alert, preset version switches), alerts, and SIGKILLing the GUI while mining continues. CI runs it headlessly with `xvfb-run` and a private AT-SPI bus |
+| `./scripts/first-run-smoke.sh` | Pristine install: empty XDG dirs, no config, no wallet, no installed miner, one fake GPU; empty dashboard, Create preset prompt, preset editor, miner library and disabled tuning without a preset. Also headless in CI |
 | `./scripts/check-polkit.sh` | Polkit action id and helper path match the code |
 | `./scripts/check-no-secrets.sh` | No wallet-like strings or personal home paths in tracked files; secret markers in tracked code and scripts (`/home/user` is the only placeholder) |
 | `./scripts/check-docs.sh` | Relative markdown links resolve; removed docs are not referenced; docs are reachable from the index |
@@ -44,16 +44,16 @@ not a claim that CI covers it.
 
 | Surface | Action | Expected |
 | --- | --- | --- |
-| Dashboard | Refresh, Start/Stop, GPU participation switch, Tune | Live status; Cancel in the alert restores the switch and the dirty banner; Start is disabled with every GPU excluded or when the miner cannot select devices; the card chip and Totals show mining/excluded |
+| Dashboard | Refresh, Start/Stop, GPU participation switch, Tune | Live status; Cancel in the alert restores the switch and the dirty banner; Start is disabled with every GPU excluded or when the miner cannot select devices; the card chip and Rig summary show mining/excluded |
 | Dashboard layout | one GPU, then two GPUs | One card spans the row with a 3×2 bubble grid; two cards split the row evenly; three or more wrap |
 | Dashboard | stopped state | `0 TH/s`, numeric pool balance, configured endpoint named, no lone dashes |
-| Quick setup | Cancel, Next, Back, Apply 80 %, Use auto, Start mining | Three steps, validation, per-card values, start only after confirmation |
-| First run | Start with no wallet/miner | Opens Quick setup; miner marked not installed; single-GPU tune has no “Apply to” |
+| First run | Empty dashboard, Create preset, Start prompt, Cancel an unsaved new preset | No preset is invented; the CTA disappears after one exists |
+| First run | Start without a preset | Explains that a preset is required and offers Create preset; tuning is unavailable |
 | Presets | row, chevron, New preset, Use, missing-version **Install…** | Editor opens; chevron is a real button; Use applies the selection; Install… opens the library focused on the preset |
 | Preset editor | Save, Cancel, Duplicate, Delete…, Miner library… | Apply, confirmation, shared library and install dialog |
 | Miner library | Presets page and editor entry, miner rows, version rows, Verify, Remove, preset switches, benchmark, Close | Catalogue, preset usage, installed and missing binaries, recorded checksum only, verify chip, blocked removal alert listing presets, unused removal confirmation, one-preset switch with cancel restoring the combo, sequential benchmark with a winner |
 | Settings | switches, temperature limit/resume, Save and apply, Copy diagnostics, Restore stock | Aligned pill buttons, live apply, redaction, restore dialog with snapshot/defaults targets, stop-first guard |
-| GPU tune | Now row, **⋯** menu (Recommended / Profile default), Save, locks on/off, Similar/All GPUs | Value rows hidden while off; Apply-to only with >1 GPU; restart/stop dialog |
+| GPU tune | Now row, Cancel, GPU presets menu (Stock / saved / Save as / Manage), Save, locks on/off, Similar/All GPUs | Cancel leaves no dirty banner or apply alert; Apply-to only with >1 GPU; restart/stop dialog |
 | Alerts | Apply and restart / Apply and stop / Cancel, delete confirmation | Explicit restart/stop; Cancel reverts optimistic changes |
 | Errors | force a long daemon error | Toast shows **Details**; the dialog text is selectable and **Copy** puts it on the clipboard |
 | Menu | Open log, About, Quit | Opens the log/about, quits with `Ctrl+Q` |
@@ -128,7 +128,7 @@ accepted the restore.
 - `AdwSpinRow` spinners are not exposed as AT-SPI values, so the UI smoke forces
   a profile change through the core-lock switch instead of typing a number.
 - Some GTK/AT-SPI builds expose `GtkMenuButton` (“Presets” in the tuning dialog)
-  without an action, so the smoke skips opening the Recommended menu and still
+  without an action, so the smoke exercises Cancel/local changes instead of the popover and still
   exercises the profile change through the core-lock switch.
 - `AdwExpanderRow` content (URL/SHA-256 in the install dialog) is not exposed by
   every AT-SPI build; the smoke opens the expander when possible and reports the

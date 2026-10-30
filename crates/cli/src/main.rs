@@ -918,17 +918,17 @@ fn print_human(status: &Status) {
             status
                 .miner
                 .hashrate_10s
-                .map(util::format_hashrate)
+                .map(|value| util::format_hashrate_in(value, &status.coin.hashrate_unit))
                 .unwrap_or_else(|| "—".into()),
             status
                 .miner
                 .hashrate_60s
-                .map(util::format_hashrate)
+                .map(|value| util::format_hashrate_in(value, &status.coin.hashrate_unit))
                 .unwrap_or_else(|| "—".into()),
             status
                 .miner
                 .hashrate_15m
-                .map(util::format_hashrate)
+                .map(|value| util::format_hashrate_in(value, &status.coin.hashrate_unit))
                 .unwrap_or_else(|| "—".into()),
             status.miner.source,
         );
@@ -980,17 +980,19 @@ fn print_human(status: &Status) {
 
     if let (Some(accepted), Some(acceptance)) = (status.miner.accepted, status.acceptance_pct()) {
         println!(
-            "Шары:     {accepted} принято · {} отклонено ({acceptance:.1}%)",
-            status.miner.rejected.unwrap_or(0)
+            "Шары:     {accepted} принято · {} отклонено · {} устарело ({acceptance:.1}%)",
+            status.miner.rejected.unwrap_or(0),
+            status.miner.stale.unwrap_or(0)
         );
     }
 
     if let Some(pool) = &status.pool {
         println!(
-            "Пул:      баланс {} PRL · незрелых {} · выплачено {}",
+            "Пул:      баланс {} {} · незрелых {} · выплачено {}",
             pool.balance
                 .map(|v| format!("{v:.3}"))
                 .unwrap_or_else(|| "—".into()),
+            status.coin.symbol,
             pool.immature
                 .map(|v| format!("{v:.3}"))
                 .unwrap_or_else(|| "—".into()),

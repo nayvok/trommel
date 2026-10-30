@@ -1,266 +1,27 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/nayvok/trommel/docs/schema/config.schema.json",
-  "title": "Trommel config v3",
+  "title": "Trommel config v4",
   "type": "object",
   "required": [
     "schema_version",
     "presets",
-    "gpu_profiles",
+    "gpu_presets",
     "miner_installs",
     "behavior"
   ],
   "properties": {
-    "schema_version": {
-      "const": 3
-    },
-    "active_preset": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
+    "schema_version": {"const": 4},
+    "active_preset": {"type": ["string", "null"]},
     "presets": {
       "type": "object",
-      "additionalProperties": {
-        "title": "Trommel preset",
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "coin",
-          "algo",
-          "miner",
-          "miner_version",
-          "pool",
-          "pool_url",
-          "gpu_profile"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1
-          },
-          "coin": {
-            "type": "string"
-          },
-          "algo": {
-            "type": "string"
-          },
-          "miner": {
-            "type": "string"
-          },
-          "miner_version": {
-            "type": "string"
-          },
-          "pool": {
-            "type": "string"
-          },
-          "pool_url": {
-            "type": "string",
-            "pattern": ":"
-          },
-          "wallet": {
-            "type": "string"
-          },
-          "worker": {
-            "type": "string"
-          },
-          "gpu_profile": {
-            "type": "string"
-          },
-          "api_port": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 65535
-          },
-          "expected_hashrate": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "miner_options": {
-            "type": "object"
-          },
-          "miner_fee_override_pct": {
-            "type": [
-              "number",
-              "null"
-            ],
-            "minimum": 0,
-            "maximum": 100
-          },
-          "miner_fee_pct": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 100
-          },
-          "pool_fee_pct": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 100
-          },
-          "extra_args": {
-            "type": "string"
-          },
-          "env": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            }
-          },
-          "created_at": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "updated_at": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "additionalProperties": true
-      }
+      "additionalProperties": {"$ref": "#/$defs/preset"}
     },
-    "gpu_profiles": {
+    "gpu_presets": {
       "type": "object",
-      "additionalProperties": {
-        "type": "object",
-        "required": [
-          "name",
-          "default"
-        ],
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "default": {
-            "type": "object",
-            "properties": {
-              "enabled": {
-                "type": "boolean",
-                "description": "false = exclude this card from mining; it is not passed to the miner and is not tuned",
-                "default": true
-              },
-              "power_limit_w": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "minimum": 50,
-                "maximum": 1000
-              },
-              "core_clock_mhz": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "minimum": 0,
-                "maximum": 4000
-              },
-              "memory_clock_mhz": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "minimum": 0,
-                "maximum": 12000
-              },
-              "fan_pct": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "minimum": 0,
-                "maximum": 100
-              },
-              "temp_limit_c": {
-                "type": "integer",
-                "minimum": 60,
-                "maximum": 100
-              },
-              "temp_resume_c": {
-                "type": "integer",
-                "minimum": 40,
-                "maximum": 95
-              }
-            }
-          },
-          "per_gpu": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "object",
-              "properties": {
-                "enabled": {
-                  "type": "boolean",
-                  "description": "false = exclude this card from mining; it is not passed to the miner and is not tuned",
-                  "default": true
-                },
-                "custom": {
-                  "type": "boolean",
-                  "description": "true = this card has its own power/clock override; false = inherit the profile default"
-                },
-                "power_limit_w": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "minimum": 50,
-                  "maximum": 1000
-                },
-                "core_clock_mhz": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "minimum": 0,
-                  "maximum": 4000
-                },
-                "memory_clock_mhz": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "minimum": 0,
-                  "maximum": 12000
-                },
-                "fan_pct": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "minimum": 0,
-                  "maximum": 100
-                },
-                "temp_limit_c": {
-                  "type": "integer",
-                  "minimum": 60,
-                  "maximum": 100
-                },
-                "temp_resume_c": {
-                  "type": "integer",
-                  "minimum": 40,
-                  "maximum": 95
-                }
-              }
-            }
-          }
-        }
-      }
+      "additionalProperties": {"$ref": "#/$defs/gpuPreset"}
     },
-    "miner_installs": {
-      "type": "object"
-    },
-    "custom_miners": {
-      "type": "object"
-    },
-    "pools": {
-      "type": "object"
-    },
+    "miner_installs": {"type": "object"},
     "behavior": {
       "type": "object",
       "required": [
@@ -272,51 +33,120 @@
         "language"
       ],
       "properties": {
-        "auto_restart": {
-          "type": "boolean"
-        },
-        "restart_delay_s": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "poll_interval_s": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 60
-        },
-        "restore_stock_on_stop": {
-          "type": "boolean",
-          "default": true
-        },
-        "start_mining_on_login": {
-          "type": "boolean"
-        },
-        "notifications": {
-          "type": "boolean"
-        },
+        "auto_restart": {"type": "boolean"},
+        "restart_delay_s": {"type": "integer", "minimum": 1},
+        "poll_interval_s": {"type": "integer", "minimum": 1, "maximum": 60},
+        "restore_stock_on_stop": {"type": "boolean", "default": true},
+        "start_mining_on_login": {"type": "boolean"},
+        "notifications": {"type": "boolean"},
         "tray_monochrome": {
           "type": "boolean",
           "default": true,
           "description": "Use the monochrome symbolic icon in the status tray"
         },
-        "language": {
-          "enum": [
-            "system",
-            "en",
-            "ru"
-          ]
-        },
-        "appearance": {
-          "enum": [
-            "system",
-            "light",
-            "dark"
-          ]
-        },
-        "simple_mode": {
-          "type": "boolean"
-        }
+        "language": {"enum": ["system", "en", "ru"]},
+        "appearance": {"enum": ["system", "light", "dark"]},
+        "simple_mode": {"type": "boolean"},
+        "temp_limit_c": {"type": "integer", "minimum": 60, "maximum": 100},
+        "temp_resume_c": {"type": "integer", "minimum": 40, "maximum": 95}
       }
+    }
+  },
+  "$defs": {
+    "gpuTuning": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "false = exclude this card from the preset's mining session",
+          "default": true
+        },
+        "power_limit_w": {"type": ["integer", "null"], "minimum": 50, "maximum": 1000},
+        "core_clock_mhz": {"type": ["integer", "null"], "minimum": 0, "maximum": 4000},
+        "memory_clock_mhz": {"type": ["integer", "null"], "minimum": 0, "maximum": 12000},
+        "custom": {
+          "type": "boolean",
+          "description": "true = explicit per-card regime; false = inherit the profile default"
+        },
+        "gpu_preset": {
+          "type": "string",
+          "description": "Metadata: id of the named GpuPreset this card follows"
+        }
+      },
+      "additionalProperties": true
+    },
+    "gpuProfile": {
+      "type": "object",
+      "required": ["default"],
+      "properties": {
+        "default": {"$ref": "#/$defs/gpuTuning"},
+        "per_gpu": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/gpuTuning"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "preset": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "coin",
+        "algo",
+        "miner",
+        "miner_version",
+        "pool_url",
+        "gpu"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "coin": {"type": "string"},
+        "coin_symbol": {"type": "string"},
+        "coin_name": {"type": "string"},
+        "wallet_prefix": {"type": "string"},
+        "hashrate_unit": {
+          "enum": ["auto", "H/s", "kH/s", "MH/s", "GH/s", "TH/s", "PH/s"]
+        },
+        "algo": {"type": "string"},
+        "miner": {"type": "string"},
+        "miner_version": {"type": "string"},
+        "pool_url": {"type": "string"},
+        "pool_fee_pct": {"type": "number", "minimum": 0, "maximum": 100},
+        "pool_api_url": {"type": "string"},
+        "wallet": {"type": "string"},
+        "worker": {"type": "string"},
+        "gpu": {"$ref": "#/$defs/gpuProfile"},
+        "api_port": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "expected_hashrate": {"type": ["number", "null"]},
+        "miner_options": {"type": "object"},
+        "miner_fee_override_pct": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 100
+        },
+        "miner_fee_pct": {"type": "number", "minimum": 0, "maximum": 100},
+        "extra_args": {"type": "string"},
+        "env": {"type": "object", "additionalProperties": {"type": "string"}},
+        "created_at": {"type": "integer", "minimum": 0},
+        "updated_at": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "gpuPreset": {
+      "type": "object",
+      "required": ["id", "name", "gpu_uuid", "gpu_name", "tuning"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "gpu_uuid": {"type": "string"},
+        "gpu_name": {"type": "string"},
+        "tuning": {"$ref": "#/$defs/gpuTuning"},
+        "created_at": {"type": "integer", "minimum": 0},
+        "updated_at": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
     }
   },
   "additionalProperties": true

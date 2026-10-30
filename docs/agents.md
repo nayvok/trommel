@@ -84,7 +84,7 @@ trommel config apply /tmp/trommel-proposed.json --restart
 ## CLI JSON
 
 ```bash
-trommel status --json        # full Status document, contract_version = 3
+trommel status --json        # full Status document, contract_version = 4
 trommel gpus --json          # nvidia-smi view, works without the daemon
 trommel diagnose --json      # app/version, paths, redacted config, status, GPUs, warnings
 trommel preset list          # human table with total fees
@@ -121,7 +121,7 @@ human text. `status` and `start/stop/toggle` connect through D-Bus and start
 
 | Field | Meaning |
 | --- | --- |
-| `contract_version` | Contract revision (3); compare this, not `version` |
+| `contract_version` | Contract revision (4); compare this, not `version` |
 | `state.running` | A miner is running (including `external`) |
 | `state.external` | The process was started outside Trommel and is never ours to kill |
 | `state.last_error` | Last supervisor/config error, including a failed restore |
@@ -132,6 +132,9 @@ human text. `status` and `start/stop/toggle` connect through D-Bus and start
 | `total` | Aggregate hashrate/power/efficiency/temperature; power sums every detected card, temperature is the hottest card; `gpus_enabled` counts participating cards and `gpus_total` counts detected cards |
 | `miner` | Hashrate windows, accepted/rejected/stale, `source` (`api`/`log`) |
 | `pool` | Cached pool statistics when mining |
+| `coin` | Applied coin id/symbol/name/algo/wallet prefix/hashrate unit |
+| `pool_view` | Applied pool name/URL/fee and whether a documented account API is available |
+| `pool_error` | Last pool API error, if the configured endpoint did not answer |
 | `oc` | Snapshot availability, `applied`/`needs_restore`, stale flag, restore-on-stop, last OC error and target summary |
 | `warnings` | User-facing configuration and lock warnings |
 

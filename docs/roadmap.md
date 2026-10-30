@@ -19,6 +19,7 @@ green. Status is updated in the same commit as the code.
 | **B3** | Merge the Presets and Miners pages into one preset-centred flow (miner library dialog) | **Done in 0.6.0** |
 | **B4** | Miner version manager: install/update/remove with the affected presets shown, rollback | **Done in 0.7.0** |
 | **B5** | Release hardening after B1–B4: CI/test matrix, packaging install/upgrade/remove, release bundle verification, MSRV and documentation truth | **Done in 0.8.0** |
+| **B6** | Preset-scoped GPU settings, named per-card GPU presets, coins/pools by miner capability, config schema v4, first-run without a wizard | **In progress** |
 
 B3 is complete in 0.6.0, B4 in 0.7.0 and B5 in 0.8.0. Multi-miner/multi-job
 remains a separate product decision under
@@ -199,7 +200,8 @@ Architecture decisions are recorded as ADRs:
 [one active session](adr/0005-one-active-session.md),
 [failure policy and emergency restore](adr/0006-failure-policy.md),
 [per-GPU participation](adr/0007-per-gpu-participation.md) and
-[desktop tray in the daemon](adr/0008-tray.md).
+[desktop tray in the daemon](adr/0008-tray.md) and
+[preset-scoped GPU settings](adr/0009-preset-gpu-settings.md).
 
 B1 implements ADR 0005 (single session, one snapshot) and ADR 0006 (daemon
 ownership, bounded restart, GUI crash is a no-op, emergency restore, startup

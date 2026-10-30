@@ -92,7 +92,7 @@ release packages always build with `gui`.
 Per-module responsibilities and key functions are listed in
 [components.md](components.md).
 
-## Configuration model (schema v3)
+## Configuration model (schema v4)
 
 `~/.config/trommel/config.json` is the single source of truth for intent. It is
 owned by the daemon once running; the GUI keeps a **draft** copy and only sends
@@ -100,30 +100,43 @@ it through `ApplyConfig`.
 
 ```
 Config
-├── schema_version: 3
+├── schema_version: 4
 ├── active_preset: Option<String>
 ├── presets: { id -> Preset }
-│     coin, algo, miner, miner_version, pool, pool_url, wallet, worker,
-│     gpu_profile, api_port, expected_hashrate, miner_options, fee overrides,
-│     extra_args, env, timestamps
-├── gpu_profiles: { id -> GpuProfile }
-│     name, default: GpuTuning, per_gpu: { gpu-uuid -> GpuTuning }
+│     coin, coin_symbol/name/wallet_prefix/hashrate_unit, algo,
+│     miner, miner_version, pool_url, pool_fee_pct, pool_api_url,
+│     wallet, worker, gpu: GpuProfile, api_port, expected_hashrate,
+│     miner_options, fee overrides, extra_args, env, timestamps
+├── gpu_presets: { id -> GpuPreset }       // named per-card tuning templates
+│     name, gpu_uuid, gpu_name, tuning, timestamps
 ├── miner_installs: { "id@version" -> MinerInstall }
 │     path, sha256 (recorded, may be empty), source_url, verified, custom,
 │     installed_at
-├── custom_miners: { id -> CustomMiner }      (reserved; not used by the GUI)
-├── pools: { id -> CustomPool }               (reserved for future endpoints)
 └── behavior: auto_restart, restart_delay_s, poll_interval_s,
               restore_stock_on_stop, start_mining_on_login, notifications,
-              tray_monochrome, language, appearance, simple_mode
+              tray_monochrome, language, appearance, simple_mode,
+              temp_limit_c, temp_resume_c
 ```
+
+GPU power, clocks and participation live **inside the mining preset**
+(`Preset::gpu`). Switching the active preset therefore switches the whole GPU
+setup; a new preset starts from stock. A named `GpuPreset` is a reusable
+per-card template and is independent of mining presets: deleting a mining preset
+deletes only its own values, never the saved templates.
 
 `GpuTuning` uses `Option` values as the source of truth: `None` means “do not
 touch”, `Some` means “apply”. `enabled` decides whether the card participates in
 the **mining session**: `false` excludes it from the miner, skips its tuning and
 returns any tuning left over from an earlier restore-off session (see
-[ADR 0007](adr/0007-per-gpu-participation.md)). A fresh profile has no clock
+[ADR 0007](adr/0007-per-gpu-participation.md)). A fresh preset has no clock
 locks; power limit `None` means driver auto, and `0` in the UI maps to `None`.
+`gpu_preset` is metadata only: it names the template a card follows, never
+changes what is applied, and is ignored by `Config::diff`.
+
+The temperature policy is global in `behavior.temp_limit_c`/`temp_resume_c`
+because one miner process receives one temperature flag. The pool is user input:
+there is no catalogue pool id in the preset; the URL is authoritative and a known
+host only supplies a hint and a documented JSON API template.
 
 Presets reference a miner **id and version**, never a path. `miner_installs` is
 global and keyed `id@version`, so several versions of the same miner can stay
@@ -134,16 +147,17 @@ version never edits a preset, a version pinned by any preset cannot be removed,
 and moving a preset to another installed version changes only that preset.
 `versions::verify` checks that a recorded binary exists, is a regular file, is
 executable and is readable; it echoes a recorded SHA-256 or `null` and never
-hashes a file to invent one. See
-[components § versions](components.md#versions--miner-version-manager).
+hashes a file to invent one. `versions::probe_algorithms` is the explicit
+capability probe (`--list-algorithms` or `--help`) and runs only when asked.
+See [components § versions](components.md#versions--miner-version-manager).
 
 `Config::normalize()` repairs the common broken states on load (dangling active
-preset, missing default profile, missing install path, stale fee override).
-`Config::from_v1`
-migrates the former flat configuration once, from the legacy
-`~/.config/pearl-miner/config.json`; the old file is left untouched. That is the
-only user-visible legacy configuration path; the state file keeps one legacy
-`profile` field so old state files still parse.
+preset, missing coin display fields, stale fee override). It deliberately does
+**not** invent a preset or a miner version: a fresh install has no presets.
+`Config::from_v1`/`from_v3` migrate the former flat config and the shared
+`gpu_profiles` layout once. The v1 legacy path is
+`~/.config/pearl-miner/config.json`; the old file is left untouched. The state
+file keeps one legacy `profile` field so old state files still parse.
 
 The JSON schemas in [`schema/`](schema/) are the machine-readable form for
 external tools. They are descriptive, not enforced by the daemon; `Preset`
@@ -159,8 +173,8 @@ external tools. They are descriptive, not enforced by the daemon; `Preset`
 2. Validate the active preset: wallet present, pool address contains `:`,
    miner binary installed and executable.
 3. Resolve participation and the effective tuning per card. A per-GPU entry
-   with `custom = false` inherits power, clocks and temperature from the profile
-   default and only keeps its own participation switch. A card with
+   with `custom = false` inherits power and clocks from the preset's GPU default
+   and only keeps its own participation switch; temperature is global. A card with
    `enabled = false` is excluded from the miner and is never tuned; a
    participating card whose effective tuning has no power or clock values is
    not touched at all. A partial participation is validated against the
@@ -395,9 +409,9 @@ compare `contract_version` rather than the app version.
 - The snapshot is stored at `~/.local/state/trommel/oc-snapshot.json`. A
   snapshot from another boot is deleted when the daemon starts and is never
   used by Stop/Restore; Start captures a fresh one.
-- `custom = false` per-GPU entries inherit the active profile default; only
+- `custom = false` per-GPU entries inherit the active preset's GPU default; only
   `custom = true` entries (written by the tuning dialog) replace it. This keeps
-  the setup wizard and the enable toggle from shadowing the default.
+  the participation switch from shadowing the default.
 - Apply passes only values that are `Some`; a profile with no power/clock
   values produces no snapshot and no helper call.
 - Restore has two targets: `snapshot` (the captured limit, clocks unlocked) and
@@ -541,7 +555,7 @@ The change is live and does not restart the miner.
 
 | Path | Contents |
 | --- | --- |
-| `~/.config/trommel/config.json` | Applied config (schema v3) |
+| `~/.config/trommel/config.json` | Applied config (schema v4) |
 | `~/.local/state/trommel/state.json` | Running state, PID, `miner_path`, preset, restart count |
 | `~/.local/state/trommel/oc.lock` | Cross-process OC `flock` |
 | `~/.local/state/trommel/oc-lease.json` | Daemon/helper PID + start-time lease |

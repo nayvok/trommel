@@ -1,0 +1,60 @@
+name: Bug report
+description: Something in Trommel does not work as documented
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do not paste wallet addresses or any recovery/secret material.
+        In the app, use **Report issue** or **Settings → Copy diagnostics**; the
+        bundle has wallets and home paths redacted.
+  - type: input
+    id: version
+    attributes:
+      label: Trommel version
+      description: The version shown in About or `trommel status --json` (`version`).
+    validations:
+      required: true
+  - type: input
+    id: miner
+    attributes:
+      label: Miner and version
+      placeholder: "wildrig 0.51.8, srbminer 3.8.0, onezero 1.2.0, …"
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Session
+      options:
+        - Wayland
+        - X11
+        - Headless / Xvfb
+        - CLI only
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open …
+        2. Change …
+        3. Press …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and error text
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste the redacted JSON from **Copy diagnostics** if the issue is not a one-line UI bug.
+      render: json

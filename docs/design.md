@@ -93,7 +93,7 @@ Custom CSS lives in `install_css()`:
 | `.trommel-gpu-stat` | Live-value bubble inside a dashboard GPU card: tinted, 10 px radius |
 | `.trommel-gpu-stat-value`, `-label`, `-hint` | Big tabular value, small label, muted target/lock hint |
 | `.trommel-gpu-title` | Card title weight |
-| `.trommel-gpu-chip` | Custom/default badge and compact live chip (pill, tabular) |
+| `.trommel-gpu-chip` | Stock/tuned/GPU-preset badge and compact live chip (pill, tabular) |
 | `.trommel-pill` + `-running`, `-external`, `-stopped`, `-offline` | Status pill |
 | `.trommel-hot`, `.trommel-warm`, `.trommel-muted` | Temperature and mute emphasis |
 | `button.pill` | Compact rounded action button (26 px min height) |
@@ -147,9 +147,7 @@ Every coloured value has a word next to it (“installed”, “not installed”
    the dashboard, which keeps the one-line switcher usable down to roughly
    850 px, so the 880×760 default is one line in both locales; a narrower
    window stacks the labels under the icons and keeps them in the header.
-3. **Wizards are the only Back/Next surfaces.** They are modal dialogs and keep
-   Cancel/Back/Next in the footer on every step.
-4. **A page is a place you return to, not a step in a flow.** Drilling down
+3. **A page is a place you return to, not a step in a flow.** Drilling down
    always opens a dialog; closing it leaves the page as it was.
 5. **Destructive or restart-triggering actions ask first** with an
    `AdwAlertDialog`: apply/restart while mining, delete a preset, overwrite a
@@ -164,16 +162,16 @@ Every coloured value has a word next to it (“installed”, “not installed”
 | Surface | Kind | Opened from | Purpose |
 | --- | --- | --- | --- |
 | Main window | `AdwApplicationWindow` | app start | Header (view switcher, refresh, menu), three pages, banners |
-| Dashboard | page | view switcher | Hero hashrate, GPU cards, totals, shares, pool, warnings |
+| Dashboard | page | view switcher | Hero session, active preset context, GPU cards, rig summary, pool and shares, warnings |
 | Presets | page | view switcher | Preset list, miner library entry; rows open the editor |
 | Settings | page | view switcher | Behaviour, tray, appearance, actions |
-| Preset editor | `AdwDialog` | preset row / New preset | One preset: miner, version, pool, wallet, fees, options |
+| Preset editor | `AdwDialog` | preset row / New preset | One preset: coin, algorithm, manual pool, wallet, miner version, fees, options |
 | Miner library | `AdwDialog` | Presets page / preset editor | Catalogue, installed versions with usage, verify/remove, per-preset version switch, benchmark, install entry |
-| Miner install | `AdwDialog` | Miner library row, editor, wizard | Version pick, HTTPS download, local import |
+| Miner install | `AdwDialog` | Miner library row, editor | Version pick, HTTPS download, local import |
 | Move presets to a version | `AdwAlertDialog` | Miner library after an install | Per-preset checkboxes; nothing is pre-selected and “keep” is the default |
 | Remove miner version | `AdwAlertDialog` | Miner library version row | Confirmation for an unused version; a blocked alert listing presets when one pins it |
-| GPU tuning | `AdwDialog` | Dashboard card | Per-card power/clocks; copy to similar/all |
-| Quick setup | `AdwDialog` | Quick setup button / Start on a pristine install | Cards → miner → wallet → start |
+| GPU tuning | `AdwDialog` | Dashboard card | Per-card power/clocks, stock reset, named GPU presets; copy to similar/all |
+| GPU presets | `AdwDialog` | Tune menu / Settings → GPU | Rename or delete saved per-card tuning templates |
 | Apply alert | `AdwAlertDialog` | apply while mining | Apply and restart / apply and stop / cancel |
 | Delete-preset alert | `AdwAlertDialog` | preset editor | Destructive confirmation |
 | Tray menu | StatusNotifierItem | panel icon | Status header, Start/Stop, Show window, Quit |
@@ -183,10 +181,12 @@ Every coloured value has a word next to it (“installed”, “not installed”
 
 ### Dashboard
 
-- Hero card: a small letter-spaced HASHRATE caption, the large value, status
-  pill (`mining` / `external` / `stopped` / `offline`), a line with preset ·
-  miner · version · total fee, a separator, and a metadata line with uptime,
-  restarts and the miner data source. The card is accent-tinted with a soft
+- Hero card: a small letter-spaced HASHRATE caption, the large value in the
+  active coin's preferred unit, status pill (`mining` / `external` / `stopped` /
+  `offline`), a line `Preset: … · miner version · coin · total fee`, a separator,
+  and a metadata line with uptime, restarts and the miner data source. With no
+  preset it becomes the first-run empty state: “No mining preset”, a short
+  explanation, **Create preset**, and the same prompt when Start is pressed. The card is accent-tinted with a soft
   shadow; the value uses the accent colour only while a hashrate is known.
   The card closes with the primary **Start/Stop** button (play/stop icon, pill,
   suggested while stopped and destructive while mining) in its footer, right
@@ -196,8 +196,8 @@ Every coloured value has a word next to it (“installed”, “not installed”
   active **mining session** (off = excluded: not passed to the miner, not
   tuned), six value bubbles (power, core, memory, temperature, fan, load; the
   configured target/lock is a small hint and turns hot when the live value
-  differs), a **mining**/**excluded** chip, a custom/default chip and a
-  **Tune** button. The participation chip describes the applied session, not
+  differs), a **mining**/**excluded** chip, a **stock**/**tuned**/**GPU preset** chip and
+  a **Tune** button. The participation chip describes the applied session, not
   the draft switch; after a switch change it keeps saying `mining` until Apply. Each bubble ends
   with a **sparkline** on the bubble floor: the metric's last five minutes as a
   thin accent line over a soft accent wash, rounded with the bubble. The wash
@@ -208,31 +208,32 @@ Every coloured value has a word next to it (“installed”, “not installed”
   the daemon status. A one-GPU rig uses a single full-width card with a 3×2
   bubble grid; 2+ cards go into a wrap box and split the row evenly (240 px
   minimum per card). Core and memory clocks are labelled separately.
-- Aggregate rows: cards (`1 of 2 mining`, or `selected` while stopped),
-  rig power, max temperature, accepted and rejected shares, pool balance, the
-  configured pool endpoint with its fee, and warnings. Power sums `power.draw`
-  over every detected card (an excluded card still counts, since it still
-  draws) and the temperature is the hottest card's reading. The cards, power
-  and temperature rows carry a tooltip with one line per card, so a two-GPU
-  aggregate can be checked without opening the JSON. J/TH stays in the status
-  JSON for agents, but the dashboard does not show an efficiency row for now.
-- When stopped, show **numeric placeholders** (`0 TH/s`, `0.000 PRL` or `0 PRL`
-  without a wallet) and still name the configured pool endpoint. No lone dashes
-  as placeholders.
+- Above the cards, an **Active preset** row names the preset, its coin, pool,
+  card count and whether the GPU settings are stock or tuned, with **Edit
+  preset**. The Rig description says that the switch includes a card in this
+  preset's session and that Apply stores the change.
+- Rig summary lives in the Active preset row (cards, power, temperature) with
+  per-card tooltips; there is no separate Totals group.
+- **Pool and shares** is one group: pool name/host, endpoint, fee and API
+  on/off; pending/paid/immature balance and workers in the coin symbol; accepted,
+  rejected and stale shares with acceptance percentage. Without a documented
+  pool API the group says balance data is unavailable instead of inventing it.
+- When stopped, show **numeric placeholders** in the coin unit (`0 TH/s`,
+  `0.000 PRL` or `0 PRL` without a wallet) and still name the configured pool
+  endpoint. No lone dashes as placeholders.
 - Warnings are one row with the joined warning text and a warning badge; the
   same list is in the status document.
-- The secondary **Quick setup** button (flat pill, below the footer) appears
-  until a wallet and an installed miner exist and opens the same wizard as
-  Start does on an unfinished setup.
 
 ### Presets
 
 - Rows are activatable `AdwActionRow`s in a preferences group; the chevron is a
   real button and opens the editor.
-- Row subtitle: coin, pool, miner and version. When the exact pinned version is
-  missing, a second subtitle line says so and an **Install…** button opens the
-  miner library focused on that preset. The active preset gets an “Active”
-  badge; inactive rows get a **Use** button.
+- Row subtitle: coin symbol, pool name/host, miner and version. When the exact
+  pinned version is missing, a second subtitle line says so and an **Install…**
+  button opens the miner library focused on that preset. The active preset gets
+  an “Active” badge; inactive rows get a **Use** button. With no presets the page
+  shows an empty-state row and **New preset**. New opens an unsaved draft; Cancel
+  removes it again.
 - **New preset** creates a copy of the active preset and opens the editor.
 - **Use** applies the selection (with the restart/stop dialog while mining).
 - The **Miner library** group below the list opens the modal library. Installed
@@ -298,8 +299,8 @@ Every coloured value has a word next to it (“installed”, “not installed”
 
 ### Miner install (modal, single source)
 
-Owns the whole install flow for the miner library, the preset editor and the
-wizard. Two groups, in order:
+Owns the whole install flow for the miner library and the preset editor. Two
+groups, in order:
 
 1. **Version** — version list from the catalogue **plus** already-installed
    custom builds, and an editable version name, so a newer upstream build can
@@ -346,48 +347,30 @@ Rules:
   the dashboard shows an **oc banner** with a **Restore stock** action; the same
   state is also a status warning. The banner is not dismissible into a silent
   state.
-- `Settings → Power limit` intentionally accepts `0` as driver auto; do not
+- The per-card power limit intentionally accepts `0` as driver auto; do not
   clamp it to a low wattage.
 - The per-card dialog does not pretend to control fan or temperature; those are
   global/live values.
 
 ### GPU tuning (modal)
 
-- Header: card name only. The footer holds a **Presets** menu
-  (**Recommended**, **Profile default**) on the left and **Save** on the right;
-  the close button dismisses without saving.
+- Header: card name, with the active preset as context. The footer holds
+  **Cancel**, a **GPU presets** menu and **Save**. Cancel/Esc discard every local
+  change: no dirty banner, no Apply alert.
 - A **Now** row shows live power/core/memory/temperature so the target can be
   compared with reality.
 - Power limit, core lock + value, memory lock + value. A clock row appears only
   while its lock is on; with the lock off the subtitle names the current driver
   value.
-- **Recommended** = 80 % of the stock power limit, both locks off; the tooltip
-  says exactly that. It is a safe starting point, not an optimum. **Profile
-  default** removes the per-card override and is shown only when one exists.
+- **GPU presets** menu: **Stock (default)** (driver-auto power, locks off),
+  saved per-card presets, **Save as GPU preset…** and **Manage GPU presets…**.
+  Selecting a preset only changes the dialog fields. Save writes the values into
+  the active mining preset's per-card entry and starts the normal apply flow.
 - **Apply to** appears only with more than one card: similar GPUs or all GPUs.
-- Save goes through the normal apply flow; a single-GPU dialog has no empty
-  “apply to” section.
+  Copied cards become custom rather than claiming another card's GPU preset.
+- A single-GPU dialog has no empty “apply to” section. Deleting a mining preset
+  deletes only its own GPU values; saved GPU presets remain.
 
-### Quick setup (modal wizard)
-
-Three steps, each with a status line and a footer carrying Cancel/Back on the
-left and Next/Start mining on the right; the header shows the wizard title and
-the current step as its subtitle:
-
-1. **Cards** — each detected card: participation switch, its own power limit, stock
-   limit in the subtitle. **Apply 80 %** fills the ticked cards, expands them
-   and writes the resulting watts into each row; **Use auto** clears the limit.
-   A card without a tick is not touched.
-2. **Miner** — pick a miner/version; **Install…** opens the shared install
-   dialog; installed state is shown in the row. One installation serves every
-   preset.
-3. **Wallet** — preset name, wallet, worker, pool and address. Validation
-   explains missing pieces instead of failing silently.
-
-**Start mining** saves the draft and starts. With a running miner it shows the
-normal restart/stop alert; it never restarts silently. The wizard starts each
-card from its own override or driver auto, never from an unrelated default
-profile (this prevented a 300 W default from being applied to a 165 W card).
 
 ### Alerts
 
@@ -404,11 +387,11 @@ profile (this prevented a 300 W default from being applied to a 165 W card).
 | --- | --- |
 | Service offline | Pill “offline”, Start disabled, a note explains that `trommeld` is not running; refresh keeps retrying |
 | No GPU | One explanatory row in cards and settings, not an empty box |
-| No preset | Hero says “No preset”; settings still render |
-| No wallet / no miner | Start opens Quick setup; dashboard offers the same wizard |
-| Miner stopped | Numeric placeholders, configured endpoint still named |
+| No preset | Hero becomes the first-run state with **Create preset**; settings and the miner library still work |
+| No wallet / no miner | Start names the missing piece and offers **Open preset**; the dashboard stays the session view |
+| Miner stopped | Numeric placeholders in the coin unit, configured endpoint still named |
 | Miner running | Live values, uptime, fee breakdown, warnings; Apply requires the alert |
-| GPU excluded | Chip `excluded`, live temperature/power still visible, Totals counts it out; Start refuses when the miner cannot select devices |
+| GPU excluded | Chip `excluded`, live temperature/power still visible, Rig summary counts it out; Start refuses when the miner cannot select devices |
 | External miner | “mining (started manually)” pill in warning colour; Start explains that the external process must be stopped |
 | Missing miner install | Preset row and library mark the pinned version, Start blocked, miner library offered |
 | Lock not honoured | A warning with requested and actual MHz |
@@ -452,7 +435,7 @@ two-GPU rig with deterministic XDG directories. Conventions:
   surfaces are English dark plus Russian settings.
 - File naming: `<surface>-<lang>-<scheme>.png`.
 - Use the GUI test hooks (`TROMMEL_SCREENSHOT`, `TROMMEL_OPEN_*`,
-  `TROMMEL_WIZARD_STEP`, …) instead of hand-cropping.
+  …) instead of hand-cropping.
 - Screenshots in the user guide must match the current layout; regenerate them
   when a surface changes, and never reference an image the script does not
   produce.

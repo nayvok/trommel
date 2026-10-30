@@ -20,31 +20,43 @@ short_description_ru = "…"
 homepage = "https://github.com/andru-kun/wildrig-multi"
 license = "Freeware"
 source_url = "https://github.com/andru-kun/wildrig-multi/releases"
-supported_coins = ["pearl"]
-supported_algos = ["pearlhash"]
+supported_algos = ["pearlhash", "kawpow", "nexapow"]
 fee_pct = 0.0
 fee_configurable = false
 fee_flag = ""
 per_gpu_stats = false
 per_gpu_devices = true
 device_flag = "--gpu-list"
+driver = "generic"
+api_default_port = 4028
+api_port_flag = "--api-port"
+api_worker_flag = "--api-worker-id"
 default_options = { fan_speed = "0" }
+
+[[miners.fees]]
+algo = "pearlhash"
+pct = 0.0
 ```
 
 | Field | Meaning |
 | --- | --- |
-| `id` | Stable key used by presets and installs; also the driver match |
+| `id` | Stable key used by presets and installs |
 | `name` | Display name |
 | `short_description_en/ru` | One-line description shown in the catalogue/editor |
 | `homepage`, `source_url`, `license` | Upstream metadata; `source_url` is the link in the install dialog, the rest is available to the status JSON and external tools |
-| `supported_coins`, `supported_algos` | Catalogue capability labels; they do not hard-block a combination and are not displayed by the current GUI |
-| `fee_pct` | Developer fee (percent) on the catalogue algorithm |
+| `supported_coins` | Optional explicit coin whitelist. Empty means “algorithm-compatible”: the UI filters coins by `supported_algos` |
+| `supported_algos` | Algorithms the miner advertises; the GUI uses this (or an explicit probe) to filter coins |
+| `fee_pct` | Fallback developer fee when `fees` has no entry for the selected algorithm |
+| `fees` | Per-algorithm `{ algo, pct, configurable, flag }` table |
 | `fee_configurable` | Only `true` when the miner really accepts a fee flag |
 | `fee_flag` | Flag used when a fee override is applied (e.g. `--fee`) |
 | `per_gpu_stats` | The miner reports per-GPU statistics; parsed, not used for device selection |
 | `per_gpu_devices` | The miner can be told which cards to use. Must be paired with `device_flag` |
 | `device_flag` | The documented flag that selects devices (for example `--gpu-id`); empty when the miner cannot choose |
-| `default_options` | Defaults applied by quick setup when it switches miner; the editor falls back to each descriptor's `default` when a value is absent |
+| `driver` | Core argument shape: `generic` (WildRig), `srbminer`, `onezero` |
+| `api_default_port`, `api_port_flag`, `api_enable_flag`, `api_worker_flag` | Documented local API shape; no Rust branch needed |
+| `algorithm_probe_arg` | Optional `--list-algorithms` / `--help` used by **Check capabilities** |
+| `default_options` | Defaults the editor and new preset start from; each descriptor's `default` is the fallback |
 
 ## Version entry
 
@@ -112,12 +124,19 @@ below) is added for every branch:
 
 | Driver | Selected by | Core flags |
 | --- | --- | --- |
-| Generic/WildRig | any id without a branch | `--algo`, `--url`, `--user`, optional `--worker`, `--api-port`, `--api-worker-id`, `--log-file`, `--no-color`, `--print-time 10`, `--gpu-temp-limit`, `--gpu-temp-resume`, optional `--gpu-list` |
-| SRBMiner | `"srbminer"` | `--algorithm`, `--pool`, `--wallet wallet.worker`, `--password x`, optional `--api-enable/--api-port/--api-rig-name`, `--log-file`, optional `--gpu-id` |
-| OneZero | `"onezero"` | `-a`, `-o`, `-u`, optional `-w`, optional `--devices` |
+| Generic/WildRig | `driver = "generic"` | `--algo`, `--url`, `--user`, optional `--worker`, `--log-file`, `--no-color`, `--print-time 10`, `--gpu-temp-limit`, `--gpu-temp-resume`, optional `--gpu-list` |
+| SRBMiner | `driver = "srbminer"` | `--algorithm`, `--pool`, `--wallet wallet.worker`, `--password x`, `--log-file`, optional `--gpu-id` |
+| OneZero | `driver = "onezero"` | `-a`, `-o`, `-u`, optional `-w`, optional `--devices` |
+
+API flags are appended from the `api_*` catalogue fields for every driver.
+`preset.api_port = 0` means “use `api_default_port`”; an explicit port overrides
+it. A custom/imported miner with no catalogue entry keeps the generic
+`--api-port` shape when the preset sets a port.
 
 Add a branch only when the core flags genuinely differ; otherwise a catalogue
 entry is enough. The generic branch is also the custom/imported-miner driver.
+Multi-GPU support is inherent in all three miners and is expressed by
+`per_gpu_devices` + `device_flag`; one process covers every participating card.
 The temperature limit and resume value come from the active GPU profile's
 `default` tuning and are global, not per card.
 
@@ -202,14 +221,22 @@ Rules:
 
 ## Coins and pools
 
-`coins.toml` entries carry `id`, `symbol`, `name`, `wallet_prefix`, `algos` and
-localised descriptions. `pools.toml` entries carry `id`, `name`, `url`, `fee_pct`,
-`api_kind`, `min_payout`, `verified` and localised notes.
+`coins.toml` entries carry `id`, `symbol`, `name`, `wallet_prefix`, `algos`,
+`hashrate_unit`, `verified` and localised descriptions. The GUI filters coins by
+the selected miner's `supported_coins` whitelist or, when it is empty, by
+`coin.algos` ∩ the miner's `supported_algos`. A detected capability probe can
+widen or correct the catalogue set; a custom coin remains available for manual
+metadata.
 
-Only PearlHash has an account API adapter (`pool.rs`). A generic pool may be used
-for mining; the dashboard then shows configured data without a live balance.
-Adding a parser requires a stable documented API and a test fixture — do not
-scrape HTML.
+`pools.toml` is a known-pool hint directory: `id`, `name`, `url`, `fee_pct`,
+`api_kind`, an optional `api_url` template with `{wallet}`, `min_payout`,
+`verified` and localised notes. The GUI has **no pool dropdown**: the preset's
+`pool_url` is authoritative. A matching host can suggest a fee and supply the
+documented account API; any other pool can set `pool_api_url` explicitly.
+
+Only documented JSON APIs are used (`pool.rs`). There is no HTML scraping: a pool
+without an API shows configured data and a clear “balance unavailable” note.
+Adding a parser requires a stable documented API and a test fixture.
 
 ## Fees
 
@@ -231,8 +258,10 @@ total.
    homepage, license, coins/algos, fee, versions and option descriptors.
 2. Add `per_gpu_devices = true` and `device_flag = "--…"` only when the upstream
    documentation names a device-selection flag. Never guess one.
-3. Add a driver branch only if the core arguments differ from the generic/WildRig
-   shape.
+3. Set `driver` and the `api_*`/`algorithm_probe_arg` fields from documented
+   upstream behavior. Add a new driver branch only if the core arguments differ
+   from the existing `generic`/`srbminer`/`onezero` shapes.
+4. Add per-algorithm `fees`; do not apply one algorithm's fee to another.
 4. Add unit tests for argument rendering, fee handling and (when applicable)
    the device flag in `crates/core/src/miners.rs`.
 5. Add a version with a real HTTPS URL. Do not invent a SHA-256 or mark

@@ -24,6 +24,33 @@ pub fn format_hashrate(hs: f64) -> String {
     format!("{value:.decimals$} {}", UNITS[idx].0)
 }
 
+/// Format in a coin's preferred unit, falling back to automatic scaling when
+/// that unit would be misleading (for example a MH/s coin reporting TH/s).
+pub fn format_hashrate_in(hs: f64, unit: &str) -> String {
+    if !hs.is_finite() || hs <= 0.0 {
+        return "—".to_string();
+    }
+    let unit = unit.trim();
+    if unit.is_empty() || unit.eq_ignore_ascii_case("auto") {
+        return format_hashrate(hs);
+    }
+    let scale = match unit {
+        "H/s" => 1.0,
+        "kH/s" => 1e3,
+        "MH/s" => 1e6,
+        "GH/s" => 1e9,
+        "TH/s" => 1e12,
+        "PH/s" => 1e15,
+        _ => return format_hashrate(hs),
+    };
+    let value = hs / scale;
+    if !(0.01..1000.0).contains(&value) {
+        return format_hashrate(hs);
+    }
+    let decimals = if value >= 100.0 { 1 } else { 2 };
+    format!("{value:.decimals$} {unit}")
+}
+
 /// Compact form used by the panel indicator: `125.3T`, `980G`, `1.2P`.
 pub fn format_hashrate_compact(hs: f64) -> String {
     if !hs.is_finite() || hs <= 0.0 {
@@ -193,6 +220,16 @@ mod tests {
         assert_eq!(format_hashrate(0.0), "—");
         assert_eq!(format_hashrate_compact(125.1e12), "125.1T");
         assert_eq!(format_hashrate_compact(950e9), "950.0G");
+    }
+
+    #[test]
+    fn formats_in_a_coin_unit_with_a_safe_fallback() {
+        assert_eq!(format_hashrate_in(125.1e12, "TH/s"), "125.1 TH/s");
+        assert_eq!(format_hashrate_in(500e6, "MH/s"), "500.0 MH/s");
+        // A MH/s coin with a TH/s-scale rig must not print 125,000,000 MH/s.
+        assert_eq!(format_hashrate_in(125e12, "MH/s"), "125.0 TH/s");
+        assert_eq!(format_hashrate_in(500e6, "auto"), "500.0 MH/s");
+        assert_eq!(format_hashrate_in(0.0, "TH/s"), "—");
     }
 
     #[test]

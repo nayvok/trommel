@@ -21,38 +21,40 @@ user who installed the package. The background service and tray start at login
 by default; turn off **Settings → Behavior → Start Trommel at login** if you
 prefer to start it on demand.
 
-## First run: Quick setup
+## First run: create a preset
 
 Simple mode is on by default: the preset editor hides raw miner arguments and
 per-miner options. Turn it off in **Settings → Behavior → Simple mode** if you
 need them.
 
-The dashboard shows **Quick setup** until a wallet and an installed miner are
-ready. It opens a three-step wizard for a rig with one to three cards:
+A fresh install has **no preset**. The dashboard is the first page: it shows the
+detected cards, and the hero says that a preset is required. Press **Create
+preset** (or **Start**, which explains the same thing) to open the preset editor.
 
-1. **Cards** — every detected GPU has a switch and its own power limit. Untick a
-   card to exclude it from mining: it is not passed to the miner and is not
-   tuned. **Apply 80 %** sets 80 % of each ticked card's stock limit, expands
-   the rows and writes the applied watts back into them; **Use auto** clears the
-   limit. This is a safe start with clock locks off, not a promise of maximum
-   hashrate.
-2. **Miner** — pick a miner and version. **Install…** opens the shared install
-   dialog: download a catalogue version, type a version newer than the catalogue,
-   or import a local binary. The version is installed once for every preset;
-   only one miner runs at a time.
-3. **Wallet** — preset name, wallet, worker, pool and pool address. Nothing is
-   sent to the daemon until you press **Start mining**; incomplete wallet or pool
-   address is explained in the wizard. With a running miner the wizard saves the
-   draft and shows the usual Apply and restart / Apply and stop dialog — it never
-   restarts silently.
+A preset stores:
 
-![Wallet step](images/setup-wallet-en-dark.png)
+1. **Mining** — name, coin, algorithm, wallet and worker. The coin list is
+   filtered by the selected miner's advertised algorithms; a coin the miner does
+   not advertise can be added as a **Custom** coin with its symbol, name,
+   algorithm, wallet prefix and hashrate unit.
+2. **Miner** — miner and version. **Install…** opens the shared install dialog:
+   download a catalogue version, type a version newer than the catalogue, or
+   import a local binary. One installation serves every preset; only one miner
+   runs at a time.
+3. **Pool** — the pool address is entered by hand (`host:port`); there is no
+   pool dropdown. The pool fee is used for the effective-hashrate calculation.
+   When the host matches a known pool, Trommel offers its suggested fee and uses
+   its documented JSON account API; otherwise an optional **Pool API URL** can
+   point at a documented JSON endpoint. Without one, the dashboard says that
+   balance data is unavailable instead of inventing it.
+4. **GPU settings** — each mining preset owns its own per-card participation,
+   power limit and clock locks. Select **Tune** on a dashboard card to edit
+   them. A new preset starts from stock; the last values are stored with the
+   preset, so switching presets restores the matching GPU setup.
 
-The classic path still works: create or open a preset in **Presets**, choose a
-pool, a miner version and wallet/worker, then Save and apply and press Start.
-Before the miner starts, Trommel snapshots each enabled card's power limit and
-clocks; Stop restores the snapshot. If restore fails, the snapshot is kept and
-the error is shown.
+Save the preset, then press **Start**. Before the miner starts, Trommel
+snapshots each enabled card's power limit and clocks; Stop restores the snapshot.
+If restore fails, the snapshot is kept and the error is shown.
 
 ## Dashboard
 
@@ -65,19 +67,21 @@ the error is shown.
   cards each keeps the compact tile. Each bubble ends with a sparkline of the
   last five minutes; it fills while the window is open (hover it for the
   observed minimum and maximum). Click **Tune** to edit its power limit and
-  clock locks. A card chip says **mining** or **excluded**; Totals repeats the
-  count as “N of M”.
-- Below the cards: rig power, maximum temperature, accepted/rejected shares,
-  pool balance, the configured pool endpoint with its fee, and warnings. Power
-  is `power.draw` summed over every detected card, including the ones switched
-  off in the profile. Hover a totals row to see the per-card values behind the
-  number.
+  clock locks. A card chip says **mining** or **excluded**; the Active preset row
+  on the dashboard repeats the count and whether the GPU setup is stock or tuned.
+- The **Pool and shares** group shows the pool name, endpoint, fee and API
+  status, pending/paid/immature balance and workers, plus accepted, rejected and
+  stale shares with the acceptance percentage. The Active preset row carries the
+  rig power and temperature summary with per-card tooltips (including cards
+  switched off in the preset). The pool endpoint is still named when stopped.
 - When the miner is stopped, hashrate and balance show numeric placeholders and
   the pool row still names the configured endpoint.
 - **Start** in the dashboard hero card applies your edited draft before
-  starting. If the wallet or miner is missing, it opens Quick setup instead of
-  failing with a toast. It is disabled while every detected GPU is excluded from
-  mining; the warning row explains why. While mining, the same button reads **Stop**.
+  starting. Without a preset it explains how to create one; with a preset it
+  names a missing wallet, pool or miner version and offers **Open preset**
+  instead of failing with a toast. It is disabled while every detected GPU is
+  excluded from mining; the warning row explains why. While mining, the same
+  button reads **Stop**.
 - Action errors show a **Details** button. The dialog keeps the full message
   selectable and offers **Copy**, so a long daemon error does not disappear in a
   truncated toast.
@@ -88,7 +92,8 @@ Turn a card's switch off to exclude it from the miner. An excluded card is
 **not** passed to the miner, gets no power or clock tuning, and is returned to
 its stock settings if an earlier restore-off session left tuning on it. The card
 stays visible with its live temperature, power and fan readings and is marked
-**excluded**; Totals shows how many of the detected cards are mining.
+**excluded**; the Active preset row shows how many of the detected cards are
+mining.
 
 The exclusion is handed to the miner through a flag documented by that miner:
 
@@ -141,7 +146,7 @@ mining with the previously applied preset until another one is applied.
 ## Miner installation
 
 The install dialog is the only place that installs miners, and it is shared by
-the miner library, the preset editor and the wizard:
+the miner library and the preset editor:
 
 ![Miner installation](images/miner-install-en-dark.png)
 
@@ -216,10 +221,14 @@ Core and memory clock locks are opt-in and off in a fresh profile. Turn off
 
 The tuning dialog starts with a **Now** row so you can compare the target with
 the live state. A clock value row is visible only while its lock switch is on.
-The **⋯** menu holds **Recommended** (80 % of the stock power limit with both
-locks off — a safe start, not an optimum) and **Profile default** (remove this
-card's override). On a multi-GPU machine **Apply to** copies the values to
-similar cards or all cards.
+The footer has **Cancel**, a **GPU presets** menu and **Save**. The menu offers
+**Stock (default)** (driver-auto power and clocks), saved per-card GPU presets,
+**Save as GPU preset…** and **Manage GPU presets…**. Selecting a preset only
+changes the dialog fields; nothing reaches the daemon until **Save**. **Cancel**
+and closing the dialog discard every local change and never open the Apply
+alert. On a multi-GPU machine **Apply to** copies the values to similar cards or
+all cards; copied cards become custom rather than claiming the other card's GPU
+preset.
 
 ![GPU tuning dialog](images/gpu-tune-en-dark.png)
 
@@ -289,9 +298,10 @@ best-effort stock restore.
 - A profile with no power/clock values touches nothing: Start needs no snapshot,
   no helper and no password, so a pure stock profile can keep restore-on-stop
   enabled.
-- Per-card settings inherit the profile defaults (driver-auto power, no clock
-  locks) unless the card has a custom override. The setup wizard and the enable
-  switch do not create an override; **Tune → Save** does. Each dashboard card shows “custom” or “profile default”.
+- Per-card settings inherit the preset's GPU defaults (driver-auto power, no
+  clock locks) unless the card has a custom override. The participation switch
+  does not create an override; **Tune → Save** does. Each dashboard card shows
+  **stock**, **tuned** or **GPU preset**.
 - Fan control on consumer cards is not available through `nvidia-smi`; fan flags
   are passed to the miner when supported and disappear with the process.
 - On reboot the snapshot is marked stale and is not used; Start captures a fresh

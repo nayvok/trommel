@@ -136,38 +136,25 @@ a broad sandbox; a GUI-only Flatpak would be a different product.
 
 ## First run
 
-A **Quick setup** button appears on the dashboard until a wallet and an installed
-miner are ready. It opens a three-step wizard for a 1–3 card rig:
+A fresh install has **no mining preset**. The dashboard is the first page: it
+shows the detected cards, and its hero explains that a preset is required.
+**Create preset** opens the preset editor; the same path is offered when you
+press **Start** without a preset.
 
-1. **Cards** — tick the cards to mine on and give each one a power limit
-   (**Apply 80 %** fills the ticked cards from their stock limit, expands them
-   and shows the applied watts; **Use auto** = no limit). An unticked card is
-   excluded from mining and is not tuned.
-2. **Miner** — choose a miner and version, then **Install…**: the dialog can
-   download a catalogue version, take a version name that is newer than the
-   catalogue, or import a local binary. One installation serves every preset.
-3. **Wallet** — preset name, wallet, worker, pool and pool address. Nothing is
-   sent to the daemon or started until you press **Start mining**; a running
-   miner gets the usual Apply and restart / Apply and stop dialog instead of a
-   silent restart.
+A preset stores the coin, algorithm, pool address and fee, wallet, miner
+version and its own GPU settings. The editor has no pool dropdown: enter the
+endpoint your pool gave you. A known pool host can suggest its fee and, when it
+documents one, its JSON account API. Choose a miner version and press
+**Install…**; a version newer than the catalogue is allowed, and one install is
+shared by every preset.
 
-Presets open in a modal editor, and the same install dialog serves the miner
-library dialog, the editor and the wizard.
+GPU participation and tuning belong to the active preset: the card switch on the
+dashboard includes a card in that preset, and **Tune** stores the card's power
+and clocks with the same preset. A new preset starts from stock. Named **GPU
+presets** can be saved per card and reused later.
 
-The classic path still works:
-
-1. Open **Trommel** from the application menu.
-2. Open a preset row: the editor is a modal window with pool → miner/version
-   (install or import a binary) → wallet/worker → fees → miner options.
-3. Choose **Save** (it saves and applies). If the miner is stopped, it is saved immediately;
-   if it is running, you get the restart/stop dialog.
-4. Press **Start**. Trommel snapshots the stock power limit and applies the
-   selected profile before spawning the miner.
-5. Press **Stop** to terminate the miner and restore the snapshot.
-
-The app never ships a wallet or a miner binary. A pre-Trommel Pearl Miner
-configuration is imported once from `~/.config/pearl-miner/config.json`; the old
-file is left untouched.
+See the [user guide](docs/user-guide.md#first-run-create-a-preset) for the full
+first-run walkthrough.
 
 ## CLI
 

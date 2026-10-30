@@ -4,5 +4,51 @@ symbol = "PRL"
 name = "Pearl"
 wallet_prefix = "prl1"
 algos = ["pearlhash"]
+hashrate_unit = "TH/s"
+verified = true
 description_en = "Pearl (PRL), mined with the pearlhash algorithm."
 description_ru = "Pearl (PRL), майнится алгоритмом pearlhash."
+
+[[coins]]
+id = "ravencoin"
+symbol = "RVN"
+name = "Ravencoin"
+wallet_prefix = "R"
+algos = ["kawpow"]
+hashrate_unit = "MH/s"
+verified = true
+description_en = "Ravencoin (RVN), kawpow. Advertised by WildRig and SRBMiner."
+description_ru = "Ravencoin (RVN), kawpow. Заявлен WildRig и SRBMiner."
+
+[[coins]]
+id = "nexa"
+symbol = "NEXA"
+name = "Nexa"
+wallet_prefix = "nexa:"
+algos = ["nexapow"]
+hashrate_unit = "auto"
+verified = true
+description_en = "Nexa (NEXA), nexapow. WildRig advertises nexapow."
+description_ru = "Nexa (NEXA), nexapow. WildRig заявляет nexapow."
+
+[[coins]]
+id = "zilliqa"
+symbol = "ZIL"
+name = "Zilliqa"
+wallet_prefix = "zil1"
+algos = ["zilliqa"]
+hashrate_unit = "MH/s"
+verified = true
+description_en = "Zilliqa (ZIL), zilliqa. Supported by OneZeroMiner."
+description_ru = "Zilliqa (ZIL), zilliqa. Поддерживается OneZeroMiner."
+
+[[coins]]
+id = "xelis"
+symbol = "XEL"
+name = "Xelis"
+wallet_prefix = "xel"
+algos = ["xelishashv3"]
+hashrate_unit = "auto"
+verified = true
+description_en = "Xelis (XEL), xelishashv3. Supported by OneZeroMiner."
+description_ru = "Xelis (XEL), xelishashv3. Поддерживается OneZeroMiner."

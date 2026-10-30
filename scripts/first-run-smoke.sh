@@ -3,8 +3,8 @@
 #
 # This is deliberately separate from ui-smoke.sh, which starts from a populated
 # config. It answers the "what does a fresh download look like?" question:
-# dashboard placeholders, Quick setup, Start opening the wizard, the miner
-# library showing "not installed" and the single-GPU tune dialog.
+# empty dashboard, Create preset, Start explaining the missing preset, the
+# miner library showing "not installed" and the disabled tune dialog.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$ROOT/.first-run-check"
@@ -113,7 +113,7 @@ else
 fi
 
 (
-    unset TROMMEL_OPEN_PRESET TROMMEL_OPEN_WIZARD TROMMEL_OPEN_TUNE TROMMEL_OPEN_INSTALL TROMMEL_SCREENSHOT
+    unset TROMMEL_OPEN_PRESET TROMMEL_OPEN_TUNE TROMMEL_OPEN_INSTALL TROMMEL_SCREENSHOT
     exec setsid "$BIN/trommel"
 ) > "$WORK/gui.out" 2>&1 < /dev/null &
 GUI_PID=$!

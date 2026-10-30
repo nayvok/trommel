@@ -52,7 +52,7 @@ do not move GTK types into `trommel-core` or the daemon.
 | `./scripts/e2e.sh` | Full CLI lifecycle on a private bus with fake GPU, helper and miner, including per-GPU participation (device arguments, excluded card untouched, restore, refusal), SIGKILL/emergency-stop, startup recovery, helper lease, partial apply, restore retry, custom binary, benchmark external guard, restart budget, guard, lost session bus and the refused `SetConfig` restart | Python 3, dbus |
 | `./scripts/test-oc-helper.sh` | The real Bash helper against the stateful fake `nvidia-smi` | bash |
 | `./scripts/test-mcp.sh` | MCP protocol, read-only default, write gating, redaction | Python 3 |
-| `./scripts/ui-smoke.sh` | Critical GUI path through AT-SPI (quick setup, start/stop, settings, editor, tuning, install, version manager) | desktop session or Xvfb, `at-spi2-core`; XWayland preferred |
+| `./scripts/ui-smoke.sh` | Critical GUI path through AT-SPI (first-run preset creation, start/stop, settings, editor, tuning, install, version manager) | desktop session or Xvfb, `at-spi2-core`; XWayland preferred |
 | `./scripts/first-run-smoke.sh` | Pristine install: no config, no wallet, no miner, one fake GPU | desktop session or Xvfb, `at-spi2-core` |
 | `./scripts/check-no-secrets.sh` | No wallet-like string, secret marker or personal home path in tracked files | git |
 | `./scripts/check-polkit.sh` | Action id and helper path consistency | none |
@@ -104,14 +104,12 @@ The GUI reads these environment variables for tests and screenshots:
 | `TROMMEL_SCREENSHOT_PAGE` | Page name to switch to before capturing |
 | `TROMMEL_SCREENSHOT_DELAY` | Milliseconds to wait before capturing |
 | `TROMMEL_SCREENSHOT_SCROLL` | `bottom` scrolls the page before capture |
-| `TROMMEL_OPEN_WIZARD` | Open Quick setup on start |
-| `TROMMEL_WIZARD_STEP` | Open a specific wizard step (0–2) |
 | `TROMMEL_OPEN_PRESET` | Open the preset editor on start |
 | `TROMMEL_OPEN_LIBRARY` | Open the miner library dialog on start |
 | `TROMMEL_OPEN_INSTALL` | Open the miner install dialog on start |
 | `TROMMEL_OPEN_TUNE` | Open the GPU tuning dialog on start |
 | `TROMMEL_AUTOSTART_STATE` | `on`/`off` forces the Settings login-autostart switch (deterministic screenshots) |
-| `TROMMEL_WIZARD_SCREENSHOT`, `TROMMEL_TUNE_SCREENSHOT`, `TROMMEL_PRESET_SCREENSHOT`, `TROMMEL_LIBRARY_SCREENSHOT`, `TROMMEL_INSTALL_SCREENSHOT` | Capture a transient window |
+| `TROMMEL_TUNE_SCREENSHOT`, `TROMMEL_PRESET_SCREENSHOT`, `TROMMEL_LIBRARY_SCREENSHOT`, `TROMMEL_INSTALL_SCREENSHOT` | Capture a transient window |
 
 Runtime/test variables used outside the GUI:
 

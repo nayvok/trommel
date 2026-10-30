@@ -1,8 +1,8 @@
 # Built-in miner catalogue. Community contributions add entries here.
 #
-# Fee values are for the PearlHash algorithm unless noted. Only set
-# `fee_configurable = true` when the miner really accepts a fee flag; the UI
-# must never pretend that a fixed fee can be changed.
+# `driver` selects the core argument shape (generic | srbminer | onezero).
+# API and probe fields are data too: adding an integration should not require a
+# Rust branch. Fees are per algorithm because miners charge differently.
 
 [[miners]]
 id = "wildrig"
@@ -12,8 +12,7 @@ short_description_ru = "Быстрый NVIDIA-майнер с 0% комисси�
 homepage = "https://github.com/andru-kun/wildrig-multi"
 license = "Freeware"
 source_url = "https://github.com/andru-kun/wildrig-multi/releases"
-supported_coins = ["pearl"]
-supported_algos = ["pearlhash"]
+supported_algos = ["pearlhash", "kawpow", "nexapow"]
 fee_pct = 0.0
 fee_configurable = false
 fee_flag = ""
@@ -21,7 +20,23 @@ per_gpu_stats = false
 # `-d/--gpu-list` and `--print-devices` are documented in the upstream README.
 per_gpu_devices = true
 device_flag = "--gpu-list"
+driver = "generic"
+api_default_port = 4028
+api_port_flag = "--api-port"
+api_worker_flag = "--api-worker-id"
 default_options = { fan_speed = "0" }
+
+[[miners.fees]]
+algo = "pearlhash"
+pct = 0.0
+
+[[miners.fees]]
+algo = "kawpow"
+pct = 0.75
+
+[[miners.fees]]
+algo = "nexapow"
+pct = 0.75
 
 [[miners.versions]]
 version = "0.51.8"
@@ -81,8 +96,7 @@ short_description_ru = "Мультиалгоритменный майнер; NVI
 homepage = "https://github.com/doktor83/SRBMiner-Multi"
 license = "Freeware"
 source_url = "https://github.com/doktor83/SRBMiner-Multi/releases"
-supported_coins = ["pearl"]
-supported_algos = ["pearlhash"]
+supported_algos = ["pearlhash", "kawpow", "autolykos2"]
 fee_pct = 0.85
 fee_configurable = false
 fee_flag = ""
@@ -90,7 +104,25 @@ per_gpu_stats = true
 # `--gpu-id` selects ids printed by `--list-devices`; comma-separated.
 per_gpu_devices = true
 device_flag = "--gpu-id"
+driver = "srbminer"
+api_default_port = 21550
+api_port_flag = "--api-port"
+api_enable_flag = "--api-enable"
+api_worker_flag = "--api-rig-name"
+algorithm_probe_arg = "--list-algorithms"
 default_options = { fan_speed = "0" }
+
+[[miners.fees]]
+algo = "pearlhash"
+pct = 0.85
+
+[[miners.fees]]
+algo = "kawpow"
+pct = 0.85
+
+[[miners.fees]]
+algo = "autolykos2"
+pct = 1.0
 
 [[miners.versions]]
 version = "3.8.0"
@@ -125,8 +157,8 @@ short_description_ru = "NVIDIA-майнер с 1% комиссии разраб�
 homepage = "https://github.com/OneZeroMiner/onezero"
 license = "Freeware"
 source_url = "https://github.com/OneZeroMiner/onezero/releases"
-supported_coins = ["pearl"]
-supported_algos = ["pearlhash"]
+supported_coins = ["pearl", "zilliqa", "xelis"]
+supported_algos = ["pearlhash", "zilliqa", "xelishashv3"]
 fee_pct = 1.0
 fee_configurable = false
 fee_flag = ""
@@ -134,7 +166,23 @@ per_gpu_stats = true
 # `-d/--devices` is a comma-separated list of CUDA devices.
 per_gpu_devices = true
 device_flag = "--devices"
+driver = "onezero"
+api_default_port = 3001
+api_port_flag = "--api-port"
+algorithm_probe_arg = "--help"
 default_options = {}
+
+[[miners.fees]]
+algo = "pearlhash"
+pct = 1.0
+
+[[miners.fees]]
+algo = "zilliqa"
+pct = 1.0
+
+[[miners.fees]]
+algo = "xelishashv3"
+pct = 1.0
 
 [[miners.versions]]
 version = "1.2.0"

@@ -13,7 +13,10 @@
 //! `None` means the install was recorded without one.
 
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -311,6 +314,69 @@ pub fn verify_all(cfg: &Config) -> Vec<VerifyReport> {
             .then_with(|| version_cmp(&a.version, &b.version))
     });
     reports
+}
+
+/// Ask an installed miner binary which algorithms it advertises.
+///
+/// The catalogue data is the fallback; this is the explicit "Detected" path.
+/// It never runs automatically during start. The child is killed after five
+/// seconds, so a broken `--help` cannot hang the GUI.
+pub fn probe_algorithms(path: &Path, argument: &str) -> anyhow::Result<Vec<String>> {
+    if argument.trim().is_empty() {
+        anyhow::bail!("this miner has no algorithm-probe argument");
+    }
+    if !path.exists() {
+        anyhow::bail!("miner binary does not exist: {}", path.display());
+    }
+    let mut child = Command::new(path)
+        .arg(argument)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("cannot run {}: {e}", path.display()))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|e| anyhow::anyhow!("cannot read the miner output: {e}"))?;
+                let mut known: BTreeSet<String> = catalog::miners()
+                    .iter()
+                    .flat_map(|miner| miner.supported_algos.iter().cloned())
+                    .chain(
+                        catalog::coins()
+                            .iter()
+                            .flat_map(|coin| coin.algos.iter().cloned()),
+                    )
+                    .map(|algo| algo.to_ascii_lowercase())
+                    .collect();
+                let mut found = Vec::new();
+                let text = format!(
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                for token in text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+                    let lower = token.to_ascii_lowercase();
+                    if known.remove(&lower) {
+                        found.push(token.to_string());
+                    }
+                }
+                return Ok(found);
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!("the miner did not answer {argument} within five seconds");
+            }
+            Err(e) => anyhow::bail!("cannot wait for the miner: {e}"),
+        }
+    }
 }
 
 /// Presets that pin exactly `miner@version`, sorted by name.
@@ -744,6 +810,14 @@ mod tests {
         }
     }
 
+    fn config_with_preset() -> Config {
+        let mut cfg = Config::default();
+        let preset = Preset::new_pearl();
+        cfg.presets.insert(preset.id.clone(), preset);
+        cfg.active_preset = Some(crate::config::DEFAULT_PRESET_ID.to_string());
+        cfg
+    }
+
     fn with_second_preset(cfg: &mut Config, name: &str, version: &str) -> String {
         let mut preset = cfg.preset().cloned().unwrap_or_else(Preset::new_pearl);
         preset.id = format!("preset-{}", name.to_lowercase().replace(' ', "-"));
@@ -757,7 +831,7 @@ mod tests {
     #[test]
     fn installed_lists_every_record_and_marks_a_missing_binary() {
         let root = temp_root("installed");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "wildrig", "0.51.8", 0o755));
         let mut gone = binary(&root, "wildrig", "0.51.7", 0o755);
         std::fs::remove_file(&gone.path).unwrap();
@@ -785,7 +859,7 @@ mod tests {
     #[test]
     fn usage_names_the_presets_and_marks_the_active_one() {
         let root = temp_root("usage");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "wildrig", "0.51.8", 0o755));
         with_second_preset(&mut cfg, "Backup", "0.51.8");
         let users = usage(&cfg, "wildrig", "0.51.8");
@@ -798,7 +872,7 @@ mod tests {
     #[test]
     fn update_plan_shows_affected_presets_and_never_rewrites() {
         let root = temp_root("plan");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "wildrig", "0.51.8", 0o755));
         with_second_preset(&mut cfg, "Backup", "0.51.7");
         let before = cfg.clone();
@@ -813,7 +887,7 @@ mod tests {
     #[test]
     fn remove_plan_blocks_a_version_used_by_a_preset() {
         let root = temp_root("blocked");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "wildrig", "0.51.8", 0o755));
         let plan = remove_plan_in(&cfg, "wildrig", "0.51.8", &root);
         assert!(!plan.allowed);
@@ -825,7 +899,7 @@ mod tests {
     #[test]
     fn remove_plan_allows_an_unused_version() {
         let root = temp_root("allowed");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "wildrig", "0.51.7", 0o755));
         let plan = remove_plan_in(&cfg, "wildrig", "0.51.7", &root);
         assert!(plan.allowed);
@@ -836,7 +910,7 @@ mod tests {
     #[test]
     fn delete_install_refuses_a_used_version() {
         let root = temp_root("refuse");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "wildrig", "0.51.8", 0o755));
         let err = delete_install(&mut cfg, "wildrig", "0.51.8", &root).unwrap_err();
         assert!(err.to_string().contains("Pearl"), "{err}");
@@ -848,7 +922,7 @@ mod tests {
     #[test]
     fn delete_install_removes_only_the_unused_version_directory() {
         let root = temp_root("delete");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "wildrig", "0.51.8", 0o755));
         cfg.add_install(binary(&root, "wildrig", "0.51.7", 0o755));
         let report = delete_install(&mut cfg, "wildrig", "0.51.7", &root).unwrap();
@@ -870,7 +944,7 @@ mod tests {
             .join("miner")
             .to_string_lossy()
             .into_owned();
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(install.clone());
         let report = delete_install(&mut cfg, "wildrig", "0.51.7", &root).unwrap();
         assert!(!report.removed_files);
@@ -883,7 +957,7 @@ mod tests {
     #[test]
     fn remove_and_persist_keeps_the_snapshot_when_save_fails() {
         let root = temp_root("persist-fail");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "wildrig", "0.51.7", 0o755));
         let snapshot = cfg.clone();
         let err = remove_and_persist(&cfg, "wildrig", "0.51.7", &root, |_| {
@@ -929,7 +1003,7 @@ mod tests {
     #[test]
     fn pin_preset_changes_only_the_chosen_preset() {
         let root = temp_root("pin");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "wildrig", "0.51.7", 0o755));
         cfg.add_install(binary(&root, "wildrig", "0.51.8", 0o755));
         let other = with_second_preset(&mut cfg, "Backup", "0.51.8");
@@ -952,7 +1026,7 @@ mod tests {
     #[test]
     fn pin_preset_requires_an_installed_executable() {
         let root = temp_root("pin-missing");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "wildrig", "0.51.7", 0o644));
         assert_eq!(
             verify(&cfg, "wildrig", "0.51.7").status,
@@ -968,7 +1042,7 @@ mod tests {
     #[test]
     fn pin_presets_moves_only_the_named_ids() {
         let root = temp_root("pin-many");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "wildrig", "0.51.7", 0o755));
         let other = with_second_preset(&mut cfg, "Backup", "0.51.8");
         let changes = pin_presets(
@@ -981,6 +1055,23 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(cfg.presets["pearl-wildrig"].miner_version, "0.51.7");
         assert_eq!(cfg.presets[&other].miner_version, "0.51.8");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn algorithm_probe_parses_known_names_and_times_out() {
+        use std::io::Write as _;
+        let root = temp_root("probe");
+        let script = root.join("probe.sh");
+        let mut file = std::fs::File::create(&script).unwrap();
+        writeln!(file, "#!/bin/sh\necho 'kawpow'\necho 'not-an-algorithm'").unwrap();
+        drop(file);
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        let found = probe_algorithms(&script, "--list-algorithms").unwrap();
+        assert_eq!(found, vec!["kawpow".to_string()]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1030,7 +1121,7 @@ mod tests {
     #[test]
     fn installed_versions_sort_numerically() {
         let root = temp_root("numeric-order");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "wildrig", "0.51.10", 0o755));
         cfg.add_install(binary(&root, "wildrig", "0.51.9", 0o755));
         let versions = installed(&cfg, "wildrig");
@@ -1057,7 +1148,7 @@ mod tests {
     #[test]
     fn miner_ids_include_custom_installs() {
         let root = temp_root("ids");
-        let mut cfg = Config::default();
+        let mut cfg = config_with_preset();
         cfg.add_install(binary(&root, "private-build", "1.0.0", 0o755));
         let ids = miner_ids(&cfg);
         assert!(ids.contains(&"wildrig".to_string()));
