@@ -59,23 +59,25 @@ If restore fails, the snapshot is kept and the error is shown.
 ## Dashboard
 
 - The hero card shows total hashrate, the state pill (`mining`, `external`, `stopped`,
-  `offline`), the active preset/miner/version and the fee
-  breakdown.
-- Every GPU is a card with live power, core/memory clocks, temperature, fan and
+  `offline`), and the coin, pool and fee breakdown. The preset name lives once,
+  in the **Active preset** row.
+- Every GPU is a card with live power, temperature, core/memory clocks, fan and
   utilisation in value bubbles, plus a switch that includes the card in the
   mining session. A single-GPU rig uses one full-width card; with two or more
-  cards each keeps the compact tile. Each bubble ends with a sparkline of the
-  last five minutes; it fills while the window is open (hover it for the
-  observed minimum and maximum). Click **Tune** to edit its power limit and
-  clock locks. A card chip says **mining** or **excluded**; the Active preset row
-  on the dashboard repeats the count and whether the GPU setup is stock or tuned.
+  cards each keeps the compact tile. Only the power and temperature bubbles
+  have a sparkline of the last five minutes (hover it for the observed minimum
+  and maximum); core, memory, fan and load are values, not trends. Click
+  **Tune** to edit its power limit and clock locks. A card chip says **mining**
+  or **excluded**; the Active preset row shows the miner/version, card count,
+  stock/tuned state and the rig power and temperature.
 - The **Pool and shares** group shows the pool name, endpoint, fee and API
-  status, pending/paid/immature balance and workers, plus accepted, rejected and
-  stale shares with the acceptance percentage. The Active preset row carries the
-  rig power and temperature summary with per-card tooltips (including cards
-  switched off in the preset). The pool endpoint is still named when stopped.
-- When the miner is stopped, hashrate and balance show numeric placeholders and
-  the pool row still names the configured endpoint.
+  status, accepted/rejected/stale shares with the acceptance percentage, and the
+  pending/paid/immature balance. Without a pool API, or before the first answer,
+  the balance is **—** with an explanation in the tooltip; it is never shown as
+  `0.000`. The group is hidden when no preset exists.
+- A running miner that has not reported yet shows **—**, not `0`; a real zero
+  reported by the miner or pool is still shown as `0`. When stopped, the pool
+  row still names the configured endpoint.
 - **Start** in the dashboard hero card applies your edited draft before
   starting. Without a preset it explains how to create one; with a preset it
   names a missing wallet, pool or miner version and offers **Open preset**
@@ -134,12 +136,16 @@ per-preset version switch, and the A/B benchmark:
 
 ![Miner library](images/miner-library-en-dark.png)
 
-Presets open in a modal editor with **Cancel**/**Save** in the footer and
-**Duplicate**/**Delete…** at the end of the page. Saving applies immediately: a
-stopped
-miner is saved at once; a running miner gets the restart/stop dialog. Deleting
-asks for confirmation, names the preset, and explains that the daemon keeps
-mining with the previously applied preset until another one is applied.
+Presets open in a modal editor with a summary at the top, then **Coin and
+pool**, **Wallet**, **Miner**, **GPU** and **Advanced** groups, with
+**Cancel**/**Save** in the footer and **Duplicate**/**Delete…** at the end of
+the page. The algorithm of a known coin is read-only (it is set automatically);
+a custom coin keeps it editable. **Advanced** holds the miner options, pool API
+URL, API port, fee override and extra arguments, and Simple mode hides it.
+Saving applies immediately: a stopped miner is saved at once; a running miner
+gets the restart/stop dialog. Deleting asks for confirmation, names the preset,
+and explains that the daemon keeps mining with the previously applied preset
+until another one is applied.
 
 ![Preset editor](images/preset-editor-en-dark.png)
 
@@ -206,6 +212,8 @@ selected.
   temperature (global: they drive the overheat warning and are passed to miners
   that support a limit), start mining at login, simple mode, poll interval,
   language (needs an app restart) and appearance.
+- **GPU** — global temperature limit/resume and **GPU presets**, the single
+  place to rename or delete saved per-card tuning templates.
 - **Actions** — **Save and apply**, **Copy diagnostics** (redacted), **Restore
   stock**.
 
@@ -222,8 +230,9 @@ Core and memory clock locks are opt-in and off in a fresh profile. Turn off
 The tuning dialog starts with a **Now** row so you can compare the target with
 the live state. A clock value row is visible only while its lock switch is on.
 The footer has **Cancel**, a **GPU presets** menu and **Save**. The menu offers
-**Stock (default)** (driver-auto power and clocks), saved per-card GPU presets,
-**Save as GPU preset…** and **Manage GPU presets…**. Selecting a preset only
+**Stock (default)** (driver-auto power and clocks), saved per-card GPU presets
+and **Save as GPU preset…**. Renaming or deleting saved templates lives in
+**Settings → GPU → Manage…**, not in the Tune menu. Selecting a preset only
 changes the dialog fields; nothing reaches the daemon until **Save**. **Cancel**
 and closing the dialog discard every local change and never open the Apply
 alert. On a multi-GPU machine **Apply to** copies the values to similar cards or

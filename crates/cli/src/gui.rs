@@ -16,7 +16,8 @@ use gtk::{gdk, gio, glib};
 
 use trommel_core::catalog::{self, MinerOption, OptionKind};
 use trommel_core::config::{
-    Appearance, Behavior, ChangeClass, Config, GpuPreset, GpuTuning, MinerInstall, Preset,
+    Appearance, Behavior, ChangeClass, Config, ConfigDiff, GpuPreset, GpuTuning, MinerInstall,
+    Preset,
 };
 use trommel_core::dbus::MinerProxy;
 use trommel_core::i18n::{self, tr};
@@ -359,9 +360,6 @@ struct App {
     hero_meta: gtk::Label,
     hero_meta_state: RefCell<Option<HeroMeta>>,
     pill: gtk::Label,
-    total_gpus: adw::ActionRow,
-    total_power: adw::ActionRow,
-    total_temp: adw::ActionRow,
     rig_preset: adw::ActionRow,
     rig_edit: gtk::Button,
     gpu_host: gtk::Box,
@@ -369,10 +367,8 @@ struct App {
     /// Rolling GPU metrics behind the sparklines in the cards.
     history: Rc<RefCell<History>>,
     sparklines: RefCell<Vec<SparkEntry>>,
+    shares_group: adw::PreferencesGroup,
     shares: adw::ActionRow,
-    shares_ok: gtk::Label,
-    shares_bad: gtk::Label,
-    shares_stale: gtk::Label,
     pool_balance_row: adw::ActionRow,
     pool_balance_value: gtk::Label,
     pool_meta: adw::ActionRow,
@@ -871,36 +867,13 @@ fn build_ui(app: &adw::Application) {
     rig_group.add(&gpu_host);
     dashboard_box.append(&rig_group);
 
-    let total_gpus = adw::ActionRow::builder()
-        .title(tr("Cards", "Карты"))
-        .subtitle("—")
-        .build();
-    let total_power = adw::ActionRow::builder()
-        .title(tr("Power", "Мощность"))
-        .subtitle("—")
-        .build();
-    let total_temp = adw::ActionRow::builder()
-        .title(tr("Max temperature", "Макс. температура"))
-        .subtitle("—")
-        .build();
-
     let shares_group = adw::PreferencesGroup::builder()
         .title(tr("Pool and shares", "Пул и шары"))
         .build();
     let shares = adw::ActionRow::builder()
         .title(tr("Shares", "Шары"))
+        .subtitle("—")
         .build();
-    let shares_ok = label("0", &["caption", "success"]);
-    let shares_bad = label("0", &["caption", "error"]);
-    let shares_stale = label("0", &["caption", "dim-label"]);
-    let shares_value = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    shares_value.set_valign(gtk::Align::Center);
-    shares_value.append(&shares_ok);
-    shares_value.append(&label("/", &["caption", "dim-label"]));
-    shares_value.append(&shares_bad);
-    shares_value.append(&label("/", &["caption", "dim-label"]));
-    shares_value.append(&shares_stale);
-    shares.add_suffix(&shares_value);
     let pool_balance = adw::ActionRow::builder()
         .title(tr("Pool balance", "Баланс пула"))
         .build();
@@ -964,19 +937,14 @@ fn build_ui(app: &adw::Application) {
         hero_meta,
         hero_meta_state: RefCell::new(None),
         pill,
-        total_gpus,
-        total_power,
-        total_temp,
         rig_preset: rig_preset.clone(),
         rig_edit: rig_edit.clone(),
         gpu_host,
         gpu_sig: RefCell::new(String::new()),
         history: Rc::new(RefCell::new(History::default())),
         sparklines: RefCell::new(Vec::new()),
+        shares_group: shares_group.clone(),
         shares: shares.clone(),
-        shares_ok,
-        shares_bad,
-        shares_stale: shares_stale.clone(),
         pool_balance_row: pool_balance.clone(),
         pool_balance_value,
         pool_meta,
@@ -2054,6 +2022,41 @@ fn selected_coin(miner_id: &str, selected: u32) -> Option<&'static catalog::Coin
         .flatten()
 }
 
+/// A known coin owns its algorithm: show it as a read-only fact instead of a
+/// free-text field that can drift from the catalogue. A custom coin still
+/// needs the editable field.
+fn sync_algo_row(
+    miner_id: &str,
+    coin: &adw::ComboRow,
+    algo: &adw::EntryRow,
+    algo_row: &adw::ActionRow,
+) {
+    let known = selected_coin(miner_id, coin.selected()).is_some();
+    algo.set_editable(!known);
+    algo.set_visible(!known);
+    algo_row.set_visible(known);
+    algo_row.set_subtitle(&if known {
+        format!(
+            "{} · {}",
+            algo.text(),
+            tr(
+                "set automatically for a known coin",
+                "подставляется автоматически для известной монеты"
+            )
+        )
+    } else {
+        String::new()
+    });
+    algo.set_tooltip_text(Some(&if known {
+        tr(
+            "Set automatically for a known coin",
+            "Подставляется автоматически для известной монеты",
+        )
+    } else {
+        tr("Required for a custom coin", "Обязательно для своей монеты")
+    }));
+}
+
 fn coin_label(cfg: &Config, miner_id: &str, selected: u32) -> String {
     match selected_coin(miner_id, selected) {
         Some(coin) => format!("{} · {}", coin.symbol, coin.name),
@@ -2483,14 +2486,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         ))
         .build();
     info_install.add_suffix(&install_button);
-    miner_group.add(&info_desc);
-    miner_group.add(&info_fee);
-    miner_group.add(&info_install);
-    page.add(&miner_group);
 
-    let form_group = adw::PreferencesGroup::builder()
-        .title(tr("Preset", "Пресет"))
-        .build();
     let name = adw::EntryRow::builder()
         .title(tr("Name", "Название"))
         .text(&base.name)
@@ -2503,6 +2499,9 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     let algo = adw::EntryRow::builder()
         .title(tr("Algorithm", "Алгоритм"))
         .text(&base.algo)
+        .build();
+    let algo_row = adw::ActionRow::builder()
+        .title(tr("Algorithm", "Алгоритм"))
         .build();
     let pool_url = adw::EntryRow::builder()
         .title(tr("Pool address", "Адрес пула"))
@@ -2625,34 +2624,115 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         .title(tr("Extra arguments", "Доп. аргументы"))
         .text(&base.extra_args)
         .build();
-    form_group.add(&name);
-    form_group.add(&coin);
-    form_group.add(&algo);
-    form_group.add(&pool_url);
-    form_group.add(&miner);
-    form_group.add(&version);
-    form_group.add(&wallet);
-    form_group.add(&worker);
-    form_group.add(&pool_fee);
-    form_group.add(&pool_hint);
-    form_group.add(&pool_api_url);
-    form_group.add(&miner_fee);
-    form_group.add(&api_port);
-    form_group.add(&extra);
-    page.add(&form_group);
-    page.add(&custom_group);
-
-    let options_group = adw::PreferencesGroup::builder()
-        .title(tr("Miner options", "Настройки майнера"))
-        .description(tr(
-            "Defaults come from the selected miner version.",
-            "Значения по умолчанию берутся из выбранной версии майнера.",
+    // Summary first: identity and the numbers that decide the rest of the form.
+    // The editor is not a wizard; the summary is a read-only orientation line.
+    let summary_group = adw::PreferencesGroup::builder()
+        .title(tr("Preset", "Пресет"))
+        .build();
+    let gpu_summary = {
+        let status = app.status.borrow();
+        let total = status
+            .as_ref()
+            .map(|status| status.participation.len())
+            .unwrap_or(0);
+        let enabled = status
+            .as_ref()
+            .map(|status| {
+                status
+                    .participation
+                    .iter()
+                    .filter(|card| card.enabled)
+                    .count()
+            })
+            .unwrap_or(0);
+        let tuning = if base.gpu.has_tuning() {
+            tr("tuned", "настроено")
+        } else {
+            tr("stock", "сток")
+        };
+        if total > 0 {
+            format!("{enabled}/{total} {} · {tuning}", tr("cards", "карт"))
+        } else {
+            format!(
+                "{tuning} · {}",
+                tr(
+                    "cards are configured on the dashboard",
+                    "карты настраиваются на дашборде"
+                )
+            )
+        }
+    };
+    let summary_row = adw::ActionRow::builder()
+        .title(tr("Summary", "Сводка"))
+        .subtitle(format!(
+            "{} · {} {} · {gpu_summary}",
+            coin_label(&app.config.borrow(), &base.miner, coin.selected()),
+            base.miner,
+            base.miner_version
         ))
         .build();
+    summary_row.set_subtitle_lines(2);
+    summary_group.add(&name);
+    summary_group.add(&summary_row);
+
+    let coin_group = adw::PreferencesGroup::builder()
+        .title(tr("Coin and pool", "Монета и пул"))
+        .build();
+    coin_group.add(&coin);
+    coin_group.add(&algo);
+    coin_group.add(&algo_row);
+    coin_group.add(&pool_url);
+    coin_group.add(&pool_fee);
+    coin_group.add(&pool_hint);
+
+    let wallet_group = adw::PreferencesGroup::builder()
+        .title(tr("Wallet", "Кошелёк"))
+        .build();
+    wallet_group.add(&wallet);
+    wallet_group.add(&worker);
+
+    miner_group.add(&miner);
+    miner_group.add(&version);
+    miner_group.add(&info_desc);
+    miner_group.add(&info_fee);
+    miner_group.add(&info_install);
+
+    let gpu_group = adw::PreferencesGroup::builder()
+        .title(tr("GPU", "GPU"))
+        .description(tr(
+            "Cards, power and clocks belong to this preset. Tune them on the dashboard; the values are applied with the session.",
+            "Карты, питание и частоты принадлежат этому пресету. Настраивайте их на дашборде; значения применяются вместе с сессией.",
+        ))
+        .build();
+    let gpu_row = adw::ActionRow::builder()
+        .title(tr("GPU settings", "Настройки GPU"))
+        .subtitle(&gpu_summary)
+        .build();
+    gpu_row.set_subtitle_lines(2);
+    gpu_group.add(&gpu_row);
+
+    let advanced_group = adw::PreferencesGroup::builder()
+        .title(tr("Advanced", "Дополнительно"))
+        .description(tr(
+            "Optional endpoint, API and miner arguments. Simple mode hides this group.",
+            "Необязательный endpoint, API и аргументы майнера. Простой режим скрывает эту группу.",
+        ))
+        .build();
+    advanced_group.add(&miner_fee);
+    advanced_group.add(&pool_api_url);
+    advanced_group.add(&api_port);
+    advanced_group.add(&extra);
     let options_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    options_group.add(&options_box);
-    page.add(&options_group);
-    options_group.set_visible(!simple);
+    advanced_group.add(&options_box);
+
+    page.add(&summary_group);
+    page.add(&coin_group);
+    page.add(&custom_group);
+    page.add(&wallet_group);
+    page.add(&miner_group);
+    page.add(&gpu_group);
+    page.add(&advanced_group);
+    advanced_group.set_visible(!simple);
     extra.set_visible(!simple);
     miner_fee.set_visible(!simple);
     pool_api_url.set_visible(!simple);
@@ -2682,6 +2762,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
 
     let options: Rc<RefCell<Vec<OptionRow>>> = Rc::new(RefCell::new(Vec::new()));
     rebuild_editor_coins(&base.miner, &coin, &base.coin);
+    sync_algo_row(&base.miner, &coin, &algo, &algo_row);
     preset_editor_versions(app, &miner, &version, &base.miner_version);
     rebuild_editor_options(app, id, &miner, &miner_fee, &options_box, &options);
     preset_editor_info(
@@ -2697,6 +2778,28 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         &install_state,
     );
 
+    let refresh_summary: Rc<dyn Fn()> = {
+        let app = app.clone();
+        let summary_row = summary_row.clone();
+        let coin = coin.clone();
+        let miner = miner.clone();
+        let version = version.clone();
+        let gpu_summary = gpu_summary.clone();
+        Rc::new(move || {
+            let miner_id = miner_names()
+                .get(miner.selected() as usize)
+                .cloned()
+                .unwrap_or_default();
+            let version_text = selected_version(&app, &miner, &version);
+            summary_row.set_subtitle(&format!(
+                "{} · {} {} · {gpu_summary}",
+                coin_label(&app.config.borrow(), &miner_id, coin.selected()),
+                miner_id,
+                version_text
+            ));
+        })
+    };
+
     let refresh_info: Rc<dyn Fn()> = {
         let app = app.clone();
         let miner = miner.clone();
@@ -2708,6 +2811,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         let info_fee = info_fee.clone();
         let info_install = info_install.clone();
         let install_state = install_state.clone();
+        let refresh_summary = refresh_summary.clone();
         Rc::new(move || {
             preset_editor_info(
                 &app,
@@ -2721,14 +2825,18 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
                 &info_install,
                 &install_state,
             );
+            refresh_summary();
         })
     };
+    refresh_summary();
 
     {
         let app = app.clone();
         let id = id.to_string();
         let version_row = version.clone();
         let coin_row = coin.clone();
+        let algo_entry = algo.clone();
+        let algorithm_row = algo_row.clone();
         let custom_group = custom_group.clone();
         let miner_fee = miner_fee.clone();
         let options_box = options_box.clone();
@@ -2739,6 +2847,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
             if let Some(def) = def {
                 rebuild_editor_coins(&def.id, &coin_row, "");
                 custom_group.set_visible(selected_coin(&def.id, coin_row.selected()).is_none());
+                sync_algo_row(&def.id, &coin_row, &algo_entry, &algorithm_row);
             }
             preset_editor_versions(&app, row, &version_row, "");
             rebuild_editor_options(&app, &id, row, &miner_fee, &options_box, &options);
@@ -2749,7 +2858,18 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         let refresh_version = refresh_info.clone();
         version.connect_notify_local(Some("selected"), move |_, _| refresh_version());
         let refresh_algo = refresh_info.clone();
-        algo.connect_changed(move |_| refresh_algo());
+        let algorithm_row = algo_row.clone();
+        algo.connect_changed(move |entry| {
+            algorithm_row.set_subtitle(&format!(
+                "{} · {}",
+                entry.text(),
+                tr(
+                    "set automatically for a known coin",
+                    "подставляется автоматически для известной монеты"
+                )
+            ));
+            refresh_algo();
+        });
     }
     {
         let app = app.clone();
@@ -2806,8 +2926,12 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
             },
         );
         let update_hint_for_url = update_hint.clone();
+        let refresh_summary_for_url = refresh_summary.clone();
         let pool_url_for_signal = pool_url.clone();
-        pool_url_for_signal.connect_changed(move |_| update_hint_for_url());
+        pool_url_for_signal.connect_changed(move |_| {
+            update_hint_for_url();
+            refresh_summary_for_url();
+        });
         {
             let pool_fee = pool_fee.clone();
             let pool_url = pool_url.clone();
@@ -2824,6 +2948,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         let miner = miner.clone();
         let coin = coin.clone();
         let algo = algo.clone();
+        let algorithm_row = algo_row.clone();
         let custom_group = custom_group.clone();
         let coin_symbol = coin_symbol.clone();
         let coin_name = coin_name.clone();
@@ -2850,8 +2975,13 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
             } else {
                 custom_group.set_visible(true);
             }
+            sync_algo_row(&def.id, row, &algo, &algorithm_row);
             refresh_info();
         });
+    }
+    {
+        let refresh_summary = refresh_summary.clone();
+        name.connect_changed(move |_| refresh_summary());
     }
     {
         let refresh = refresh_info.clone();
@@ -4606,20 +4736,6 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         });
     }
     presets_box.append(&save_as);
-    let manage = gtk::Button::builder()
-        .label(tr("Manage GPU presets…", "Управление пресетами GPU…"))
-        .css_classes(["flat"])
-        .halign(gtk::Align::Fill)
-        .build();
-    {
-        let app = app.clone();
-        manage.connect_clicked(move |_| manage_gpu_presets_dialog(&app));
-    }
-    presets_box.append(&manage);
-    {
-        let popover = presets_popover.clone();
-        manage_click_close(&manage, &popover);
-    }
     presets_popover.set_child(Some(&presets_box));
 
     {
@@ -4777,11 +4893,6 @@ fn tuning_summary(tuning: &GpuTuning) -> String {
         .map(|value| format!("{value} MHz mem"))
         .unwrap_or_else(|| tr("auto mem", "авто память").to_string());
     format!("{power} · {core} · {memory}")
-}
-
-fn manage_click_close(button: &gtk::Button, popover: &gtk::Popover) {
-    let popover = popover.clone();
-    button.connect_clicked(move |_| popover.popdown());
 }
 
 fn save_gpu_preset_dialog(
@@ -5892,20 +6003,10 @@ fn save_and_apply_with(app: &Rc<App>, on_cancel: Option<Rc<dyn Fn()>>) {
     let diff = applied.diff(&draft);
     if running && diff.class == ChangeClass::RestartRequired {
         let switching_preset = applied.active_preset != draft.active_preset;
-        let body = if switching_preset {
-            tr(
-                "The current miner will be stopped and the stock GPU state restored first, then the new preset is applied and started. Apply and restart, or apply and stop?",
-                "Сначала текущий майнер будет остановлен и сток GPU возвращён, затем новый пресет применится и запустится. Применить и перезапустить или применить и остановить?",
-            )
-        } else {
-            tr(
-                "The miner is running. GPU/miner changes need a restart. Apply and restart, or apply and stop?",
-                "Майнер запущен. Изменения GPU/майнера требуют перезапуска. Применить и перезапустить или применить и остановить?",
-            )
-        };
+        let body = apply_alert_body(&diff, switching_preset);
         let dialog = adw::AlertDialog::builder()
             .heading(tr("Apply changes?", "Применить изменения?"))
-            .body(body)
+            .body(&body)
             .build();
         dialog.add_response("cancel", &tr("Cancel", "Отмена"));
         dialog.add_response("stop", &tr("Apply and stop", "Применить и остановить"));
@@ -6050,36 +6151,28 @@ fn handle_event(app: &Rc<App>, event: Ev) {
     }
 }
 
-/// Metrics that get a sparkline in the GPU cards. The order is the sample
-/// layout in [`History`]; `index()` must stay in sync with it.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Metrics that get a sparkline in the GPU cards. Core, memory, fan and load
+/// are values, not trends: four extra graphs made the card noisy without
+/// explaining anything. The order is the sample layout in [`History`];
+/// `index()` must stay in sync with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Metric {
     Power,
-    Core,
-    Memory,
     Temp,
-    Fan,
-    Load,
 }
 
 impl Metric {
     fn index(self) -> usize {
         match self {
             Self::Power => 0,
-            Self::Core => 1,
-            Self::Memory => 2,
-            Self::Temp => 3,
-            Self::Fan => 4,
-            Self::Load => 5,
+            Self::Temp => 1,
         }
     }
 
     fn unit(self) -> &'static str {
         match self {
             Self::Power => "W",
-            Self::Core | Self::Memory => "MHz",
             Self::Temp => "°C",
-            Self::Fan | Self::Load => "%",
         }
     }
 
@@ -6093,7 +6186,10 @@ impl Metric {
     }
 }
 
-const METRIC_COUNT: usize = 6;
+const METRIC_COUNT: usize = 2;
+/// The only metrics that draw a sparkline on a card, in display order.
+#[cfg(test)]
+const SPARK_METRICS: [Metric; METRIC_COUNT] = [Metric::Power, Metric::Temp];
 /// How much history a sparkline shows and how many samples it keeps at most
 /// (a 1 s GUI poll over 5 minutes is 300 samples).
 const HISTORY_SECS: u64 = 300;
@@ -6114,14 +6210,7 @@ impl History {
     fn record(&mut self, gpus: &[GpuStats], ts: u64) {
         for gpu in gpus {
             let samples = self.gpus.entry(gpu.uuid.clone()).or_default();
-            let values = [
-                gpu.power_w,
-                gpu.core_mhz.map(f64::from),
-                gpu.mem_mhz.map(f64::from),
-                gpu.temp_c.map(f64::from),
-                gpu.fan_pct.map(f64::from),
-                gpu.util_pct.map(f64::from),
-            ];
+            let values = [gpu.power_w, gpu.temp_c.map(f64::from)];
             match samples.back_mut() {
                 Some((last_ts, last)) if *last_ts == ts => *last = values,
                 _ => samples.push_back((ts, values)),
@@ -6658,36 +6747,45 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool, status: &Status) -> 
     // One card gets three columns (two rows); a rig of several cards keeps
     // the compact 2 x 3 block.
     let columns: i32 = if wide { 3 } else { 2 };
+    // Power and temperature are trends; core, memory, fan and load are plain
+    // live values. Keeping the two charts in the first row leaves the other
+    // rows compact without changing the card's structure between updates.
     let stats_data = [
         (
-            Metric::Power,
+            Some(Metric::Power),
             tr("Power", "Питание"),
             power,
             power_hint.as_deref(),
             power_class,
         ),
         (
-            Metric::Core,
+            Some(Metric::Temp),
+            tr("Temp", "Темп."),
+            temp,
+            None,
+            temp_class,
+        ),
+        (
+            None,
             tr("Core", "Ядро"),
             core_text,
             core_hint.as_deref(),
             core_class,
         ),
         (
-            Metric::Memory,
+            None,
             tr("Memory", "Память"),
             memory_text,
             memory_hint.as_deref(),
             memory_class,
         ),
-        (Metric::Temp, tr("Temp", "Темп."), temp, None, temp_class),
-        (Metric::Fan, tr("Fan", "Кулер"), fan, None, ""),
-        (Metric::Load, tr("Load", "Загрузка"), utilization, None, ""),
+        (None, tr("Fan", "Кулер"), fan, None, ""),
+        (None, tr("Load", "Загрузка"), utilization, None, ""),
     ];
     for (index, (metric, label_text, value_text, hint, class)) in stats_data.iter().enumerate() {
-        let spark = sparkline(app, &gpu.uuid, *metric, class, label_text);
+        let spark = metric.map(|metric| sparkline(app, &gpu.uuid, metric, class, label_text));
         stats.attach(
-            &gpu_stat(Some(spark), label_text, value_text, *hint, class),
+            &gpu_stat(spark, label_text, value_text, *hint, class),
             index as i32 % columns,
             index as i32 / columns,
             1,
@@ -6898,6 +6996,229 @@ fn render_hero_meta(app: &App, uptime_s: u64) {
     }
 }
 
+/// What the pool balance row shows. `—` means "no account data"; only an API
+/// value is allowed to render a number, so a missing endpoint never looks like
+/// a zero balance.
+struct BalanceView {
+    text: String,
+    class: &'static str,
+    tip: String,
+}
+
+fn pool_balance_view(status: &Status, has_wallet: bool) -> BalanceView {
+    let symbol = if status.coin.symbol.is_empty() {
+        "—"
+    } else {
+        status.coin.symbol.as_str()
+    };
+    if let Some(balance) = status.pool.as_ref().and_then(|pool| pool.balance) {
+        return BalanceView {
+            text: format!("{balance:.3} {symbol}"),
+            class: "accent",
+            tip: tr("Pending pool balance", "Баланс пула к выплате").to_string(),
+        };
+    }
+    let api_available = status
+        .pool_view
+        .as_ref()
+        .map(|view| view.api_available)
+        .unwrap_or(false);
+    let tip = if let Some(error) = &status.pool_error {
+        format!("{} {error}", tr("Pool API error:", "Ошибка API пула:"))
+    } else if !has_wallet {
+        tr("Wallet is not set", "Кошелёк не задан").to_string()
+    } else if !api_available {
+        tr(
+            "This pool has no documented account API; balance is unavailable",
+            "У этого пула нет документированного API аккаунта — баланс недоступен",
+        )
+        .to_string()
+    } else {
+        tr(
+            "No pool account data yet; the miner is not running or the API has not answered",
+            "Данных аккаунта пула пока нет: майнер не запущен или API не ответил",
+        )
+        .to_string()
+    };
+    BalanceView {
+        text: "—".to_string(),
+        class: "dim-label",
+        tip,
+    }
+}
+
+fn zero_hashrate_text(unit: &str) -> String {
+    let unit = unit.trim();
+    if unit.is_empty() || unit.eq_ignore_ascii_case("auto") {
+        "0 H/s".to_string()
+    } else {
+        format!("0 {unit}")
+    }
+}
+
+/// Format a hashrate without hiding a real zero. `None` is unknown (`—`), a
+/// real `0.0` from the miner is still a fact worth showing.
+fn format_hashrate_value(value: Option<f64>, unit: &str) -> Option<String> {
+    value.map(|value| {
+        if value > 0.0 {
+            util::format_hashrate_in(value, unit)
+        } else {
+            zero_hashrate_text(unit)
+        }
+    })
+}
+
+fn shares_known(status: &Status) -> bool {
+    status.miner.accepted.is_some()
+        || status.miner.rejected.is_some()
+        || status.miner.stale.is_some()
+}
+
+fn shares_summary(status: &Status) -> String {
+    if !shares_known(status) {
+        return "—".to_string();
+    }
+    let accepted = status.miner.accepted.unwrap_or(0);
+    let rejected = status.miner.rejected.unwrap_or(0);
+    let stale = status.miner.stale.unwrap_or(0);
+    let acceptance = status
+        .acceptance_pct()
+        .map(|pct| format!("{pct:.2}%"))
+        .unwrap_or_else(|| "—".into());
+    tr(
+        &format!(
+            "{accepted} accepted · {rejected} rejected · {stale} stale · {acceptance} acceptance"
+        ),
+        &format!(
+            "{accepted} принято · {rejected} отклонено · {stale} устарело · {acceptance} принятие"
+        ),
+    )
+}
+
+/// Hero identity: coin, pool and fee. The preset name belongs to the Active
+/// preset row, not here.
+fn hero_identity(status: &Status) -> String {
+    let coin = if !status.coin.symbol.is_empty() {
+        status.coin.symbol.as_str()
+    } else if !status.coin.name.is_empty() {
+        status.coin.name.as_str()
+    } else {
+        "—"
+    };
+    let pool = status
+        .pool_view
+        .as_ref()
+        .map(|view| view.name.as_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("—");
+    tr(
+        &format!("{coin} · {pool} · {:.2}% fee", status.total_fee_pct),
+        &format!("{coin} · {pool} · комиссия {:.2}%", status.total_fee_pct),
+    )
+}
+
+/// Subtitle of the Active preset row: the applied session context and the rig
+/// summary that used to live in invisible widgets.
+fn active_preset_summary(status: &Status, cfg: &Config) -> String {
+    let enabled = status
+        .participation
+        .iter()
+        .filter(|card| card.enabled)
+        .count();
+    let total = status.participation.len();
+    let tuning = cfg
+        .preset()
+        .map(|preset| preset.gpu.has_tuning())
+        .unwrap_or(false);
+    let mut parts = Vec::new();
+    let miner = if status.miner_info.name.is_empty() {
+        status.miner_info.id.clone()
+    } else {
+        status.miner_info.name.clone()
+    };
+    if !miner.is_empty() {
+        parts.push(format!("{} {}", miner, status.miner_info.version));
+    }
+    parts.push(tr(
+        &format!("{enabled}/{total} cards"),
+        &format!("{enabled}/{total} карт"),
+    ));
+    parts.push(if tuning {
+        tr("tuned", "настроено").to_string()
+    } else {
+        tr("stock", "сток").to_string()
+    });
+    if let Some(power) = status.total.power_w {
+        parts.push(format!("{power:.0} W"));
+    }
+    if let Some(temp) = status.total.temp_max_c {
+        parts.push(format!("{temp} °C"));
+    }
+    parts.join(" · ")
+}
+
+fn rig_tooltip(status: &Status) -> String {
+    let mut lines = Vec::new();
+    for gpu in &status.gpus {
+        let role = status
+            .participation
+            .iter()
+            .find(|card| card.uuid == gpu.uuid);
+        let role_text = match role {
+            Some(card) if !card.enabled => tr("excluded", "исключена"),
+            Some(card) if card.mining => tr("mining", "майнит"),
+            _ => tr("selected", "выбрана"),
+        };
+        let power = gpu
+            .power_w
+            .map(|value| format!("{value:.0} W"))
+            .unwrap_or_else(|| "—".into());
+        let temp = gpu
+            .temp_c
+            .map(|value| format!("{value} °C"))
+            .unwrap_or_else(|| "—".into());
+        lines.push(format!(
+            "{} #{} · {role_text} · {power} · {temp}",
+            tr("Card", "Карта"),
+            gpu.index
+        ));
+    }
+    card_tooltip(
+        &tr(
+            "Applied session: cards, whole-rig power (including excluded cards) and hottest temperature.",
+            "Применённая сессия: карты, мощность всего рига (включая исключённые) и самая горячая карта.",
+        ),
+        &lines,
+    )
+}
+
+/// Body of the restart/stop alert. `ConfigDiff` carries the class and reasons,
+/// not old→new values, so this never invents a value it cannot know.
+fn apply_alert_body(diff: &ConfigDiff, switching_preset: bool) -> String {
+    let mut body = String::new();
+    if switching_preset {
+        body.push_str(&tr(
+            "The active preset will change. ",
+            "Активный пресет изменится. ",
+        ));
+    }
+    if !diff.reasons.is_empty() {
+        body.push_str(&tr(
+            "These changes need a restart:\n",
+            "Эти изменения требуют перезапуска:\n",
+        ));
+        for reason in &diff.reasons {
+            body.push_str(&format!("• {reason}\n"));
+        }
+        body.push('\n');
+    }
+    body.push_str(&tr(
+        "Apply and restart stops the miner, restores the stock GPU state, applies the configuration and starts it again. Apply and stop saves the configuration and keeps the miner stopped.",
+        "«Применить и перезапустить» остановит майнер, вернёт сток GPU, применит конфигурацию и запустит его снова. «Применить и остановить» сохранит конфигурацию и оставит майнер остановленным.",
+    ));
+    body
+}
+
 fn apply_status(app: &Rc<App>, status: Status) {
     let running = status.state.running;
     // The sparklines read this rolling window; a fresh status may repeat the
@@ -6939,11 +7260,7 @@ fn apply_status(app: &Rc<App>, status: Status) {
         app.pill
             .set_css_classes(&["caption", "trommel-pill", pill_class]);
     }
-    let hashrate_value = status
-        .total
-        .hashrate
-        .or(status.miner.primary())
-        .filter(|value| *value > 0.0);
+    let hashrate_value = status.total.hashrate.or(status.miner.primary());
     let unit = if status.coin.hashrate_unit.is_empty() {
         "auto"
     } else {
@@ -6953,15 +7270,15 @@ fn apply_status(app: &Rc<App>, status: Status) {
     let hashrate = if !has_preset {
         "—".to_string()
     } else {
-        hashrate_value
-            .map(|value| util::format_hashrate_in(value, unit))
-            .unwrap_or_else(|| {
-                if unit == "auto" {
-                    "0 H/s".to_string()
-                } else {
-                    format!("0 {unit}")
-                }
-            })
+        format_hashrate_value(hashrate_value, unit).unwrap_or_else(|| {
+            if running {
+                // Running but no miner report yet: unknown is honest. A zero
+                // placeholder belongs to the stopped state only.
+                "—".to_string()
+            } else {
+                zero_hashrate_text(unit)
+            }
+        })
     };
     app.hero_hashrate.set_text(&hashrate);
     app.create_button.set_visible(!has_preset);
@@ -6979,7 +7296,7 @@ fn apply_status(app: &Rc<App>, status: Status) {
     app.hero_hashrate.set_css_classes(&[
         "trommel-hero-hashrate",
         "numeric",
-        if hashrate_value.is_some() {
+        if hashrate_value.is_some_and(|value| value > 0.0) {
             "accent"
         } else {
             "dim-label"
@@ -6990,25 +7307,8 @@ fn apply_status(app: &Rc<App>, status: Status) {
             "Create a mining preset to start",
             "Создайте пресет майнинга, чтобы начать",
         ));
-    } else if status.miner_info.name.is_empty() {
-        app.hero_line
-            .set_text(&tr("Setup is not finished", "Настройка не завершена"));
     } else {
-        let coin = status.coin.symbol.as_str();
-        let coin_prefix = if coin.is_empty() {
-            String::new()
-        } else {
-            format!("{coin} · ")
-        };
-        app.hero_line.set_text(&format!(
-            "{}: {} · {} {} · {} {:.2}%",
-            tr("Preset", "Пресет"),
-            status.state.preset_name,
-            status.miner_info.name,
-            status.miner_info.version,
-            coin_prefix,
-            status.miner_info.total_fee_pct
-        ));
+        app.hero_line.set_text(&hero_identity(&status));
     }
     *app.hero_meta_state.borrow_mut() = Some(HeroMeta {
         running,
@@ -7023,32 +7323,14 @@ fn apply_status(app: &Rc<App>, status: Status) {
     {
         let cfg = app.config.borrow();
         if let Some(preset) = cfg.preset() {
-            let profile = &preset.gpu;
-            let enabled = status
-                .participation
-                .iter()
-                .filter(|card| card.enabled)
-                .count();
-            let total = status.participation.len();
-            let tuning = if profile.has_tuning() {
-                tr("tuned", "настроено")
-            } else {
-                tr("stock", "сток")
-            };
             app.rig_preset.set_title(&format!(
                 "{}: {}",
                 tr("Active preset", "Активный пресет"),
                 preset.name
             ));
-            app.rig_preset.set_subtitle(&format!(
-                "{} · {} · {} {}/{} · {}",
-                preset.symbol(),
-                preset.pool_display_name(),
-                tr("cards", "карт"),
-                enabled,
-                total,
-                tuning
-            ));
+            app.rig_preset
+                .set_subtitle(&active_preset_summary(&status, &cfg));
+            app.rig_preset.set_tooltip_text(Some(&rig_tooltip(&status)));
             app.rig_edit.set_sensitive(true);
             app.rig_edit
                 .set_label(&tr("Edit preset", "Изменить пресет"));
@@ -7059,163 +7341,31 @@ fn apply_status(app: &Rc<App>, status: Status) {
                 "Create a preset to choose cards for mining",
                 "Создайте пресет, чтобы выбрать карты для майнинга",
             ));
+            app.rig_preset.set_tooltip_text(None);
             app.rig_edit
                 .set_label(&tr("Create preset", "Создать пресет"));
             app.rig_edit.set_sensitive(true);
         }
     }
-    let selected = status.total.gpus_enabled;
-    let total = status.total.gpus_total;
-    let role_word = if status.state.external {
-        tr("external miner", "внешний майнер")
-    } else if running {
-        tr("mining", "майнят")
-    } else {
-        tr("selected", "выбрано")
-    };
-    let cards_subtitle = if status.state.external {
-        format!(
-            "{selected} {} {total} · {}",
-            tr("of", "из"),
-            tr("external miner", "внешний майнер")
-        )
-    } else {
-        format!("{selected} {} {total} {role_word}", tr("of", "из"))
-    };
-    app.total_gpus.set_subtitle(&cards_subtitle);
-    let participation_lines: Vec<String> = status
-        .participation
-        .iter()
-        .map(|card| {
-            format!(
-                "{} #{} · {}",
-                tr("Card", "Карта"),
-                card.index,
-                if card.enabled {
-                    tr("selected", "выбрана")
-                } else {
-                    tr("excluded", "исключена")
-                }
-            )
-        })
-        .collect();
-    let participation_header = if status.state.external {
-        tr(
-            "The external miner selects its own devices; these switches apply to a Trommel session.",
-            "Внешний майнер сам выбирает карты; эти переключатели действуют только на сессию Trommel.",
-        )
-    } else {
-        tr(
-            "Cards passed to the active miner. An excluded card is not tuned and does not mine.",
-            "Карты, передаваемые активному майнеру. Исключённая карта не разгоняется и не майнит.",
-        )
-    };
-    app.total_gpus.set_tooltip_text(Some(&card_tooltip(
-        &participation_header,
-        &participation_lines,
-    )));
-    app.total_power.set_subtitle(&format!(
-        "{} W",
-        status
-            .total
-            .power_w
-            .map(|v| format!("{v:.0}"))
-            .unwrap_or_else(|| "—".into())
-    ));
-    let power_lines: Vec<String> = status
-        .gpus
-        .iter()
-        .filter_map(|gpu| gpu.power_w.map(|watts| (gpu.index, watts)))
-        .map(|(index, watts)| format!("{} #{index} · {watts:.1} W", tr("Card", "Карта")))
-        .collect();
-    // The tiles above already show one number per card; the totals tooltip is
-    // where the reader can check how the aggregate was formed.
-    app.total_power.set_tooltip_text(Some(&card_tooltip(
-        &tr(
-            "Whole rig: power.draw summed over every detected card, including excluded ones.",
-            "Весь риг: power.draw, просуммированный по всем найденным картам, включая исключённые.",
-        ),
-        &power_lines,
-    )));
-    app.total_temp.set_subtitle(&format!(
-        "{} °C",
-        status
-            .total
-            .temp_max_c
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "—".into())
-    ));
-    let temp_lines: Vec<String> = status
-        .gpus
-        .iter()
-        .filter_map(|gpu| gpu.temp_c.map(|temp| (gpu.index, temp)))
-        .map(|(index, temp)| format!("{} #{index} · {temp} °C", tr("Card", "Карта")))
-        .collect();
-    app.total_temp.set_tooltip_text(Some(&card_tooltip(
-        &tr(
-            "Hottest card's temperature.gpu, not an average; excluded cards still count.",
-            "temperature.gpu самой горячей карты, не среднее; исключённые карты тоже учитываются.",
-        ),
-        &temp_lines,
-    )));
-    let accepted = status.miner.accepted.unwrap_or(0);
-    let rejected = status.miner.rejected.unwrap_or(0);
-    let stale = status.miner.stale.unwrap_or(0);
-    app.shares_ok.set_text(&accepted.to_string());
-    app.shares_bad.set_text(&rejected.to_string());
-    app.shares_stale.set_text(&stale.to_string());
-    let acceptance = status.acceptance_pct().map(|pct| format!("{pct:.2}%"));
-    app.shares.set_subtitle(&format!(
-        "{} {} · {} {} · {} {} · {} {}",
-        tr("accepted", "принято"),
-        accepted,
-        tr("rejected", "отклонено"),
-        rejected,
-        tr("stale", "устарело"),
-        stale,
-        tr("acceptance", "принятие"),
-        acceptance.unwrap_or_else(|| "—".into())
-    ));
-    let pool_balance = status.pool.as_ref().and_then(|pool| pool.balance);
+    app.shares_group.set_visible(has_preset);
+    app.shares.set_subtitle(&shares_summary(&status));
+    let has_wallet = app
+        .config
+        .borrow()
+        .preset()
+        .map(|preset| !preset.wallet.trim().is_empty())
+        .unwrap_or(false);
+    let balance = pool_balance_view(&status, has_wallet);
     let symbol = if status.coin.symbol.is_empty() {
         "—"
     } else {
         status.coin.symbol.as_str()
     };
-    let (balance_text, balance_class, balance_tip) = if let Some(balance) = pool_balance {
-        (
-            format!("{balance:.3} {symbol}"),
-            "accent",
-            tr("Pending pool balance", "Баланс пула к выплате"),
-        )
-    } else {
-        let has_wallet = app
-            .config
-            .borrow()
-            .preset()
-            .map(|preset| !preset.wallet.trim().is_empty())
-            .unwrap_or(false);
-        if has_wallet {
-            (
-                format!("0.000 {symbol}"),
-                "dim-label",
-                tr(
-                    "No pool data yet; the miner is not running or the pool has no API",
-                    "Данных пула пока нет; майнер не запущен или у пула нет API",
-                ),
-            )
-        } else {
-            (
-                format!("0 {symbol}"),
-                "dim-label",
-                tr("Wallet is not set", "Кошелёк не задан"),
-            )
-        }
-    };
-    app.pool_balance_value.set_text(&balance_text);
+    app.pool_balance_value.set_text(&balance.text);
     app.pool_balance_value
-        .set_css_classes(&["caption", balance_class]);
-    app.pool_balance_value.set_tooltip_text(Some(&balance_tip));
+        .set_css_classes(&["caption", balance.class]);
+    app.pool_balance_value.set_tooltip_text(Some(&balance.tip));
+    app.pool_balance_row.set_tooltip_text(Some(&balance.tip));
     if let Some(view) = &status.pool_view {
         app.pool_meta.set_title(&view.name);
         app.pool_meta.set_subtitle(&format!(
@@ -7239,34 +7389,49 @@ fn apply_status(app: &Rc<App>, status: Status) {
             .set_subtitle(&tr("Pool is not selected", "Пул не выбран"));
     }
     if let Some(pool) = &status.pool {
-        let paid = pool
-            .paid
-            .map(|value| format!("{value:.3} {symbol}"))
-            .unwrap_or_else(|| "—".into());
-        let immature = pool
-            .immature
-            .map(|value| format!("{value:.3} {symbol}"))
-            .unwrap_or_else(|| "—".into());
-        let workers = pool
-            .workers_online
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "—".into());
-        let min_payout = pool
-            .min_payout
-            .map(|value| format!("{value} {symbol}"))
-            .unwrap_or_else(|| "—".into());
-        app.pool_balance_row.set_subtitle(&format!(
-            "{} {paid} · {} {immature} · {} {workers} · {} {min_payout}",
-            tr("paid", "выплачено"),
-            tr("immature", "незрелых"),
-            tr("workers", "воркеров"),
-            tr("min payout", "мин. выплата")
-        ));
+        let mut parts = Vec::new();
+        if let Some(paid) = pool.paid {
+            parts.push(format!("{} {paid:.3} {symbol}", tr("paid", "выплачено")));
+        }
+        if let Some(immature) = pool.immature {
+            parts.push(format!(
+                "{} {immature:.3} {symbol}",
+                tr("immature", "незрелых")
+            ));
+        }
+        app.pool_balance_row.set_subtitle(&parts.join(" · "));
+        let mut details = Vec::new();
+        if let Some(workers) = pool.workers_online {
+            details.push(format!("{} {workers}", tr("workers", "воркеров")));
+        }
+        if let Some(min_payout) = pool.min_payout {
+            details.push(format!(
+                "{} {min_payout} {symbol}",
+                tr("min payout", "мин. выплата")
+            ));
+        }
+        app.pool_balance_row
+            .set_tooltip_text(Some(&card_tooltip(&balance.tip, &details)));
     } else {
-        app.pool_balance_row.set_subtitle(&tr(
-            "No live pool account data; the configured endpoint is shown above.",
-            "Живых данных аккаунта пула нет; настроенный endpoint показан выше.",
-        ));
+        let subtitle = if !has_wallet {
+            tr("Wallet is not set", "Кошелёк не задан")
+        } else if !status
+            .pool_view
+            .as_ref()
+            .map(|view| view.api_available)
+            .unwrap_or(false)
+        {
+            tr(
+                "This pool has no documented account API",
+                "У этого пула нет документированного API аккаунта",
+            )
+        } else {
+            tr(
+                "No account data yet; the endpoint is shown above",
+                "Данных аккаунта пока нет; endpoint показан выше",
+            )
+        };
+        app.pool_balance_row.set_subtitle(&subtitle);
     }
     app.oc_banner.set_revealed(status.oc.needs_restore);
     if status.oc.needs_restore {
@@ -7410,9 +7575,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{status_uptime, uptime_since, SCREENSHOT_HOOKS};
+    use super::{
+        active_preset_summary, apply_alert_body, format_hashrate_value, hero_identity,
+        pool_balance_view, shares_known, shares_summary, status_uptime, uptime_since, Metric,
+        SCREENSHOT_HOOKS, SPARK_METRICS,
+    };
     use std::collections::BTreeSet;
-    use trommel_core::status::Status;
+    use std::sync::Once;
+    use trommel_core::config::{ChangeClass, Config, ConfigDiff, Preset};
+    use trommel_core::i18n::{set_language, Language};
+    use trommel_core::pool::PoolStats;
+    use trommel_core::status::{GpuParticipation, PoolView, Status};
 
     #[test]
     fn uptime_advances_between_status_samples() {
@@ -7435,6 +7608,145 @@ mod tests {
         assert_eq!(status_uptime(&status, 1_001), 47);
         assert_eq!(status_uptime(&status, 1_002), 48);
         assert_eq!(status_uptime(&status, 900), 46);
+    }
+
+    fn use_english() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| set_language(Language::En));
+    }
+
+    fn status_with_preset() -> (Config, Status) {
+        let mut cfg = Config::default();
+        let preset = Preset::new_pearl();
+        cfg.presets.insert(preset.id.clone(), preset);
+        cfg.active_preset = Some(trommel_core::config::DEFAULT_PRESET_ID.to_string());
+        let mut status = Status::default();
+        status.coin.symbol = "PRL".into();
+        status.total_fee_pct = 1.0;
+        status.pool_view = Some(PoolView {
+            name: "PearlHash".into(),
+            url: "pool.pearlhash.xyz:9000".into(),
+            fee_pct: 1.0,
+            api_available: true,
+        });
+        status.miner_info.name = "WildRig Multi".into();
+        status.miner_info.version = "0.51.8".into();
+        status.total.power_w = Some(430.0);
+        status.total.temp_max_c = Some(81);
+        status.participation = vec![
+            GpuParticipation {
+                index: 0,
+                uuid: "GPU-1".into(),
+                name: "RTX 3080 Ti".into(),
+                enabled: true,
+                mining: true,
+            },
+            GpuParticipation {
+                index: 1,
+                uuid: "GPU-2".into(),
+                name: "RTX 3060".into(),
+                enabled: true,
+                mining: true,
+            },
+        ];
+        (cfg, status)
+    }
+
+    #[test]
+    fn missing_pool_data_is_not_a_zero_balance() {
+        use_english();
+        let (_, mut status) = status_with_preset();
+        status.pool = None;
+        let view = pool_balance_view(&status, true);
+        assert_eq!(view.text, "—");
+        assert!(!view.text.contains("0.000"), "{:?}", view.text);
+        assert!(view.tip.contains("No pool account data"), "{}", view.tip);
+    }
+
+    #[test]
+    fn a_real_pool_zero_is_shown() {
+        let (_, mut status) = status_with_preset();
+        status.pool = Some(PoolStats {
+            balance: Some(0.0),
+            ..Default::default()
+        });
+        let view = pool_balance_view(&status, true);
+        assert_eq!(view.text, "0.000 PRL");
+    }
+
+    #[test]
+    fn a_pool_error_does_not_invent_a_balance() {
+        use_english();
+        let (_, mut status) = status_with_preset();
+        status.pool = None;
+        status.pool_error = Some("pool API is unavailable".into());
+        let view = pool_balance_view(&status, true);
+        assert_eq!(view.text, "—");
+        assert!(view.tip.contains("unavailable"), "{}", view.tip);
+    }
+
+    #[test]
+    fn hero_identity_has_coin_pool_and_fee_but_not_the_preset_name() {
+        use_english();
+        let (_, status) = status_with_preset();
+        let text = hero_identity(&status);
+        assert!(text.contains("PRL"), "{text}");
+        assert!(text.contains("PearlHash"), "{text}");
+        assert!(text.contains("1.00%"), "{text}");
+        assert!(!text.contains("Pearl · WildRig"), "{text}");
+    }
+
+    #[test]
+    fn active_preset_summary_carries_cards_power_and_temperature() {
+        use_english();
+        let (cfg, status) = status_with_preset();
+        let text = active_preset_summary(&status, &cfg);
+        assert!(text.contains("2/2"), "{text}");
+        assert!(text.contains("430 W"), "{text}");
+        assert!(text.contains("81 °C"), "{text}");
+        assert!(text.contains("WildRig Multi 0.51.8"), "{text}");
+    }
+
+    #[test]
+    fn apply_alert_lists_the_known_reasons() {
+        use_english();
+        let diff = ConfigDiff {
+            class: ChangeClass::RestartRequired,
+            reasons: vec!["Preset settings changed".into()],
+        };
+        let body = apply_alert_body(&diff, false);
+        assert!(body.contains("Preset settings changed"), "{body}");
+        assert!(body.contains("Apply and restart"), "{body}");
+        assert!(!body.contains("0 W"), "{body}");
+    }
+
+    #[test]
+    fn unknown_shares_are_a_dash_not_zero() {
+        use_english();
+        let (_, mut status) = status_with_preset();
+        assert!(!shares_known(&status));
+        assert_eq!(shares_summary(&status), "—");
+        status.miner.accepted = Some(0);
+        assert!(shares_known(&status));
+        assert!(shares_summary(&status).contains("0 accepted"));
+    }
+
+    #[test]
+    fn a_real_zero_hashrate_is_not_hidden() {
+        assert_eq!(
+            format_hashrate_value(Some(0.0), "TH/s").as_deref(),
+            Some("0 TH/s")
+        );
+        assert_eq!(
+            format_hashrate_value(Some(0.0), "auto").as_deref(),
+            Some("0 H/s")
+        );
+        assert_eq!(format_hashrate_value(None, "TH/s"), None);
+    }
+
+    #[test]
+    fn only_power_and_temperature_keep_sparklines() {
+        assert_eq!(SPARK_METRICS, [Metric::Power, Metric::Temp]);
     }
 
     /// Every `TROMMEL_*_SCREENSHOT` literal handled in this file must also be

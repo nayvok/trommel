@@ -171,7 +171,7 @@ Every coloured value has a word next to it (“installed”, “not installed”
 | Move presets to a version | `AdwAlertDialog` | Miner library after an install | Per-preset checkboxes; nothing is pre-selected and “keep” is the default |
 | Remove miner version | `AdwAlertDialog` | Miner library version row | Confirmation for an unused version; a blocked alert listing presets when one pins it |
 | GPU tuning | `AdwDialog` | Dashboard card | Per-card power/clocks, stock reset, named GPU presets; copy to similar/all |
-| GPU presets | `AdwDialog` | Tune menu / Settings → GPU | Rename or delete saved per-card tuning templates |
+| GPU presets | `AdwDialog` | Settings → GPU | Rename or delete saved per-card tuning templates |
 | Apply alert | `AdwAlertDialog` | apply while mining | Apply and restart / apply and stop / cancel |
 | Delete-preset alert | `AdwAlertDialog` | preset editor | Destructive confirmation |
 | Tray menu | StatusNotifierItem | panel icon | Status header, Start/Stop, Show window, Quit |
@@ -183,44 +183,51 @@ Every coloured value has a word next to it (“installed”, “not installed”
 
 - Hero card: a small letter-spaced HASHRATE caption, the large value in the
   active coin's preferred unit, status pill (`mining` / `external` / `stopped` /
-  `offline`), a line `Preset: … · miner version · coin · total fee`, a separator,
-  and a metadata line with uptime, restarts and the miner data source. With no
-  preset it becomes the first-run empty state: “No mining preset”, a short
-  explanation, **Create preset**, and the same prompt when Start is pressed. The card is accent-tinted with a soft
-  shadow; the value uses the accent colour only while a hashrate is known.
-  The card closes with the primary **Start/Stop** button (play/stop icon, pill,
-  suggested while stopped and destructive while mining) in its footer, right
-  aligned with the metadata line: the brightest control of the app is anchored
-  to the card it acts on instead of floating in the header.
+  `offline`), a line `coin · pool · fee`, a separator, and a metadata line with
+  uptime, restarts and the miner data source. The preset name is **not** repeated
+  here: it belongs to the Active preset row. With no preset the hero becomes the
+  first-run empty state: “No mining preset”, a short explanation, **Create
+  preset**, and the same prompt when Start is pressed. The card is accent-tinted
+  with a soft shadow; the value uses the accent colour only while a hashrate is
+  known. A running miner that has not reported a hashrate shows `—`, not `0`;
+  `0` in the coin unit is the stopped-state placeholder only. The card closes
+  with the primary **Start/Stop** button (play/stop icon, pill, suggested while
+  stopped and destructive while mining) in its footer, right aligned with the
+  metadata line: the brightest control of the app is anchored to the card it
+  acts on instead of floating in the header.
 - GPU cards: title (name + index), a switch that includes the card in the
   active **mining session** (off = excluded: not passed to the miner, not
-  tuned), six value bubbles (power, core, memory, temperature, fan, load; the
+  tuned), six value bubbles (power, temperature, core, memory, fan, load; the
   configured target/lock is a small hint and turns hot when the live value
   differs), a **mining**/**excluded** chip, a **stock**/**tuned**/**GPU preset** chip and
   a **Tune** button. The participation chip describes the applied session, not
-  the draft switch; after a switch change it keeps saying `mining` until Apply. Each bubble ends
-  with a **sparkline** on the bubble floor: the metric's last five minutes as a
-  thin accent line over a soft accent wash, rounded with the bubble. The wash
+  the draft switch; after a switch change it keeps saying `mining` until Apply.
+  Only **power** and **temperature** keep a sparkline on the bubble floor: the
+  metric's last five minutes as a thin accent line over a soft accent wash,
+  rounded with the bubble. Core, memory, fan and load are values, not trends;
+  removing their graphs keeps the card quiet and the grid rows stable. The wash
   reaches the rounded floor and the plot keeps only a 2 px margin, so the graph
   is grounded in the bubble instead of floating above its bottom edge. The line
   follows the value colour, so a warm or hot bubble also draws warm or hot.
-  History lives in the GUI (it starts empty and fills at the poll rate), not in
-  the daemon status. A one-GPU rig uses a single full-width card with a 3×2
-  bubble grid; 2+ cards go into a wrap box and split the row evenly (240 px
+  Spark history lives in the GUI (it starts empty and fills at the poll rate),
+  not in the daemon status. A one-GPU rig uses a single full-width card with a
+  3×2 bubble grid; 2+ cards go into a wrap box and split the row evenly (240 px
   minimum per card). Core and memory clocks are labelled separately.
-- Above the cards, an **Active preset** row names the preset, its coin, pool,
-  card count and whether the GPU settings are stock or tuned, with **Edit
-  preset**. The Rig description says that the switch includes a card in this
-  preset's session and that Apply stores the change.
-- Rig summary lives in the Active preset row (cards, power, temperature) with
-  per-card tooltips; there is no separate Totals group.
-- **Pool and shares** is one group: pool name/host, endpoint, fee and API
-  on/off; pending/paid/immature balance and workers in the coin symbol; accepted,
-  rejected and stale shares with acceptance percentage. Without a documented
-  pool API the group says balance data is unavailable instead of inventing it.
-- When stopped, show **numeric placeholders** in the coin unit (`0 TH/s`,
-  `0.000 PRL` or `0 PRL` without a wallet) and still name the configured pool
-  endpoint. No lone dashes as placeholders.
+- Above the cards, an **Active preset** row names the preset, its miner/version,
+  card count, whether the GPU settings are stock or tuned, and the rig power and
+  temperature, with **Edit preset**. Per-card roles, power and temperature are
+  in its tooltip. The Rig description says that the switch includes a card in
+  this preset's session and that Apply stores the change. There is no separate
+  Totals group.
+- **Pool and shares** is one group with at most three compact rows: pool
+  name/host, endpoint, fee and API on/off; accepted/rejected/stale shares with
+  acceptance; pending/paid/immature balance in the coin symbol. Without a
+  documented pool API or before the first answer, the balance is `—` with a calm
+  explanation in the tooltip; it is never `0.000`. The group is hidden when no
+  preset exists, so the first-run dashboard has no empty pool table.
+- When stopped, the pool balance, shares and an unknown hashrate are `—`; a
+  numeric `0` appears only when the miner or pool actually reported zero. A dash
+  means “unknown”, not an error and not a zero.
 - Warnings are one row with the joined warning text and a warning badge; the
   same list is in the status document.
 
@@ -245,15 +252,22 @@ Every coloured value has a word next to it (“installed”, “not installed”
   dismisses). The body scrolls; a footer holds **Cancel** on the left and
   **Save** on the right, and the page ends with the **Duplicate**/**Delete…**
   group.
-- Sections: identity (name), miner/version + **Miner library…**, pool and
-  address, wallet/worker, fees (miner read-only unless the catalogue allows an
-  override; pool fee editable), miner options, extra arguments. The
-  coin/algorithm and the GPU profile are not exposed here. The library opens
-  with the preset at the top and its pinned version ready to install.
+- Sections, in order: **Preset** (name and a read-only summary line),
+  **Coin and pool** (coin, algorithm, pool address, pool fee, known-pool hint),
+  **Wallet** (wallet, worker), **Miner** (miner, version + **Install…** +
+  **Miner library…**, description, fee breakdown, installation state),
+  **GPU** (read-only participation/tuning summary; tuning happens on the
+  dashboard), and **Advanced** (miner options, pool API URL, API port, fee
+  override, extra arguments). The coin/algorithm and GPU values are not edited
+  here. The library opens with the preset at the top and its pinned version
+  ready to install.
+- Algorithm is read-only for a known coin: it is derived from the selected coin
+  and shown with a “set automatically” tooltip. A custom coin keeps the field
+  editable and requires it.
 - Miner options are rebuilt from the selected miner's descriptors. Values whose
   keys the new miner does not define are dropped when the preset is saved.
-- Simple mode hides miner options, extra arguments and the miner fee row but
-  keeps the summary.
+- Simple mode hides the whole **Advanced** group but keeps the summary and the
+  basic coin/wallet/miner/GPU groups.
 - Save applies immediately: stopped → save; running → apply alert. Delete asks
   for confirmation, names the preset, and explains that the daemon keeps mining
   with the previously applied preset until another one is applied.
@@ -363,9 +377,11 @@ Rules:
   while its lock is on; with the lock off the subtitle names the current driver
   value.
 - **GPU presets** menu: **Stock (default)** (driver-auto power, locks off),
-  saved per-card presets, **Save as GPU preset…** and **Manage GPU presets…**.
-  Selecting a preset only changes the dialog fields. Save writes the values into
-  the active mining preset's per-card entry and starts the normal apply flow.
+  saved per-card presets and **Save as GPU preset…**. Managing/renaming/deleting
+  saved templates has one home: **Settings → GPU → Manage…**; the Tune menu is
+  for selecting and saving, not for a second manager. Selecting a preset only
+  changes the dialog fields. Save writes the values into the active mining
+  preset's per-card entry and starts the normal apply flow.
 - **Apply to** appears only with more than one card: similar GPUs or all GPUs.
   Copied cards become custom rather than claiming another card's GPU preset.
 - A single-GPU dialog has no empty “apply to” section. Deleting a mining preset
@@ -448,9 +464,9 @@ two-GPU rig with deterministic XDG directories. Conventions:
   (`gpu_sig`) to avoid flicker and lost focus. The signature covers every value
   shown in a bubble, so a clock or fan change is never left stale.
 - Sparkline history is a GUI-side ring buffer (`History`: five minutes per GPU
-  UUID, keyed by metric). `apply_status` appends one sample per status and
-  `update_sparklines` redraws the registered areas, so a redraw never rebuilds
-  a card.
+  UUID, keyed by metric). It stores power and temperature only; `apply_status`
+  appends one sample per status and `update_sparklines` redraws the registered
+  areas, so a redraw never rebuilds a card.
 - Widget callbacks mutate the draft only; they never talk to D-Bus directly.
   Settings switches write into the draft as they are toggled, so the global
   unsaved-changes banner and the Settings **Save and apply** button behave the
