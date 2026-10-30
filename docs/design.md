@@ -173,6 +173,7 @@ Every coloured value has a word next to it (“installed”, “not installed”
 | Remove miner version | `AdwAlertDialog` | Miner library version row | Confirmation for an unused version; a blocked alert listing presets when one pins it |
 | GPU tuning | `AdwDialog` | Dashboard card | Per-card power/clocks, stock reset, named GPU presets; copy to similar/all |
 | GPU presets | `AdwDialog` | Settings → GPU | Rename or delete saved per-card tuning templates |
+| History | `AdwDialog` | Dashboard hero **History** | Local 1 h / 24 h / 7 d hashrate chart, card selector, CSV export |
 | Apply alert | `AdwAlertDialog` | apply while mining | Apply and restart / apply and stop / cancel |
 | Delete-preset alert | `AdwAlertDialog` | preset editor | Destructive confirmation |
 | Tray menu | StatusNotifierItem | panel icon | Status header, Start/Stop, Show window, Quit |
@@ -401,6 +402,27 @@ Rules:
 - A single-GPU dialog has no empty “apply to” section. Deleting a mining preset
   deletes only its own GPU values; saved GPU presets remain.
 
+
+### History (modal)
+
+- Opened by the calm **History** button in the hero footer; it is a dialog, not
+  a fourth navigation page. The header carries only the title; the footer has
+  **Close** on the left and **Export CSV…** on the right.
+- Body: a linked `1h | 24h | 7d` switch (24 h default), one card selector
+  (`All cards` / `GPU #N`), a 220 px chart in the existing sparkline language
+  (accent line, soft wash, no grid), and one caption line
+  `average … · min … · max … · N samples`. The chart shows one series at a
+  time, so there is no colour legend and no second chart library.
+- Empty state: one centred caption, no empty axes. Loading is a caption; a
+  failed read is a toast with Details, never a blank chart pretending to be
+  zero.
+- The chart is downsampled to at most 720 points for drawing; CSV keeps the
+  raw long format (one row per GPU sample) and escapes commas/quotes.
+- The hero meta line can append `24h avg …`; it is computed from the same
+  local samples, refreshed once a minute, and never adds a tile or a second
+  hero.
+
+![History dialog](images/history-en-dark.png)
 
 ### Alerts
 

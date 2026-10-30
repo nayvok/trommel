@@ -169,6 +169,37 @@ if ! "$BIN/trommel" start > "$WORK/start.out" 2>&1; then
 fi
 sleep 2
 
+mkdir -p "$WORK/state/trommel/history"
+python3 - "$WORK" <<'PY'
+import json, math, pathlib, sys, time
+work = pathlib.Path(sys.argv[1])
+now = int(time.time())
+start = now - 23 * 3600
+files = {}
+for index in range(24 * 60):
+    ts = start + index * 60
+    phase = index / 37.0
+    total = 125.0e12 + 1.6e12 * math.sin(phase / 3.0)
+    gpu0 = 100.0e12 + 1.2e12 * math.sin(phase / 4.0)
+    gpu1 = total - gpu0
+    sample = {
+        "v": 1, "ts": ts, "running": True, "external": False,
+        "preset": "pearl-wildrig", "miner": "wildrig",
+        "total_hashrate": total, "power_w": 425.0, "mining_power_w": 425.0,
+        "accepted": 1000 + index // 3, "rejected": 3, "stale": 0, "source": "api",
+        "gpus": [
+            {"uuid": "GPU-11111111-1111-1111-1111-111111111111", "index": 0, "bus_id": 1,
+             "hashrate": gpu0, "power_w": 300.0, "temp_c": 60, "fan_pct": 65},
+            {"uuid": "GPU-22222222-2222-2222-2222-222222222222", "index": 1, "bus_id": 2,
+             "hashrate": gpu1, "power_w": 125.0, "temp_c": 55, "fan_pct": 60},
+        ],
+    }
+    day = time.strftime("%Y%m%d", time.gmtime(ts))
+    files.setdefault(day, []).append(json.dumps(sample))
+for day, lines in files.items():
+    (work / "state" / "trommel" / "history" / f"history-{day}.jsonl").write_text("\n".join(lines) + "\n")
+PY
+
 # The fake rig is stateful but static; vary the live measurements so the
 # dashboard sparklines have a curve. Power/clock values stay as applied.
 python3 - "$WORK/gpu-state.json" <<'PY' &
@@ -301,6 +332,21 @@ library_shot() {
   [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
 }
 
+history_shot() {
+  local theme="$1" language="$2" target="$3"
+  wanted "$target" || return 0
+  configure "$language" 1
+  local attempt
+  for attempt in 1 2; do
+    rm -f "$target"
+    TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_HISTORY=1 TROMMEL_HISTORY_SCREENSHOT="$target" \
+      TROMMEL_WINDOW_HEIGHT=820 timeout 50 "$BIN/trommel" > "$WORK/gui-history-$theme-$language.log" 2>&1 || true
+    [ -f "$target" ] && break
+    echo "  … retrying $(basename "$target")" >&2
+  done
+  [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
+}
+
 shot dark en dashboard "$DOCS/dashboard-en-dark.png" 1 "" 960
 shot dark en presets "$DOCS/presets-en-dark.png"
 shot dark en settings "$DOCS/settings-en-dark.png"
@@ -309,6 +355,7 @@ preset_shot dark en "$DOCS/preset-editor-en-dark.png"
 library_shot dark en "$DOCS/miner-library-en-dark.png"
 install_shot dark en "$DOCS/miner-install-en-dark.png"
 tune_shot dark en "$DOCS/gpu-tune-en-dark.png"
+history_shot dark en "$DOCS/history-en-dark.png"
 shot dark ru dashboard "$DOCS/dashboard-ru-dark.png" 1 "" 960
 shot dark ru settings "$DOCS/settings-ru-dark.png"
 shot light en dashboard "$DOCS/dashboard-en-light.png" 1 "" 960

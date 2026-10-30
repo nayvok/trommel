@@ -274,6 +274,23 @@ arguments — no shell.
 - `CONTRACT` — no status field; the watchdog is observable through the
   `Notification` signal, the daemon log and the Settings values.
 
+### `history` — daemon-owned local samples
+
+- `HistorySample`, `HistoryGpu` — JSONL schema with `v = 1`, timestamp, session
+  flags, preset/miner, total/mining power, hashrate, shares, source and mapped
+  per-GPU values. No wallet, worker or pool URL.
+- `Writer::new(dir, interval_s)` / `record(status)` — daily append, one sample
+  per interval, clock/duplicate guard, daily retention prune; a corrupt/partial
+  line never breaks the next append.
+- `load_range(dir, since, until)` — skip corrupt lines, deduplicate by `ts`,
+  sort and filter; a missing directory is an empty history.
+- `to_csv(samples)` — long CSV (one row per GPU sample) with manual escaping.
+- `paths::history_dir()` → `state_dir/history`; `DEFAULT_INTERVAL_S = 60`,
+  `RETENTION_DAYS = 8`, `MAX_RANGE_S = 8 days`.
+- `Engine::get_history` (`GetHistory` D-Bus) is the read surface; the GUI uses
+  it for the History dialog and the cached 24h hero average. The status loop
+  writes; the GUI never touches the file.
+
 ### `state` — runtime state file
 
 `State { running, miner_pid, miner_path, started_at, restarts, last_error,
@@ -497,8 +514,9 @@ preset except through the two explicit functions at the end.
    StatusNotifierItem unless `TROMMEL_NO_TRAY` is set; a tray failure is logged
    and does not stop the service.
 2. **Status refresher** — every `poll_interval` (or when a supervisor event
-   requests it) collects `Status`, emits `StatusChanged` only when the JSON
-   changed, updates `Engine`, syncs the tray header/running/busy/icon state, and
+   requests it) collects `Status`, appends one local-history sample when the
+   interval advances, emits `StatusChanged` only when the JSON changed, updates
+   `Engine`, syncs the tray header/running/busy/icon state, and
    sends one overheat desktop notification per episode when the hottest card
    (`Status::hottest_gpu`) reaches the temperature limit; the body names that
    card.

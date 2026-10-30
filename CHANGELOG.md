@@ -5,6 +5,25 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+### Added — daemon-owned local history
+
+- **One sample per minute, kept for about a week.** `trommeld` appends a JSONL
+  sample (per-GPU hashrate/power/temperature/fan, total hashrate, shares,
+  preset id, source) to `~/.local/state/trommel/history/history-YYYYMMDD.jsonl`.
+  Daily UTC files keep retention a simple prune; corrupt lines are skipped,
+  duplicate timestamps are deduplicated on read and a clock that steps
+  backwards never overwrites a newer sample. No wallet, worker, pool URL or
+  network telemetry is stored.
+- **`GetHistory(since, until)`.** The daemon reads the local range (≤ 8 days) in
+  a blocking task and returns a sorted JSON array, so `Status` does not grow on
+  every poll.
+- **History dialog and 24h average.** A calm **History** button in the hero
+  footer opens an `AdwDialog` with 1h/24h/7d ranges, an optional per-card
+  series, the existing sparkline language and a one-line summary; CSV export
+  writes the raw long format. The hero meta line can append `24h avg` from the
+  same local samples. The former five-minute GUI ring buffer is only the
+  sparkline window and is now named accordingly.
+
 ### Added — hashrate watchdog (notification by default)
 
 - **A live but degraded miner is no longer invisible.** `trommeld` watches the

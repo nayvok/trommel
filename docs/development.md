@@ -108,8 +108,9 @@ The GUI reads these environment variables for tests and screenshots:
 | `TROMMEL_OPEN_LIBRARY` | Open the miner library dialog on start |
 | `TROMMEL_OPEN_INSTALL` | Open the miner install dialog on start |
 | `TROMMEL_OPEN_TUNE` | Open the GPU tuning dialog on start |
+| `TROMMEL_OPEN_HISTORY` | Open the History dialog on start |
 | `TROMMEL_AUTOSTART_STATE` | `on`/`off` forces the Settings login-autostart switch (deterministic screenshots) |
-| `TROMMEL_TUNE_SCREENSHOT`, `TROMMEL_PRESET_SCREENSHOT`, `TROMMEL_LIBRARY_SCREENSHOT`, `TROMMEL_INSTALL_SCREENSHOT` | Capture a transient window |
+| `TROMMEL_TUNE_SCREENSHOT`, `TROMMEL_PRESET_SCREENSHOT`, `TROMMEL_LIBRARY_SCREENSHOT`, `TROMMEL_INSTALL_SCREENSHOT`, `TROMMEL_HISTORY_SCREENSHOT` | Capture a transient window |
 
 Runtime/test variables used outside the GUI:
 
@@ -126,6 +127,7 @@ Runtime/test variables used outside the GUI:
 | `TROMMEL_NO_TRAY` | Do not create the StatusNotifierItem tray (tests and screenshots) |
 | `TROMMEL_MAX_RESTARTS` | Override the consecutive restart budget (default 5) |
 | `TROMMEL_WATCHDOG_WINDOW_S` | Override the watchdog window for e2e (default from config) |
+| `TROMMEL_HISTORY_INTERVAL_S` | History sampling interval for e2e (default 60) |
 | `TROMMEL_GUARD_BIN` | Path to the `trommel` binary the daemon uses for its guard |
 | `TROMMEL_SKIP_BUILD` | Test scripts reuse an existing build |
 | `TROMMEL_VERSION` | Override the version expected by `test-deb.sh` |
