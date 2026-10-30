@@ -241,6 +241,36 @@ assert s["total"]["power_w"] == 430.0, s["total"]
 print("  running:", s["state"]["running"], "power:", s["total"]["power_w"])
 ' && pass "miner running with aggregated power" || fail "running status"
 
+step "SetConfig never restarts a running miner"
+CPID=$("$BIN/trommel" status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"]["miner_pid"])')
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+cfg["active_preset"] = "second"
+pathlib.Path(sys.argv[1], "setconfig.json").write_text(json.dumps(cfg))
+PY
+if command -v dbus-send >/dev/null 2>&1; then
+    if dbus-send --session --print-reply \
+        --dest=io.github.nayvok.Trommel.Daemon \
+        /io/github/nayvok/Trommel \
+        io.github.nayvok.Trommel.SetConfig \
+        string:"$(cat "$WORK/setconfig.json")" > "$WORK/setconfig.out" 2>&1; then
+        fail "SetConfig applied a restart-class change instead of refusing"
+    elif grep -qi "restart required" "$WORK/setconfig.out"; then
+        pass "SetConfig refuses a restart-class change"
+    else
+        fail "SetConfig failed without the restart-required error"
+        sed -n '1,3p' "$WORK/setconfig.out"
+    fi
+    NEWPID=$("$BIN/trommel" status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"]["miner_pid"])')
+    [ "$CPID" = "$NEWPID" ] \
+        && pass "SetConfig left the running miner alone" \
+        || fail "SetConfig restarted the miner (pid $CPID -> $NEWPID)"
+else
+    echo "  - dbus-send is not installed; SetConfig refusal is not exercised"
+fi
+
 step "Apply and restart while running"
 "$BIN/trommel" preset use second --restart >/dev/null 2>&1
 sleep 2

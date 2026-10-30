@@ -280,9 +280,14 @@ impl Engine {
         }
     }
 
-    /// Compatibility wrapper used by older clients: restart when running.
+    /// Compatibility wrapper used by older clients: apply live, never restart.
+    ///
+    /// The wrapper used to restart a running miner behind the caller's back,
+    /// which breaks the "no silent restart" rule. A change that cannot be
+    /// applied live now fails with the same error as `ApplyConfig(_, "live")`;
+    /// the caller must ask for `restart` or `stop` explicitly.
     async fn set_config(&self, json: &str) -> zbus::fdo::Result<()> {
-        self.apply_config(json, "restart").await.map(|_| ())
+        self.apply_config(json, "live").await.map(|_| ())
     }
 
     async fn run_benchmark(&self, request: &str) -> zbus::fdo::Result<String> {
