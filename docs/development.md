@@ -18,7 +18,11 @@ sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
 - The UI smoke test needs an accessible desktop session (AT-SPI). It prefers
   the X11 backend through XWayland because the nested Wayland accessibility
   bridge exposes AdwDialog children late; set `TROMMEL_UI_WAYLAND=1` to run it
-  on native Wayland. The screenshot test needs a display too. Both fail closed
+  on native Wayland. `scripts/atspi-bus.sh` first verifies that the session
+  accessibility bus answers a real D-Bus call; a stale socket from a crashed
+  launcher no longer fails the run, because the scripts then start a private
+  accessibility bus and registry under their work directory. `AT_SPI_BUS_ADDRESS`
+  still overrides both. The screenshot test needs a display too. Both fail closed
   with a clear message rather than silently passing.
 
 ## Build

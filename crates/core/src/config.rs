@@ -486,6 +486,15 @@ impl Config {
             .filter(|install| Path::new(&install.path).exists())
     }
 
+    /// True when an install record exists, even if its binary disappeared.
+    ///
+    /// [`Self::install`] filters on the binary; the version manager needs to
+    /// list and diagnose a broken record instead of hiding it.
+    pub fn install_record_exists(&self, miner: &str, version: &str) -> bool {
+        self.miner_installs
+            .contains_key(&install_key(miner, version))
+    }
+
     pub fn install_for(&self, preset: &Preset) -> Option<&MinerInstall> {
         self.install(&preset.miner, &preset.miner_version)
     }

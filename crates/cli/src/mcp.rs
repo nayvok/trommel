@@ -102,7 +102,7 @@ fn tool_definitions(allow_write: bool) -> Vec<Value> {
         }),
         json!({
             "name": "trommel_miners",
-            "description": "Miner catalogue and installed versions.",
+            "description": "Miner catalogue, installed versions with binary status, recorded SHA-256 (or null) and the presets that pin each version.",
             "inputSchema": {"type": "object", "properties": {}}
         }),
         json!({
@@ -213,17 +213,42 @@ fn call_tool(params: &Value, allow_write: bool) -> Result<Value, String> {
         }
         "trommel_miners" => {
             let cfg = Config::load_or_default();
-            let miners: Vec<Value> = trommel_core::catalog::miners()
-                .iter()
-                .map(|miner| {
+            let miners: Vec<Value> = trommel_core::versions::miner_ids(&cfg)
+                .into_iter()
+                .map(|id| {
+                    let def = trommel_core::catalog::miner(&id);
+                    let installs: Vec<Value> = trommel_core::versions::installed(&cfg, &id)
+                        .into_iter()
+                        .map(|item| {
+                            json!({
+                                "version": item.version,
+                                "path": item.path,
+                                "status": item.status.as_str(),
+                                "custom": item.custom,
+                                // Only the digest recorded at install time; null
+                                // means the install has none. Never computed here.
+                                "recorded_sha256": item.recorded_sha256,
+                                "sha256_verified": item.sha256_verified,
+                                "used_by": item.used_by.iter().map(|preset| json!({
+                                    "id": preset.id,
+                                    "name": preset.name,
+                                    "miner_version": preset.miner_version,
+                                    "active": preset.active,
+                                })).collect::<Vec<_>>(),
+                            })
+                        })
+                        .collect();
                     json!({
-                        "id": miner.id,
-                        "name": miner.name,
-                        "description": miner.short_description(),
-                        "fee_pct": miner.fee_pct,
-                        "fee_configurable": miner.fee_configurable,
-                        "installed": trommel_core::catalog::installed_versions(&cfg, &miner.id),
-                        "versions": miner.versions.iter().map(|v| &v.version).collect::<Vec<_>>(),
+                        "id": id,
+                        "name": def.map(|miner| miner.name.clone()).unwrap_or_else(|| id.clone()),
+                        "description": def.map(|miner| miner.short_description()).unwrap_or_default(),
+                        "fee_pct": def.map(|miner| miner.fee_pct).unwrap_or(0.0),
+                        "fee_configurable": def.map(|miner| miner.fee_configurable).unwrap_or(false),
+                        "installed": trommel_core::catalog::installed_versions(&cfg, &id),
+                        "versions": def
+                            .map(|miner| miner.versions.iter().map(|v| v.version.clone()).collect::<Vec<_>>())
+                            .unwrap_or_default(),
+                        "installs": installs,
                     })
                 })
                 .collect();
@@ -238,6 +263,7 @@ fn call_tool(params: &Value, allow_write: bool) -> Result<Value, String> {
                 "config_path": trommel_core::paths::config_path(),
                 "status": status,
                 "gpus": trommel_core::nvidia::query_all().ok(),
+                "miner_versions": trommel_core::versions::all_installed(&cfg),
                 "warnings": cfg.warnings(),
             })))
         }

@@ -19,6 +19,9 @@ pub fn report(cfg: &Config, status: Option<&Status>) -> Value {
         "config": cfg.redacted(),
         "status": status,
         "oc": crate::oc::load_snapshot(),
+        // Installed versions with their binary state and preset usage. The
+        // recorded SHA-256 is echoed verbatim (or null); nothing is computed.
+        "miner_versions": crate::versions::all_installed(cfg),
         "warnings": cfg.warnings(),
     })
 }
@@ -48,5 +51,26 @@ mod tests {
         assert!(!text.contains("prl1testactivewallet"), "{text}");
         assert!(!text.contains("prl1testinactivewallet"), "{text}");
         assert!(text.contains("<redacted>"));
+    }
+
+    #[test]
+    fn miner_versions_are_reported_without_inventing_a_checksum() {
+        let mut cfg = Config::default();
+        cfg.add_install(crate::config::MinerInstall {
+            miner: "wildrig".into(),
+            version: "0.51.7".into(),
+            path: "/tmp/trommel-missing-miner".into(),
+            sha256: String::new(),
+            source_url: String::new(),
+            verified: false,
+            custom: true,
+            installed_at: 0,
+        });
+        let report = report(&cfg, None);
+        let versions = report["miner_versions"].as_array().unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0]["status"], "missing");
+        assert!(versions[0]["recorded_sha256"].is_null());
+        assert_eq!(versions[0]["sha256_verified"], false);
     }
 }

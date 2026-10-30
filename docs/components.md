@@ -68,8 +68,12 @@ Key functions:
 - `Config::install(miner, version)` / `install_for(preset)` / `miner_path(preset)`
   — global install lookup; `install_for` uses `install_key`.
 - `Config::add_install()` / `remove_install()` / `install_users()` — install
-  registry maintenance. No current UI/CLI calls `remove_install()`; the app only
-  adds installs.
+  registry maintenance. The version manager removes a record through
+  `versions::delete_install()`, which re-checks preset usage first and removes
+  the managed files; `install_users()` is the legacy name-only helper.
+- `Config::install_record_exists()` — a record exists even when its binary is
+  missing (`install()` filters on the path). The version manager uses it to show
+  and diagnose a broken install instead of hiding it.
 - `Config::warnings()` — user-facing validation: no preset, empty/suspicious
   wallet, pool address without a port, missing miner install, no enabled GPU,
   and “restore on stop is off” when the active profile has tuning.
@@ -390,11 +394,42 @@ daemon.
 - `install_from_bytes()` is a test helper and must not be used in production
   code paths.
 
+### `versions` — miner version manager
+
+Pure logic shared by the GUI, the CLI and diagnostics. It never changes a
+preset except through the two explicit functions at the end.
+
+- `BinaryStatus::{Ok, NotRecorded, Missing, NotAFile, NotExecutable}` with
+  `as_str()` for JSON and `is_ok()`.
+- `InstalledVersion { miner, version, key, path, custom, sha256_verified,
+  recorded_sha256, installed_at, status, used_by }` — one record including a
+  binary that disappeared. `recorded_sha256` is `Option<String>` and is only
+  the stored digest; nothing is hashed here.
+- `PresetUsage { id, name, miner, miner_version, active }`.
+- `VerifyReport` and `verify(cfg, miner, version)` / `verify_all(cfg)` —
+  existence, regular file, execute bit, readability; the message states whether
+  a digest was recorded and verified, never a computed one.
+- `usage(cfg, miner, version)`, `presets_for_miner(cfg, miner)`,
+  `installed(cfg, miner)`, `all_installed(cfg)`, `miner_ids(cfg)` (catalogue
+  plus custom stored builds), `latest_version(miner)`.
+- `update_plan(cfg, miner, target)` — `target_installed`, `latest`,
+  `update_available`, installed versions and the presets that pin another
+  version. Read-only.
+- `remove_plan(cfg, miner, version)` / `remove_plan_in(..., root)` — `allowed`,
+  `used_by`, `delete_dir` (only managed-store directories). `delete_install()`
+  refuses a used version, validates path components, deletes only a directory
+  the record owns and keeps a binary outside the store.
+- `pin_preset(cfg, preset_id, version)` — moves exactly one preset, requires an
+  installed executable and returns the change (`None` when already pinned).
+  `pin_presets(cfg, ids, miner, version)` does the same for an explicit list and
+  skips ids for another miner.
+
 ### `diagnostics`, `i18n`, `util`
 
 - `diagnostics::report(cfg, status)` — JSON bundle for agents: app/version,
-  contract version, paths, **redacted** config, status, warnings. The CLI adds
-  GPU data.
+  contract version, paths, **redacted** config, status, `miner_versions`
+  (installed versions with status, recorded checksum and usage) and warnings.
+  The CLI adds GPU data.
 - `i18n` — `Language::{System, En, Ru}`, `set_language`, `current`, `is_ru`,
   `tr(en, ru)`, `tr_ref(en, ru)`. Details in [i18n.md](i18n.md).
 - `util` — hashrate formatting (`format_hashrate`, compact variant), tolerant
@@ -479,7 +514,8 @@ structure when changing it.
 - `dirty` — whether the draft differs and the “unsaved changes” banner shows;
 - `status` — the last `Status` document;
 - widget handles for the header, hero card, GPU flow, settings rows, the preset
-  group and the optional miner-library group;
+  group and the optional miner-library state (dialog, version rows, preset
+  version rows);
 - `tx: UnboundedSender<Cmd>` — the only way to reach D-Bus.
 
 `Cmd::{Refresh, Toggle, Apply{json,mode,quiet}, ApplyStart{json}, ResetOc,
@@ -501,7 +537,13 @@ executes commands. It never blocks the GTK main loop.
 | `build_ui` | Window, header view switcher, dashboard hero action, three pages, banners, `AdwDialog` host |
 | dashboard block in `build_ui` | Hero card, GPU `AdwWrapBox`, totals, shares, pool, warnings |
 | `build_presets_page` / `refresh_preset_list` | Preset list, missing-version hint and Install entry, miner library row; rows open the editor |
-| `miner_library_dialog` / `refresh_miners` | Modal miner library (catalogue, installed versions, preset usage, benchmark) and its refresh while open |
+| `miner_library_dialog` / `refresh_miners` | Modal miner library and version manager: miner rows, one row per installed version with usage/verify/remove, preset version switches, benchmark; refreshed while open |
+| `version_row_subtitle` | One version row's usage, binary state and recorded-checksum fact |
+| `refresh_preset_version_rows` | One `AdwComboRow` per preset: installed versions, current pin, explicit switch |
+| `confirm_preset_version` | Confirmation for one preset; cancel restores the combo, confirm pins only that preset and applies |
+| `verify_miner_version` | Re-checks a binary, reports a toast and marks the row verified while the library is open |
+| `remove_miner_version_dialog` | Blocked alert with presets, or a destructive confirmation and managed-file deletion |
+| `miner_update_choice_dialog` | After an install: affected presets as unchecked checkboxes, “keep” as the default |
 | `build_settings_page` / `load_settings` / `save_settings` | Behaviour (incl. the global temperature policy), appearance, actions |
 | `preset_editor_dialog` | Preset editor `AdwDialog` (save/cancel/duplicate/delete, opens the library) |
 | `miner_install_dialog` | The only miner install UI (catalogue, custom version, download, import) |
@@ -588,6 +630,7 @@ There is no shell extension and no GSettings schema; the GUI only edits the
 | --- | --- |
 | `scripts/e2e.sh` | Private D-Bus, fake GPU/helper/miner end-to-end CLI checks |
 | `scripts/ui-smoke.sh` + `ui_smoke.py` | AT-SPI click-through of the GTK app |
+| `scripts/atspi-bus.sh` | Shared accessibility-bus helper: answers check, private bus/registry fallback |
 | `scripts/first-run-smoke.sh` | Pristine-install path (no config, no wallet, no miner) |
 | `scripts/test-mcp.sh` | MCP protocol, read-only default, redaction |
 | `scripts/screenshots.sh` | Deterministic docs screenshots from a fake rig |

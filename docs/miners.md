@@ -168,8 +168,21 @@ Rules:
 - `catalog::install_status` classifies a preset as `Installed`, `OtherVersion`
   or `NotInstalled`; the editor, the preset list and the miner library derive the
   same state from the shared installs.
-- A missing version blocks Start. There is no uninstall flow yet; deleting a
-  binary by hand leaves the install record and Start reports the missing binary.
+- A missing version blocks Start. A record whose binary disappeared is still
+  listed with the `missing` status and can be removed, but it cannot be pinned.
+- The miner library lists one row per installed version with the presets that
+  pin it, its binary status and **Verify**/**Remove** actions. Removal is refused
+  while any preset pins the version and asks for confirmation otherwise; it
+  deletes only the managed `<id>/<version>/` directory and never edits a preset.
+  Installing another version leaves every pin alone; the affected presets are
+  then offered as an explicit, default-off selection.
+- `versions::pin_preset` is the only rollback path: it moves one preset to an
+  installed, executable version and reports the change; other presets keep
+  their pins.
+- `trommel miner verify` re-checks every recorded binary and exits non-zero on a
+  broken one; `trommel miner remove <id> <version> --yes` mirrors the library
+  rules (never a pinned version). The read-only MCP `trommel_miners` tool and
+  `trommel diagnose --json` expose the same state.
 - Downloads and imports update the running daemon immediately (the CLI applies
   the new config after saving).
 - `miner`, `version` and the archive `binary` name are validated as one path

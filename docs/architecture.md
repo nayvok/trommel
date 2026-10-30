@@ -106,7 +106,8 @@ Config
 ├── gpu_profiles: { id -> GpuProfile }
 │     name, default: GpuTuning, per_gpu: { gpu-uuid -> GpuTuning }
 ├── miner_installs: { "id@version" -> MinerInstall }
-│     path, source_url, verified, custom, installed_at
+│     path, sha256 (recorded, may be empty), source_url, verified, custom,
+│     installed_at
 ├── custom_miners: { id -> CustomMiner }      (reserved; not used by the GUI)
 ├── pools: { id -> CustomPool }               (reserved for future endpoints)
 └── behavior: auto_restart, restart_delay_s, poll_interval_s,
@@ -122,8 +123,16 @@ returns any tuning left over from an earlier restore-off session (see
 locks; power limit `None` means driver auto, and `0` in the UI maps to `None`.
 
 Presets reference a miner **id and version**, never a path. `miner_installs` is
-global: one installation is visible to every preset, and a preset whose version
-is missing blocks Start until the user installs it or switches versions.
+global and keyed `id@version`, so several versions of the same miner can stay
+installed for rollback; one installation is visible to every preset, and a
+preset whose version is missing blocks Start until the user installs it or
+switches versions. Updates, removals and rollbacks are explicit: installing a
+version never edits a preset, a version pinned by any preset cannot be removed,
+and moving a preset to another installed version changes only that preset.
+`versions::verify` checks that a recorded binary exists, is a regular file, is
+executable and is readable; it echoes a recorded SHA-256 or `null` and never
+hashes a file to invent one. See
+[components § versions](components.md#versions--miner-version-manager).
 
 `Config::normalize()` repairs the common broken states on load (dangling active
 preset, missing default profile, missing install path, stale fee override).

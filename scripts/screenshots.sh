@@ -57,15 +57,22 @@ chmod +x "$WORK/wildrig-multi"
 DEMO_MINER="/tmp/trommel-screenshot-wildrig-multi"
 cp "$WORK/wildrig-multi" "$DEMO_MINER"
 chmod +x "$DEMO_MINER"
+# A second installed build keeps the version manager visible: the backup preset
+# pins this older version, so the library shows usage, verify/remove and the
+# per-preset version switch.
+DEMO_MINER_OLD="/tmp/trommel-screenshot-wildrig-multi-0.51.7"
+cp "$WORK/wildrig-multi" "$DEMO_MINER_OLD"
+chmod +x "$DEMO_MINER_OLD"
 "$WORK/wildrig-multi" --algo pearlhash >/dev/null 2>&1 &
 MINER_PID=$!
 for i in $(seq 1 80); do
   echo "[12:00:$((i%60))] hashrate: 10s: 125.$((i%9)) 60s: 125.0 15m: 124.9 TH/s" >> "$WORK/state/trommel/miner.log"
   echo "[12:00:$((i%60))] Shares: $((500+i)) accepted, 2 rejected" >> "$WORK/state/trommel/miner.log"
 done
-python3 - "$WORK" "$MINER_PID" "$DEMO_MINER" <<'PY'
+python3 - "$WORK" "$MINER_PID" "$DEMO_MINER" "$DEMO_MINER_OLD" <<'PY'
 import json, pathlib, sys, time
 work = pathlib.Path(sys.argv[1]); pid = int(sys.argv[2]); demo_miner = sys.argv[3]
+demo_miner_old = sys.argv[4]
 cfg = {
   "schema_version": 2, "active_preset": "pearl-wildrig",
   "presets": {"pearl-wildrig": {
@@ -74,6 +81,13 @@ cfg = {
     "pool_url":"pool.pearlhash.xyz:9000","wallet":"prl1testwallet","worker":"3080ti",
     "gpu_profile":"balanced","api_port":0,"expected_hashrate":125000000000000.0,
     "miner_options":{"fan_speed":70},"miner_fee_override_pct":None,"miner_fee_pct":0.0,
+    "pool_fee_pct":1.0,"extra_args":"","env":{},"created_at":0,"updated_at":0},
+   "pearl-backup": {
+    "id":"pearl-backup","name":"Pearl backup","coin":"pearl","algo":"pearlhash",
+    "miner":"wildrig","miner_version":"0.51.7","pool":"pearlhash",
+    "pool_url":"pool.pearlhash.xyz:9000","wallet":"prl1testwallet","worker":"backup",
+    "gpu_profile":"balanced","api_port":0,"expected_hashrate":125000000000000.0,
+    "miner_options":{},"miner_fee_override_pct":None,"miner_fee_pct":0.0,
     "pool_fee_pct":1.0,"extra_args":"","env":{},"created_at":0,"updated_at":0}},
   "gpu_profiles": {"balanced": {"name":"Balanced",
     "default":{"enabled":True,"power_limit_w":None,"core_clock_mhz":None,
@@ -83,8 +97,11 @@ cfg = {
         "core_clock_mhz":1620,"memory_clock_mhz":810,"fan_pct":None,"temp_limit_c":90,"temp_resume_c":65},
       "GPU-22222222-2222-2222-2222-222222222222":{"enabled":True,"power_limit_w":130,
         "core_clock_mhz":1500,"memory_clock_mhz":750,"fan_pct":None,"temp_limit_c":90,"temp_resume_c":65}}}},
-  "miner_installs": {"wildrig@0.51.8": {"miner":"wildrig","version":"0.51.8",
-    "path":demo_miner,"sha256":"","source_url":"","verified":False,"custom":True,"installed_at":0}},
+  "miner_installs": {
+    "wildrig@0.51.8": {"miner":"wildrig","version":"0.51.8",
+      "path":demo_miner,"sha256":"","source_url":"","verified":False,"custom":True,"installed_at":0},
+    "wildrig@0.51.7": {"miner":"wildrig","version":"0.51.7",
+      "path":demo_miner_old,"sha256":"","source_url":"","verified":False,"custom":True,"installed_at":0}},
   "custom_miners": {}, "pools": {},
   "behavior": {"auto_restart":True,"restart_delay_s":5,"poll_interval_s":2,
     "restore_stock_on_stop":True,"start_mining_on_login":False,"notifications":False,"language":"en"}
@@ -101,6 +118,7 @@ cleanup() {
   [ -n "${MINER_PID:-}" ] && kill "$MINER_PID" 2>/dev/null || true
   [ -n "${BUS_PID:-}" ] && kill "$BUS_PID" 2>/dev/null || true
   rm -f "${DEMO_MINER:-/tmp/trommel-screenshot-wildrig-multi}"
+  rm -f "${DEMO_MINER_OLD:-/tmp/trommel-screenshot-wildrig-multi-0.51.7}"
 }
 trap cleanup EXIT
 
