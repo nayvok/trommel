@@ -234,20 +234,23 @@ arguments — no shell.
   records the absolute `state.miner_path`. The chosen device list is kept for
   crash restarts. A profile with no tuning creates no snapshot and calls no
   helper.
-- `stop(cfg) / shutdown(cfg)` — terminate only our child/PID (path-checked),
-  skip and clear external state, restore the applied snapshot (unless disabled),
-  clear state; propagates restore errors. `shutdown` forces the restore with a
-  20 s helper timeout. Both hold the OC lock.
+- `stop(cfg) / shutdown(cfg)` — terminate only our child/PID (path-checked and
+  start-time re-checked; a legacy state without a path is never signalled by
+  name), skip and clear external state, restore the applied snapshot (unless
+  disabled), clear state; propagates restore errors. `shutdown` forces the
+  restore with a 20 s helper timeout. Both hold the OC lock.
 - `owns_miner()` — `running && !external` and a live child or path-matching PID;
   the benchmark uses it before stopping anything.
 - `tick(cfg) -> Vec<Event>` — one-second supervisor step: reap, bounded restart
-  with backoff (with the same device list as the session), detect adoption
-  loss, emit events, and run the one-shot clock check after the GPU reaches
-  load.
+  with backoff (with the same device list as the session), rescans for an
+  external miner before the delayed spawn and cancels the restart instead of
+  spawning a second one, detect adoption loss, emit events, and run the one-shot
+  clock check after the GPU reaches load.
 - `handle_unexpected_exit` — the bounded restart policy: up to five consecutive
   restarts (2/4/8/… s, cap 60), then stop + restore + error; `started_at` resets
   on every spawn.
-- `terminate_pid`, `log_line` — process helper and daemon log writer.
+- `terminate_pid(pid, binary)`, `log_line` — signal helper (captures the kernel
+  start time and re-checks it before SIGTERM/SIGKILL) and daemon log writer.
 
 ### `state` — runtime state file
 
@@ -258,12 +261,15 @@ legacy-parse field; `miner_path` is additive with a serde default).
 - `load()`, `save()`, `clear_file()`, `uptime_s()`, `miner_alive()`.
 - `normalize()` — a running flag without a matching process becomes stopped,
   including the phantom `external` state that used to make Start a no-op.
-- `proc_start_time(pid)` / `pid_alive(pid)` — `/proc/<pid>/stat` field 22 and a
-  liveness check; the start time catches PID reuse.
+- `proc_start_time(pid)` / `pid_alive(pid)` / `pid_maybe_alive(pid)` /
+  `pid_settled(pid)` — `/proc/<pid>/stat` field 22 and liveness classifiers.
+  `proc_liveness` keeps `Gone` (`ENOENT`) apart from `Unknown` (unreadable
+  `/proc`); teardown treats `Unknown` as possibly alive. The start time catches
+  PID reuse, and `ProcIdentity::still_matches` re-checks it before every signal.
 - `pid_matches_binary(pid, path)` — `/proc/<pid>/exe` plus the interpreter
   argument for `#!` scripts. A mismatch is never treated as ours.
-- `pid_matches_miner(pid)` — legacy name heuristic used only for old state files
-  without `miner_path`.
+- `pid_matches_miner(pid)` — legacy name heuristic used only for liveness and
+  external detection; it is never an ownership proof.
 - `find_external_miner(cfg, exclude_pid)` — `/proc` scan using the catalogue
   names plus every installed miner's directory/binary basename; skips our own
   and `exclude_pid`. `TROMMEL_NO_EXTERNAL_SCAN=1` disables it for test isolation.
@@ -273,10 +279,11 @@ legacy-parse field; `miner_path` is additive with a serde default).
 - `Reason::{ServiceStop, Guard, Startup, Manual}` with `parse()`/`as_str()`.
 - `run(reason)` — take the OC lock, drop a stale-boot snapshot, wait up to 10 s
   for a helper lease and terminate it if needed, stop **our** miner only
-  (path-checked; external state is left alone), clear state after the stop and
-  restore a current-boot applied snapshot with a 20 s timeout. Restore failure
-  keeps the snapshot + `last_error` and returns an error. `Outcome` records the
-  stopped PID, restored card count and whether an external miner was skipped.
+  (path-checked; a legacy state without a path and external state are left
+  alone), clear state after the stop and restore a current-boot applied
+  snapshot with a 20 s timeout. Restore failure keeps the snapshot +
+  `last_error` and returns an error. `Outcome` records the stopped PID, restored
+  card count and whether an external miner was skipped.
 - `startup_recovery()` — `run(Reason::Startup)`; called by `trommeld` before it
   owns the bus name. It never resumes mining.
 

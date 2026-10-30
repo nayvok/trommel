@@ -1162,6 +1162,46 @@ sleep 1
 start_daemon "$BIN/trommeld"
 sleep 2
 
+step "Legacy state without miner_path is not killed by name"
+# An old state file (pre-0.4.4) has a PID but no absolute path. The process
+# below looks like a miner by name and arguments; without `/proc/<pid>/exe`
+# proof the teardown must not signal it.
+kill -9 "$DAEMON_PID" 2>/dev/null || true
+sleep 1
+cat > "$WORK/bin/wildrig-legacy" <<'SH'
+#!/bin/bash
+while true; do sleep 2; done
+SH
+chmod +x "$WORK/bin/wildrig-legacy"
+setsid "$WORK/bin/wildrig-legacy" --algo pearlhash >/dev/null 2>&1 < /dev/null &
+LEGACY_PID=$!
+sleep 1
+python3 - "$WORK" "$LEGACY_PID" <<'PY'
+import json, pathlib, sys, time
+path = pathlib.Path(sys.argv[1]) / "state" / "trommel" / "state.json"
+path.parent.mkdir(parents=True, exist_ok=True)
+state = {"running": True, "miner_pid": int(sys.argv[2]),
+         "started_at": int(time.time()) - 5, "restarts": 0, "last_error": None,
+         "external": False, "orphan": True}
+path.write_text(json.dumps(state, indent=2))
+PY
+start_daemon "$BIN/trommeld"
+sleep 2
+if alive "$LEGACY_PID"; then
+    pass "startup recovery left a name-matched legacy process alone"
+else
+    fail "startup recovery signalled a PID without a saved miner_path"
+fi
+grep -q "legacy state has no miner_path" "$WORK/state/trommel/daemon.log" 2>/dev/null \
+    && pass "the daemon logged the unproven-ownership warning" \
+    || fail "no legacy miner_path warning in the daemon log"
+kill "$LEGACY_PID" 2>/dev/null || true
+sleep 1
+kill -9 "$DAEMON_PID" 2>/dev/null || true
+sleep 1
+start_daemon "$BIN/trommeld"
+sleep 2
+
 step "Restart budget stops mining and restores"
 cat > "$WORK/bin/flaky-miner" <<'SH'
 #!/bin/bash
@@ -1205,6 +1245,74 @@ import json, pathlib, sys
 path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
 cfg = json.loads(path.read_text())
 cfg["presets"]["pearl-wildrig"]["miner_version"] = "0.51.8"
+path.write_text(json.dumps(cfg, indent=2))
+PY
+kill -9 "$DAEMON_PID" 2>/dev/null || true
+sleep 1
+start_daemon "$BIN/trommeld"
+sleep 2
+"$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
+
+step "An external miner during the backoff cancels the restart"
+cat > "$WORK/bin/crashy-miner" <<SH
+#!/bin/bash
+echo spawn >> "$WORK/crash-spawns"
+exit 7
+SH
+chmod +x "$WORK/bin/crashy-miner"
+: > "$WORK/crash-spawns"
+"$BIN/trommel" miner import wildrig 9.9.9 "$WORK/bin/crashy-miner" >/dev/null 2>&1 \
+    && pass "crashing miner imported" || fail "crashing miner import failed"
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+cfg["presets"]["pearl-wildrig"]["miner_version"] = "9.9.9"
+cfg["behavior"]["auto_restart"] = True
+cfg["behavior"]["restart_delay_s"] = 8
+path.write_text(json.dumps(cfg, indent=2))
+PY
+"$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
+kill -9 "$DAEMON_PID" 2>/dev/null || true
+sleep 1
+start_daemon env -u TROMMEL_NO_EXTERNAL_SCAN "$BIN/trommeld"
+sleep 2
+"$BIN/trommel" start >/dev/null 2>&1
+sleep 2
+# The crashing miner is now in its backoff. A manual miner started here must
+# win; the daemon must not spawn a second one when the timer expires.
+setsid "$WORK/bin/wildrig-external" --algo pearlhash >/dev/null 2>&1 < /dev/null &
+sleep 1
+EXT2_PID=$(pgrep -f "$WORK/bin/wildrig-external" | head -1)
+[ -n "$EXT2_PID" ] || fail "the external miner did not start"
+sleep 9
+if grep -q "restart cancelled: external miner pid=$EXT2_PID" "$WORK/state/trommel/daemon.log" 2>/dev/null; then
+    pass "the scheduled restart was cancelled by the external miner"
+else
+    fail "the daemon spawned a restart next to an external miner"
+fi
+alive "$EXT2_PID" \
+    && pass "the external miner was not killed by the cancelled restart" \
+    || fail "the cancelled restart killed the external miner"
+SPAWNS=$(wc -l < "$WORK/crash-spawns" 2>/dev/null || echo 0)
+[ "$SPAWNS" = "1" ] && pass "the miner was spawned exactly once" \
+    || fail "expected one spawn, found ${SPAWNS:-0}"
+"$BIN/trommel" status --json 2>/dev/null | python3 -c '
+import json,sys
+s=json.load(sys.stdin)
+err=(s["state"].get("last_error") or "").lower()
+assert "pid" in err, err
+assert "cancel" in err or "отмен" in err, err
+print("  restart cancelled:", s["state"]["last_error"][:60])
+' && pass "the status explains the cancelled restart" || fail "status does not explain the cancellation"
+kill "$EXT2_PID" 2>/dev/null || true
+sleep 1
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+cfg["presets"]["pearl-wildrig"]["miner_version"] = "0.51.8"
+cfg["behavior"]["restart_delay_s"] = 2
 path.write_text(json.dumps(cfg, indent=2))
 PY
 kill -9 "$DAEMON_PID" 2>/dev/null || true
