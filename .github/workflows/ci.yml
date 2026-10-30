@@ -54,6 +54,7 @@ jobs:
           path: |
             .e2e
             .e2e-run.log
+          include-hidden-files: true
           if-no-files-found: ignore
       - name: MCP smoke test
         run: ./scripts/test-mcp.sh

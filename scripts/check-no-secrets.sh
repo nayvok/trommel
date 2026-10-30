@@ -9,7 +9,7 @@ WALLETS="$(mktemp)"
 trap 'rm -f "$WALLETS"' EXIT
 
 # Real-looking Pearl addresses: prl1 + at least 50 base32-ish chars.
-if git grep -n -E 'prl1[0-9a-z]{50,}' -- ':!local' ':!*.md' >"$WALLETS" 2>/dev/null; then
+if git grep -n -E 'prl1[0-9a-z]{50,}' -- ':!local' >"$WALLETS" 2>/dev/null; then
     if grep -v 'prl1test' "$WALLETS"; then
         echo "error: real-looking wallet address in tracked files" >&2
         status=1
@@ -33,7 +33,7 @@ if git grep -n -E '/home/[A-Za-z0-9._-]+' \
 fi
 
 # Binaries/miners must never be tracked.
-if git ls-files | grep -E '(^|/)(wildrig-multi|\.deb|\.rpm|\.AppImage|target/)' ; then
+if git ls-files | grep -E '(^|/)(wildrig-multi|target/|[^/]*\.(deb|rpm|AppImage)$)' ; then
     echo "error: binary/build artifact is tracked" >&2
     status=1
 fi
