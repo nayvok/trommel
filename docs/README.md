@@ -2,7 +2,7 @@
 
 Trommel is a GTK4/libadwaita control room for a local NVIDIA mining rig. The
 daemon `trommeld` owns the applied configuration, the miner process and the GPU
-snapshot; the GTK app and the GNOME Shell extension are clients.
+snapshot; the GTK app and the CLI are clients.
 
 This directory documents the shipped 0.4.x code. If a document and the source
 disagree, the source is right — fix the document in the same change that fixes
@@ -37,7 +37,6 @@ in English only, matching the source strings and the catalogue fields.
 | [agents.md](agents.md) | The CLI/JSON/MCP surface and the safety rules for external agents | A command, JSON field or MCP tool changes |
 | [user-guide.md](user-guide.md) | Everyday operation from install to troubleshooting | User-visible behaviour changes |
 | [miners.md](miners.md) | Catalogue fields, option descriptors, driver branches | The catalogue or argument builder changes |
-| [extension.md](extension.md) | The GNOME Shell applet and its shared settings | The extension or its schema changes |
 | [packaging.md](packaging.md) | Release formats, deb layout, CI workflows | Packaging or release automation changes |
 | [security.md](security.md) | Trust boundaries, helper, downloads, redaction | A privileged path or a security-relevant behaviour changes |
 | [i18n.md](i18n.md) | The runtime translation helper and the gettext plan | Localisation mechanics change |

@@ -9,7 +9,7 @@ desktop into a pile of shell scripts.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-en-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/images/dashboard-en-light.png">
-  <img src="docs/images/dashboard-en-dark.png" alt="Trommel dashboard with two NVIDIA GPUs mining at 125.8 TH/s" width="680">
+  <img src="docs/images/dashboard-en-dark.png" alt="Trommel dashboard with two NVIDIA GPUs and the rig totals" width="960">
 </picture>
 
 <sub>Dashboard with two GPUs. The image follows your system colour scheme; the dark
@@ -27,15 +27,19 @@ arguments are hidden until you turn them on.
 ## Features
 
 - **Multi-GPU dashboard** — per-card temperature, power, fan, clocks and
-  utilization; total power and maximum temperature for the whole rig (the
-  status JSON also carries J/TH efficiency).
+  utilization; rig power and the hottest card's temperature for the whole rig,
+  each with a per-card breakdown in its tooltip.
+- **Per-GPU participation** — switch a card off to exclude it from the active
+  miner: it is not passed to the miner and is not tuned, and the card is marked
+  `excluded`. WildRig, SRBMiner and OneZero use their documented device flags; a
+  miner without one refuses a partial rig instead of mining on every card.
 - **Presets** — bundle the coin/algorithm (Pearl/pearlhash in the current
   catalogue), pool, wallet, worker, miner version and miner-specific options.
   GPU settings are edited in Settings, so switching presets does not re-enter
   everything.
 - **Miner catalogue** — short description, installed versions and a link to the
   upstream release page. The developer fee is shown as a breakdown
-  (miner + pool = total) in the dashboard, editor and panel popup.
+  (miner + pool = total) in the dashboard and the preset editor.
 - **Miner-dependent settings** — option descriptors come from the selected
   miner in the catalogue: types, ranges, defaults and CLI flags. Values whose
   keys no longer exist are dropped when the miner changes.
@@ -49,18 +53,16 @@ arguments are hidden until you turn them on.
   remembered across restarts. Trommel uses libadwaita's own styling and the
   system GTK theme, so it matches other GNOME apps on the same desktop.
 - **Stock snapshot** — before applying power/clocks, Trommel captures each
-  GPU's current power limit and restores it on stop. No hardcoded power limit.
+  GPU's current power limit and restores it on stop (on by default). No
+  hardcoded power limit.
 - **Optional clock locks** — core/memory locks are off by default; enable them
   per card, copy to identical cards or all GPUs. A lower memory lock can save
   power on some coins and hurt others, so it is an advanced choice.
-- **Per-card tuning table** — **Settings → Detected GPUs** lists power, clock
-  locks, fan and temperature for every card; simple mode shows power,
-  temperature and load, and **Advanced settings** reveals the rest.
+- **Per-card tuning** — each dashboard card shows live power, clocks,
+  temperature, fan and load in value bubbles and opens **Tune** for power and
+  clock locks; simple mode hides the clock rows.
 - **Safe apply flow** — if the miner is running and you edit the profile, you
   choose **Apply and restart** or **Apply and stop**; failures roll back.
-- **GNOME Shell integration** — a panel indicator, live popup, Quick Settings
-  toggle and optional labels. The app can enable it and reflects the state from
-  Extension Manager.
 - **Simple mode by default** — ordinary users see power, temperature and Start;
   advanced miner options and raw arguments are one switch away.
 - **Agent-friendly** — JSON config, CLI diagnostics, diff/apply commands and an
@@ -97,10 +99,8 @@ bash trommel-install.sh
 ```
 
 The package contains the app, `trommeld`, the polkit helper, desktop entry,
-icons, metainfo, GSettings schema and the GNOME extension. The daemon starts on
-demand over D-Bus; GPU tuning works without a password for the user who ran the
-install. The extension is enabled from **Settings → GNOME integration** (or
-Extension Manager) after a re-login on Wayland.
+icons and metainfo. The daemon starts on demand over D-Bus; GPU tuning works
+without a password for the user who ran the install.
 
 Upgrade by installing the new release's `.deb`; remove with
 `sudo apt remove trommel`. The dev install below is for contributors.
@@ -108,21 +108,19 @@ Upgrade by installing the new release's `.deb`; remove with
 ### Developer install
 
 ```bash
-./install.sh                 # build, install, enable service + extension
-./install.sh --no-extension  # without the panel applet
-./install.sh --no-helper     # without the polkit helper (no OC)
+./install.sh             # build, install and enable the user service
+./install.sh --no-helper # without the polkit helper (no OC)
 ```
 
-The script installs binaries to `~/.local/bin`, the helper to
-`/usr/libexec/trommel/`, and the extension to the user extension directory. It
-asks for `sudo` once for the helper and polkit rule.
+The script installs binaries to `~/.local/bin` and the helper to
+`/usr/libexec/trommel/`. It asks for `sudo` once for the helper and polkit rule.
 
 ### Other formats
 
 RPM, AppImage and Flatpak are **not released**. Reasons and the current
 status are documented in [docs/packaging.md](docs/packaging.md). Flatpak cannot
-provide the host `nvidia-smi`/polkit/systemd/extension integration this app
-needs without a broad sandbox; a GUI-only Flatpak would be a different product.
+provide the host `nvidia-smi`/polkit/systemd integration this app needs without
+a broad sandbox; a GUI-only Flatpak would be a different product.
 
 ## First run
 
@@ -131,7 +129,8 @@ miner are ready. It opens a three-step wizard for a 1–3 card rig:
 
 1. **Cards** — tick the cards to mine on and give each one a power limit
    (**Apply 80 %** fills the ticked cards from their stock limit, expands them
-   and shows the applied watts; **Use auto** = no limit).
+   and shows the applied watts; **Use auto** = no limit). An unticked card is
+   excluded from mining and is not tuned.
 2. **Miner** — choose a miner and version, then **Install…**: the dialog can
    download a catalogue version, take a version name that is newer than the
    catalogue, or import a local binary. One installation serves every preset.
@@ -162,7 +161,7 @@ file is left untouched.
 
 ```bash
 trommel status               # human-readable
-trommel status --json        # contract used by the GUI/extension
+trommel status --json        # contract used by the GUI and CLI
 trommel start / stop / toggle
 trommel preset list          # show presets and their total fee
 trommel preset use <id> --restart
@@ -205,13 +204,13 @@ hashrate calculation and is editable per preset.
 - On reboot the snapshot is marked stale and is not used; Start captures a fresh
   one, and the driver resets GPU settings anyway.
 
-## GNOME extension
+## Notifications
 
-The extension is shipped with the package and is listed in Extension Manager.
-It has no separate preferences window: panel label mode, live activity and the
-Quick Settings toggle are configured in **Trommel → Settings → GNOME
-integration**, using a shared GSettings schema. If Extension Manager disables
-it, the app shows it as disabled. The daemon works without the extension.
+**Behavior → Notifications** turns crash, error and overheat alerts into regular
+desktop notifications. `trommeld` sends them through
+`org.freedesktop.Notifications`, so they work on any freedesktop desktop; the
+same events are also emitted as the `Notification` D-Bus signal for custom
+integrations. No shell extension is installed.
 
 ## Documentation
 
@@ -225,7 +224,6 @@ Start at the [documentation index](docs/README.md). The most used entry points:
 - [Using Trommel from an external agent](docs/agents.md)
 - [Packaging and releases](docs/packaging.md)
 - [Verification](docs/verification.md)
-- [GNOME extension](docs/extension.md)
 - [Security model](docs/security.md)
 - [Roadmap](docs/roadmap.md)
 
@@ -237,8 +235,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) / [Русский](CONTRIBUTING.ru.md) an
 ## License
 
 **License is not chosen yet.** The old MIT claim was removed; the AppStream
-metadata currently uses `LicenseRef-proprietary`. The GNOME Shell extension is
-`GPL-3.0-or-later` because it derives from GNOME Shell. Mining binaries are not
+metadata currently uses `LicenseRef-proprietary`. Mining binaries are not
 distributed by this project; their licenses are listed on their upstream pages.
 
 ## Disclaimer

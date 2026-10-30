@@ -23,6 +23,7 @@ LEGACY = {
     "ux.md": "replaced by docs/design.md",
     "ux.ru.md": "replaced by docs/design.ru.md",
     "PLAN.md": "removed; direction lives in docs/roadmap.md",
+    "extension.md": "removed; the GNOME Shell applet is gone (ADR 0004)",
 }
 
 try:

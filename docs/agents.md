@@ -12,14 +12,16 @@ runtime.
 
 | Surface | Access | Read/write | Notes |
 | --- | --- | --- | --- |
-| Config | `~/.config/trommel/config.json` | read; write only through Apply | Schema v2; see [schemas](schema/config.schema.json) |
-| Runtime state | `~/.local/state/trommel/state.json` | read | PID, running, restarts, last error |
+| Config | `~/.config/trommel/config.json` | read; write only through Apply | Schema v3; see [schemas](schema/config.schema.json) |
+| Runtime state | `~/.local/state/trommel/state.json` | read | PID, `miner_path`, running, restarts, last error, external/orphan |
 | Miner log | `~/.local/state/trommel/miner.log` | read | Tail for hashrate/share fallback |
 | Daemon log | `~/.local/state/trommel/daemon.log` | read | Supervisor events |
-| GPU snapshot | `~/.local/state/trommel/oc-snapshot.json` | read | Per-boot stock power/clocks |
+| GPU snapshot | `~/.local/state/trommel/oc-snapshot.json` | read | Per-boot stock power/clocks, `applied`, `last_error` |
+| OC lock/lease | `~/.local/state/trommel/oc.lock`, `oc-lease.json` | read-only | Cross-process serialization and the in-flight helper |
+| Guard | `~/.local/state/trommel/guard.pid`, `guard.disarm` | read-only | Watch state for the manual-run supervisor |
 | Benchmarks | `~/.local/state/trommel/bench/*.json` | read | A/B reports |
 | Miner store | `~/.local/share/trommel/miners/<id>/<version>/` | read | Never hand-edit; use `trommel miner import/install` |
-| Status JSON | `trommel status --json` | read | The GUI/extension contract |
+| Status JSON | `trommel status --json` | read | The GUI/CLI contract |
 | Diagnostics | `trommel diagnose --json` | read | Redacted bundle for a model |
 | Config diff/apply | `trommel config diff/apply` | read/apply | Explicit mode, explicit consent |
 | D-Bus | `io.github.nayvok.Trommel.Daemon` | read + control | Same user session; local trust |
@@ -53,9 +55,26 @@ trommel config apply /tmp/trommel-proposed.json --restart
 - `config diff` prints `<class>: <reasons>`, where class is `None`, `Live` or
   `RestartRequired`. A running miner with `RestartRequired` must go through
   `--restart` or `--stop`; a plain apply is rejected by the daemon.
+- `GpuTuning.enabled = false` excludes a card from the mining session, not just
+  from tuning: the miner is started with the participating `nvidia-smi` indices
+  only and the excluded card is not tuned. Changing participation is a restart
+  change. A partial rig on a miner without a documented device flag is refused
+  with an explicit error; do not “fix” it by removing the exclusion silently.
 - `config apply` saves the file first and then asks the daemon. If no daemon is
   running it prints “config saved; daemon is not running”; the change takes
   effect on the next start, not silently now.
+- `trommel stop` reports whether the stock snapshot was restored. If restore on
+  stop is disabled, the snapshot is kept and `oc.needs_restore` is true; use
+  `trommel oc restore` (an explicit action) to put the GPU back.
+- `trommel emergency-stop --reason=manual` is a hidden, idempotent teardown for
+  a daemon that is already gone or wedged. It waits for the OC lock and for an
+  in-flight helper, stops only the miner whose PID still matches
+  `state.miner_path`, restores the snapshot and keeps it on failure. Do not use
+  it as a substitute for `trommel stop` while the daemon is healthy, and never
+  delete the snapshot to “fix” a failed restore.
+- `trommel oc restore` refuses while a miner is running. Modes: `snapshot`
+  (captured pre-mining limit) and `defaults` (driver default, clocks unlocked).
+  The returned JSON includes per-card targets and a human message.
 - Never apply without showing the user the diff. Never choose `--restart` on a
   running miner without explicit approval.
 - `trommel diagnose` and the MCP config/preset tools replace **every** preset
@@ -65,7 +84,7 @@ trommel config apply /tmp/trommel-proposed.json --restart
 ## CLI JSON
 
 ```bash
-trommel status --json        # full Status document, contract_version = 2
+trommel status --json        # full Status document, contract_version = 3
 trommel gpus --json          # nvidia-smi view, works without the daemon
 trommel diagnose --json      # app/version, paths, redacted config, status, GPUs, warnings
 trommel preset list          # human table with total fees
@@ -73,6 +92,8 @@ trommel preset show          # active preset JSON
 trommel preset export <id> /tmp/preset.json
 trommel preset import /tmp/preset.json
 trommel miner list           # catalogue + installed versions
+trommel oc report --json     # snapshot, current limits and restore targets
+trommel oc restore --mode snapshot|defaults
 ```
 
 The current human-readable output is Russian. Parse JSON; do not scrape the
@@ -83,17 +104,18 @@ human text. `status` and `start/stop/toggle` connect through D-Bus and start
 
 | Field | Meaning |
 | --- | --- |
-| `contract_version` | Contract revision (2); compare this, not `version` |
+| `contract_version` | Contract revision (3); compare this, not `version` |
 | `state.running` | A miner is running (including `external`) |
-| `state.external` | The process was started outside Trommel |
-| `state.last_error` | Last supervisor/config error, if any |
-| `state.uptime_s`, `state.restarts` | Session health |
+| `state.external` | The process was started outside Trommel and is never ours to kill |
+| `state.last_error` | Last supervisor/config error, including a failed restore |
+| `state.uptime_s`, `state.restarts` | Current process uptime and consecutive restart count; the budget is five |
 | `miner_info` | Miner id/name/version, install/verified flags, fee breakdown |
 | `gpus[]` | Per-card live values and static limits |
-| `total` | Aggregate hashrate/power/efficiency/temperature |
+| `participation[]` | One entry per detected card: `uuid`, `index`, `name`, `enabled` (applied profile switch) and `mining` (part of the running session Trommel owns). The dashboard chip is this list |
+| `total` | Aggregate hashrate/power/efficiency/temperature; power sums every detected card, temperature is the hottest card; `gpus_enabled` counts participating cards and `gpus_total` counts detected cards |
 | `miner` | Hashrate windows, accepted/rejected/stale, `source` (`api`/`log`) |
 | `pool` | Cached pool statistics when mining |
-| `oc` | Snapshot availability, applied/stale flags |
+| `oc` | Snapshot availability, `applied`/`needs_restore`, stale flag, restore-on-stop, last OC error and target summary |
 | `warnings` | User-facing configuration and lock warnings |
 
 The document deliberately contains no wallet and no seed material.
@@ -121,6 +143,8 @@ args = ["mcp"]            # add "--allow-write" to enable write tools
 | `trommel_config_diff` | `config` object | `{"class": "...", "reasons": [...]}` |
 | `trommel_miners` | — | Catalogue entries and installed versions |
 | `trommel_diagnose` | — | Redacted diagnostics bundle |
+| `trommel_oc` | — | Snapshot, current limits and restore targets |
+| `trommel_restore_oc` | `mode` = `snapshot`\|`defaults` | Write tool (`--allow-write`); returns a restore report |
 | `trommel_start` | — | Starts mining (write-gated) |
 | `trommel_stop` | — | Stops and restores stock (write-gated) |
 | `trommel_apply_config` | `config`, `mode` | Applies a config (write-gated) |
@@ -168,6 +192,10 @@ poll; `Status()` returns the last snapshot.
 - Start a second miner, kill an external miner, or manually edit
   `~/.local/share/trommel/miners/`. Use Start/Stop and
   `trommel miner import/install`.
+- Kill a process by miner name or by a PID read from `state.json` without
+  checking `/proc/<pid>/exe` against `state.miner_path`; PIDs are reused.
+- Run a benchmark while an external miner is active: the daemon refuses, and
+  an agent must not work around that refusal.
 - Edit a preset's wallet in an exported config and apply it without the user
   seeing the diff.
 - Bypass the **Apply and restart / Apply and stop** decision for a running
@@ -177,6 +205,9 @@ poll; `Status()` returns the last snapshot.
 - Treat a config file write as an applied config. The daemon owns the live
   config; use Apply.
 - Add a bundled miner binary or a checksum/URL that was not actually verified.
+- Set a card's `enabled` to `false` on a miner that cannot select devices, or
+  add `--gpu-list`/`--gpu-id`/`--devices` to `extra_args` to work around the
+  refusal. Start and the agent must report the unsupported combination instead.
 
 ## A good agent loop
 
@@ -189,4 +220,5 @@ poll; `Status()` returns the last snapshot.
 5. Show `trommel config diff` or the code diff; wait for approval before
    applying anything to a rig.
 6. Verify with `status --json` after an approved apply, and confirm that the
-   stock restore was reported correctly.
+   stock restore was reported correctly. If `oc.needs_restore` is true, report
+   it; do not claim the stock state came back until a restore succeeds.

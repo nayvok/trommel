@@ -19,7 +19,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
             desktop-file-utils appstream gettext librsvg2-bin \
-            python3 git ca-certificates dpkg-dev
+            python3 python3-gi gir1.2-glib-2.0 git ca-certificates curl dpkg-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -34,17 +34,38 @@ jobs:
         run: cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Root helper
+        run: ./scripts/test-oc-helper.sh
       - name: End-to-end
-        run: ./scripts/e2e.sh
+        shell: bash
+        run: |
+          set -o pipefail
+          ./scripts/e2e.sh 2>&1 | tee .e2e-run.log
+      - name: End-to-end diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "== trommeld"
+            pgrep -af trommeld 2>/dev/null || true
+            echo "== miners"
+            pgrep -af 'wildrig-multi|my-custom-rig|external-rig|flaky-miner' 2>/dev/null || true
+            for f in .e2e/emergency.out .e2e/emergency2.out .e2e/participation-emergency.out .e2e/daemon.out .e2e/state/trommel/state.json; do
+              [ -f "$f" ] || continue
+              echo "== $f"
+              tail -40 "$f"
+            done
+            echo "== failures"
+            grep -a '✗' .e2e-run.log 2>/dev/null || true
+          } > /tmp/e2e-diag.txt
+          echo "::error::$(tr '\n' ' ' < /tmp/e2e-diag.txt | cut -c1-12000)"
+          tail -40 .e2e-run.log 2>/dev/null || true
       - name: Polkit action id
         run: ./scripts/check-polkit.sh
       - name: Validate assets
         run: |
           desktop-file-validate data/io.github.nayvok.Trommel.desktop
           appstreamcli validate --explain data/io.github.nayvok.Trommel.metainfo.xml
-          mkdir -p /tmp/trommel-schemas
-          cp data/schemas/*.gschema.xml /tmp/trommel-schemas/
-          glib-compile-schemas --strict --targetdir=/tmp/trommel-schemas /tmp/trommel-schemas
       - name: Build release bundle
         run: ./scripts/release-bundle.sh
       - name: Validate package layout

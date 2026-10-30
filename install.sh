@@ -1,10 +1,9 @@
 #!/bin/bash
 # Trommel developer install (per-user binaries + one root helper).
 #
-#   ./install.sh                 # build, install, enable service + extension
-#   ./install.sh --no-build      # use target/release
-#   ./install.sh --no-extension  # skip the GNOME Shell extension
-#   ./install.sh --no-helper     # skip the polkit helper (OC disabled)
+#   ./install.sh             # build, install and enable the user service
+#   ./install.sh --no-build  # use target/release
+#   ./install.sh --no-helper # skip the polkit helper (OC disabled)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,20 +14,19 @@ APP_DIR="$HOME/.local/share/applications"
 ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
 SYM_ICON_DIR="$HOME/.local/share/icons/hicolor/symbolic/apps"
 METAINFO_DIR="$HOME/.local/share/metainfo"
-SCHEMA_DIR="$HOME/.local/share/glib-2.0/schemas"
 HELPER_DIR="/usr/libexec/trommel"
 APP_ID="io.github.nayvok.Trommel"
-EXT_UUID="trommel@nayvok.github.io"
 
 DO_BUILD=1
-DO_EXTENSION=1
 DO_HELPER=1
 for arg in "$@"; do
     case $arg in
         --no-build) DO_BUILD=0 ;;
-        --no-extension) DO_EXTENSION=0 ;;
         --no-helper) DO_HELPER=0 ;;
-        -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+        --no-extension)
+            echo "  ! --no-extension is obsolete: the GNOME Shell applet was removed" >&2
+            ;;
+        -h|--help) sed -n '2,6p' "$0"; exit 0 ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
 done
@@ -98,43 +96,14 @@ systemctl --user restart trommeld.service
 ok "trommeld is $([ "$(systemctl --user is-active trommeld.service)" = active ] && echo active || echo inactive)"
 
 say "Installing desktop entry, icons and metadata"
-mkdir -p "$APP_DIR" "$ICON_DIR" "$SYM_ICON_DIR" "$METAINFO_DIR" "$SCHEMA_DIR"
+mkdir -p "$APP_DIR" "$ICON_DIR" "$SYM_ICON_DIR" "$METAINFO_DIR"
 install -m644 "$ROOT/data/$APP_ID.desktop" "$APP_DIR/$APP_ID.desktop"
 install -m644 "$ROOT/data/$APP_ID.metainfo.xml" "$METAINFO_DIR/$APP_ID.metainfo.xml"
 install -m644 "$ROOT/data/icons/$APP_ID.svg" "$ICON_DIR/$APP_ID.svg"
 install -m644 "$ROOT/data/icons/$APP_ID-symbolic.svg" "$SYM_ICON_DIR/$APP_ID-symbolic.svg"
-install -m644 "$ROOT/data/schemas/org.gnome.shell.extensions.trommel.gschema.xml" "$SCHEMA_DIR/"
-glib-compile-schemas --strict "$SCHEMA_DIR"
 command -v update-desktop-database >/dev/null && update-desktop-database -q "$APP_DIR" || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 ok "application menu entry installed"
-
-if [ "$DO_EXTENSION" = 1 ]; then
-    say "Installing the GNOME Shell extension"
-    if ! command -v gnome-extensions >/dev/null; then
-        warn "gnome-extensions is not available; skipping"
-    else
-        EXT_SRC="$ROOT/extension/$EXT_UUID"
-        TMP_DIR="$(mktemp -d)"
-        ( cd "$EXT_SRC" && gnome-extensions pack --force \
-            --extra-source=icons --extra-source=LICENSE \
-            --schema="$ROOT/data/schemas/org.gnome.shell.extensions.trommel.gschema.xml" \
-            --out-dir "$TMP_DIR" . >/dev/null )
-        gnome-extensions install --force "$TMP_DIR/$EXT_UUID.shell-extension.zip" >/dev/null
-        rm -rf "$TMP_DIR"
-        if gnome-extensions enable "$EXT_UUID"; then
-            ok "extension enabled"
-        else
-            warn "gnome-extensions enable returned an error; see 'gnome-extensions info $EXT_UUID'"
-        fi
-        if gnome-extensions list --enabled | grep -qx "$EXT_UUID"; then
-            ok "extension is enabled"
-        else
-            warn "extension is installed but not enabled; log out and back in, then check"
-            gnome-extensions info "$EXT_UUID" || true
-        fi
-    fi
-fi
 
 say "Done"
 cat <<EOF

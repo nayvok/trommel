@@ -49,7 +49,5 @@ fi
 say "Done"
 cat <<'TXT'
 Trommel is installed. Open it from the application menu (or run "trommel").
-The GNOME panel applet is included; log out and back in on Wayland, then enable
-it in Trommel -> Settings -> GNOME integration.
 Config: ~/.config/trommel/config.json
 TXT

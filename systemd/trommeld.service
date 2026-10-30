@@ -8,6 +8,11 @@ After=graphical-session.target
 Type=dbus
 BusName=io.github.nayvok.Trommel.Daemon
 ExecStart=/usr/bin/trommeld
+# A crashed/killed daemon must not leave the miner or the OC snapshot behind:
+# systemd runs the same idempotent emergency path after the process is gone.
+KillMode=control-group
+TimeoutStopSec=30
+ExecStopPost=-/usr/bin/trommel emergency-stop --reason=service-stop
 Restart=on-failure
 RestartSec=3
 Slice=background.slice

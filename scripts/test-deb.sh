@@ -12,8 +12,6 @@ for path in \
   ./usr/libexec/trommel/trommel-oc \
   ./usr/share/applications/io.github.nayvok.Trommel.desktop \
   ./usr/share/metainfo/io.github.nayvok.Trommel.metainfo.xml \
-  ./usr/share/glib-2.0/schemas/org.gnome.shell.extensions.trommel.gschema.xml \
-  ./usr/share/gnome-shell/extensions/trommel@nayvok.github.io/metadata.json \
   ./usr/share/polkit-1/actions/io.github.nayvok.trommel.policy \
   ./usr/share/trommel/50-trommel.rules.in \
   ./usr/lib/systemd/user/trommeld.service \

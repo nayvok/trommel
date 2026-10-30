@@ -10,6 +10,8 @@ pub mod config;
 pub mod dbus;
 pub mod diagnostics;
 pub mod download;
+pub mod emergency;
+pub mod guard;
 pub mod i18n;
 pub mod minerapi;
 pub mod miners;

@@ -110,6 +110,11 @@ fn tool_definitions(allow_write: bool) -> Vec<Value> {
             "description": "Build a redacted diagnostics bundle suitable for an external assistant.",
             "inputSchema": {"type": "object", "properties": {}}
         }),
+        json!({
+            "name": "trommel_oc",
+            "description": "GPU stock snapshot, current limits and the targets a restore would write.",
+            "inputSchema": {"type": "object", "properties": {}}
+        }),
     ];
     if allow_write {
         tools.extend([
@@ -130,6 +135,13 @@ fn tool_definitions(allow_write: bool) -> Vec<Value> {
                     "config": {"type": "object"},
                     "mode": {"type": "string", "enum": ["live", "restart", "stop"]}
                 }, "required": ["config"]}
+            }),
+            json!({
+                "name": "trommel_restore_oc",
+                "description": "Restore GPU power/clocks. Requires --allow-write; mode is snapshot|defaults.",
+                "inputSchema": {"type": "object", "properties": {
+                    "mode": {"type": "string", "enum": ["snapshot", "defaults"]}
+                }}
             }),
         ]);
     }
@@ -229,6 +241,14 @@ fn call_tool(params: &Value, allow_write: bool) -> Result<Value, String> {
                 "warnings": cfg.warnings(),
             })))
         }
+        "trommel_oc" => {
+            let raw =
+                block_on(
+                    |proxy| async move { proxy.oc_report().await.map_err(|e| e.to_string()) },
+                )?;
+            let value: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+            Ok(text_result(value))
+        }
         "trommel_start" if allow_write => {
             block_on(|proxy| async move { proxy.start().await.map_err(|e| e.to_string()) })?;
             Ok(text_result(json!({"ok": true})))
@@ -236,6 +256,18 @@ fn call_tool(params: &Value, allow_write: bool) -> Result<Value, String> {
         "trommel_stop" if allow_write => {
             block_on(|proxy| async move { proxy.stop().await.map_err(|e| e.to_string()) })?;
             Ok(text_result(json!({"ok": true})))
+        }
+        "trommel_restore_oc" if allow_write => {
+            let mode = args
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("snapshot")
+                .to_string();
+            let raw = block_on(move |proxy| async move {
+                proxy.restore_oc(&mode).await.map_err(|e| e.to_string())
+            })?;
+            let value: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+            Ok(text_result(json!({"ok": true, "result": value})))
         }
         "trommel_apply_config" if allow_write => {
             let config = args.get("config").cloned().ok_or("config is required")?;
@@ -253,7 +285,7 @@ fn call_tool(params: &Value, allow_write: bool) -> Result<Value, String> {
             })?;
             Ok(text_result(json!({"ok": true, "result": result})))
         }
-        "trommel_start" | "trommel_stop" | "trommel_apply_config" => {
+        "trommel_start" | "trommel_stop" | "trommel_apply_config" | "trommel_restore_oc" => {
             Err("write tool disabled; start the MCP server with --allow-write".into())
         }
         other => Err(format!("unknown tool: {other}")),

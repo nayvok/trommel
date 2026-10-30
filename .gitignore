@@ -19,7 +19,6 @@
 *.tar.gz
 *.tar.xz
 *.zip
-*.shell-extension.zip
 
 # Translation binaries (POT/PO are tracked)
 *.mo
@@ -55,9 +54,8 @@ Thumbs.db
 __pycache__/
 *.pyc
 
-# Temporary packaging/extension scratch dirs
+# Temporary packaging scratch dirs
 /.tmp-*/
-/.tmp-ext/
 /.tmp-cache/
 /.tmp-data/
 /.dist-*/

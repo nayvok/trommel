@@ -2,7 +2,8 @@
 
 Trommel is a GTK4/libadwaita manager for NVIDIA mining rigs. The daemon
 (`trommeld`) owns the applied configuration, the miner process and the GPU
-snapshot. The GUI keeps a draft; the extension is a thin D-Bus client.
+snapshot. The GUI keeps a draft; the CLI and the daemon's D-Bus surface are the
+other clients.
 
 **Start with [docs/README.md](docs/README.md).** It maps every document by
 audience. The most useful references while coding:
@@ -18,13 +19,13 @@ audience. The most useful references while coding:
 
 ## Repository layout
 
-- `crates/core` — config v2, catalogue, GPU/OC, supervisor, status, D-Bus.
+- `crates/core` — config v3, catalogue, GPU/OC, emergency-stop, guard,
+  supervisor, state, status, D-Bus.
 - `crates/daemon` — `trommeld` binary and polling/supervisor loops.
 - `crates/cli` — `trommel` CLI, `mcp.rs`, and `gui.rs` (the GTK app behind the
   `gui` feature).
 - `resources/catalog` — built-in miners/coins/pools (TOML, no binaries).
-- `data` — desktop, metainfo, icons, GSettings schema.
-- `extension/` — GNOME Shell 50 extension (no `prefs.js`).
+- `data` — desktop entry, metainfo, icons.
 - `packaging/`, `polkit/`, `systemd/`, `scripts/`, `docs/`; no `po/` yet (the
   future gettext catalogue will live there).
 
@@ -54,6 +55,13 @@ UI/screenshot scripts need a desktop session; the e2e/MCP tests do not.
 
 - One miner at a time. Never spawn a second process; never kill an external
   miner without explicit user action.
+- A PID is ours only when `/proc/<pid>/exe` (or the script argument in
+  `cmdline`) matches `state.miner_path`. Never signal a PID by miner name
+  alone: PIDs are reused and custom builds have arbitrary names.
+- A GUI crash is a no-op. The daemon owns the session; killing the window must
+  not stop mining or restore the snapshot.
+- External miners are never killed by Stop, shutdown, emergency-stop, the guard
+  or a benchmark. Start and benchmark refuse instead.
 - Snapshot stock GPU state **before** touching power/clocks, and restore it on
   stop. Never hardcode a stock power limit.
 - A running miner must not be silently restarted. Edits require the explicit
@@ -67,14 +75,24 @@ UI/screenshot scripts need a desktop session; the e2e/MCP tests do not.
 - Miner fee is editable only when `fee_configurable=true`. Do not fake it.
 - Installed miners are global (`miner_installs`), not per-preset. A preset only
   references `miner` + `miner_version`.
-- The extension has no `prefs.js`; settings are shared with the app via
-  `org.gnome.shell.extensions.trommel`.
+- Desktop notifications are sent by the daemon through
+  `org.freedesktop.Notifications`, gated by `behavior.notifications`; the same
+  events also go out as the `Notification` D-Bus signal.
 - Keep English as the source string; Russian is a translation. Use
-  `trommel_core::i18n::tr(en, ru)` in Rust and the `tr()` helper in GJS.
+  `trommel_core::i18n::tr(en, ru)` in Rust.
 - Schema changes require `docs/schema/config.schema.json`, a `normalize()`
   default and a migration test.
 - Update the matching document in the same commit; never add a feature only to
   the README and leave [docs/](docs/README.md) stale.
+
+## Working in blocks
+
+The roadmap is split into blocks (B0–B5). Work on one block per branch
+(`feat/<block>-<topic>`), keep the scope frozen to that block and do not start
+the next one in the same branch. Each block lands with its code, unit/e2e tests,
+docs and changelog in the same commit series; a release tag follows the
+repository checklist. Details are in [docs/development.md](docs/development.md#working-in-blocks)
+and the status table in [docs/roadmap.md](docs/roadmap.md#block-plan).
 
 ## Documentation rules
 
@@ -116,7 +134,7 @@ Conventional Commits, one feature per branch, merge with `--no-ff`:
 feat(miners): add metadata, fee model and option schemas
 feat(oc): restore pre-mining power limits per GPU
 feat(ui): add miner info, fee breakdown and dynamic settings
-fix(extension): verify enable state after install
+feat(notifications): send desktop alerts from the daemon
 docs: restructure documentation by audience
 ```
 
@@ -129,7 +147,6 @@ directories.
 
 - Builds with and without the `gui` feature.
 - Unit/e2e tests cover the changed behavior; fake `nvidia-smi` for GPU paths.
-- `appstreamcli validate`, `desktop-file-validate`, `glib-compile-schemas
-  --strict` pass for touched assets.
+- `appstreamcli validate` and `desktop-file-validate` pass for touched assets.
 - Docs/README updated if user-visible behavior changed; `check-docs.sh` passes.
 - No new warnings from `cargo clippy -D warnings`.

@@ -1,4 +1,4 @@
-//! Configuration v2: presets, GPU profiles, miner installs and behavior.
+//! Configuration v3: presets, GPU profiles, miner installs and behavior.
 //!
 //! The on-disk file is `$XDG_CONFIG_HOME/trommel/config.json`. Version 1
 //! (the old Pearl Miner flat config) is migrated automatically on load.
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::i18n::{tr, Language};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub const DEFAULT_PRESET_ID: &str = "pearl-wildrig";
 pub const DEFAULT_GPU_PROFILE_ID: &str = "balanced";
 pub const DEFAULT_POOL_URL: &str = "pool.pearlhash.xyz:9000";
@@ -29,6 +29,18 @@ pub struct GpuTuning {
     pub fan_pct: Option<u32>,
     pub temp_limit_c: u32,
     pub temp_resume_c: u32,
+    /// Only meaningful inside `GpuProfile::per_gpu`.
+    ///
+    /// `false` means "inherit power/clocks/temperature from the profile
+    /// default"; `enabled` is still per card. A per-card override created by
+    /// the tuning dialog sets this to `true`, so it keeps its own values even
+    /// when the default changes later.
+    #[serde(skip_serializing_if = "is_false")]
+    pub custom: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Default for GpuTuning {
@@ -43,7 +55,30 @@ impl Default for GpuTuning {
             fan_pct: None,
             temp_limit_c: 85,
             temp_resume_c: 65,
+            custom: false,
         }
+    }
+}
+
+impl GpuTuning {
+    /// True when this entry asks the helper to change something. Fan control
+    /// is not applied by `trommel-oc`, so it does not count.
+    pub fn has_tuning(&self) -> bool {
+        self.power_limit_w.is_some()
+            || self.core_clock_mhz.is_some()
+            || self.memory_clock_mhz.is_some()
+    }
+
+    /// Values that differ from the profile default, ignoring `enabled` and
+    /// `custom`. Used by the v2 -> v3 migration to decide whether an existing
+    /// per-card entry was an intentional override.
+    fn differs_from(&self, default: &GpuTuning) -> bool {
+        self.power_limit_w != default.power_limit_w
+            || self.core_clock_mhz != default.core_clock_mhz
+            || self.memory_clock_mhz != default.memory_clock_mhz
+            || self.fan_pct != default.fan_pct
+            || self.temp_limit_c != default.temp_limit_c
+            || self.temp_resume_c != default.temp_resume_c
     }
 }
 
@@ -57,11 +92,38 @@ pub struct GpuProfile {
 }
 
 impl GpuProfile {
+    /// Effective tuning for one card.
+    ///
+    /// A per-card entry with `custom = false` only remembers the enable switch;
+    /// power and clocks come from the profile default. This is what the setup
+    /// wizard, the GPU enable toggle and older configs create. Only an explicit
+    /// custom override (`custom = true`, written by the tuning dialog) replaces
+    /// the default values.
     pub fn tuning_for(&self, uuid: &str) -> GpuTuning {
-        self.per_gpu
-            .get(uuid)
-            .cloned()
-            .unwrap_or_else(|| self.default.clone())
+        match self.per_gpu.get(uuid) {
+            Some(tuning) if tuning.custom => {
+                let mut effective = tuning.clone();
+                effective.custom = false;
+                effective
+            }
+            Some(tuning) => {
+                let mut effective = self.default.clone();
+                effective.enabled = tuning.enabled;
+                effective.custom = false;
+                effective
+            }
+            None => {
+                let mut effective = self.default.clone();
+                effective.custom = false;
+                effective
+            }
+        }
+    }
+
+    /// True when the card has an explicit override instead of inheriting the
+    /// default profile.
+    pub fn is_custom(&self, uuid: &str) -> bool {
+        self.per_gpu.get(uuid).map(|t| t.custom).unwrap_or(false)
     }
 }
 
@@ -302,6 +364,31 @@ impl Config {
 
     /// Make sure indexes and defaults are coherent.
     pub fn normalize(mut self) -> Self {
+        // v2 had no `custom` flag: every per-GPU entry replaced the default
+        // wholesale. Infer the intent once: an entry whose values differ from
+        // the default was an intentional override; an entry that only repeats
+        // the default (or only disables a card) was created by the wizard /
+        // enable toggle and should inherit future changes.
+        if self.schema_version < SCHEMA_VERSION {
+            for profile in self.gpu_profiles.values_mut() {
+                let default = profile.default.clone();
+                for tuning in profile.per_gpu.values_mut() {
+                    // An entry with no power/clock values was created by the
+                    // setup wizard or the enable toggle; it must inherit the
+                    // default profile even when the default is tuned. An entry
+                    // with values is an override only when they differ from
+                    // the default (otherwise it is just a stale copy).
+                    tuning.custom = if tuning.has_tuning() {
+                        tuning.differs_from(&default)
+                    } else {
+                        tuning.fan_pct.is_some()
+                            || tuning.temp_limit_c != default.temp_limit_c
+                            || tuning.temp_resume_c != default.temp_resume_c
+                    };
+                }
+            }
+            self.schema_version = SCHEMA_VERSION;
+        }
         if self.schema_version == 0 {
             self.schema_version = SCHEMA_VERSION;
         }
@@ -370,6 +457,16 @@ impl Config {
             .map(|p| p.gpu_profile.as_str())
             .unwrap_or(DEFAULT_GPU_PROFILE_ID);
         self.gpu_profiles.get(id)
+    }
+
+    fn tuning_has_tuning(&self, tuning: &GpuTuning) -> bool {
+        if tuning.custom {
+            tuning.has_tuning()
+        } else {
+            self.gpu_profile()
+                .map(|profile| profile.default.has_tuning())
+                .unwrap_or(false)
+        }
     }
 
     pub fn gpu_profile_mut(&mut self) -> &mut GpuProfile {
@@ -472,8 +569,22 @@ impl Config {
             .unwrap_or(true);
         if !any_enabled {
             out.push(tr(
-                "No GPU is enabled in the active profile",
-                "В активном профиле не включено ни одной видеокарты",
+                "No GPU is selected for mining",
+                "Ни одна видеокарта не выбрана для майнинга",
+            ));
+        }
+        let has_tuning = profile
+            .map(|p| {
+                p.default.has_tuning()
+                    || p.per_gpu
+                        .values()
+                        .any(|tuning| self.tuning_has_tuning(tuning))
+            })
+            .unwrap_or(false);
+        if has_tuning && !self.behavior.restore_stock_on_stop {
+            out.push(tr(
+                "Restore stock on stop is off; Stop will leave power and clock changes applied",
+                "Возврат стока при остановке выключен — «Остановить» оставит питание и частоты применёнными",
             ));
         }
         out
@@ -737,6 +848,15 @@ mod tests {
     }
 
     #[test]
+    fn restore_stock_is_on_by_default() {
+        // Restoring the captured power limit is the safe default; turning it
+        // off must be an explicit choice, not an accident of a missing key.
+        let cfg: Config = serde_json::from_str(r#"{"schema_version":3}"#).unwrap();
+        assert!(cfg.behavior.restore_stock_on_stop);
+        assert!(Behavior::default().restore_stock_on_stop);
+    }
+
+    #[test]
     fn round_trip() {
         let cfg = Config::default();
         let json = serde_json::to_string(&cfg).unwrap();
@@ -784,6 +904,135 @@ mod tests {
         assert_eq!(tuning.core_clock_mhz, None);
         assert_eq!(tuning.memory_clock_mhz, None);
         assert_eq!(tuning.temp_limit_c, 85);
+    }
+
+    fn tuned_default_profile() -> GpuTuning {
+        GpuTuning {
+            power_limit_w: Some(300),
+            core_clock_mhz: Some(1620),
+            memory_clock_mhz: Some(810),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn non_custom_entry_inherits_the_default() {
+        let mut profile = GpuProfile {
+            default: tuned_default_profile(),
+            ..Default::default()
+        };
+        profile.per_gpu.insert(
+            "GPU-test".into(),
+            GpuTuning {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        let effective = profile.tuning_for("GPU-test");
+        assert_eq!(effective.power_limit_w, Some(300));
+        assert_eq!(effective.core_clock_mhz, Some(1620));
+        assert!(!effective.enabled);
+        assert!(!profile.is_custom("GPU-test"));
+    }
+
+    #[test]
+    fn custom_entry_keeps_its_own_values() {
+        let mut profile = GpuProfile {
+            default: tuned_default_profile(),
+            ..Default::default()
+        };
+        profile.per_gpu.insert(
+            "GPU-test".into(),
+            GpuTuning {
+                power_limit_w: Some(250),
+                custom: true,
+                ..Default::default()
+            },
+        );
+        let effective = profile.tuning_for("GPU-test");
+        assert_eq!(effective.power_limit_w, Some(250));
+        // A custom override is a full override: the default lock is not mixed in.
+        assert_eq!(effective.memory_clock_mhz, None);
+        assert!(profile.is_custom("GPU-test"));
+    }
+
+    #[test]
+    fn custom_auto_does_not_inherit() {
+        let mut profile = GpuProfile {
+            default: tuned_default_profile(),
+            ..Default::default()
+        };
+        profile.per_gpu.insert(
+            "GPU-test".into(),
+            GpuTuning {
+                custom: true,
+                ..Default::default()
+            },
+        );
+        let effective = profile.tuning_for("GPU-test");
+        assert_eq!(effective.power_limit_w, None);
+        assert_eq!(effective.core_clock_mhz, None);
+    }
+
+    #[test]
+    fn v2_config_migrates_empty_override_to_inherit() {
+        let value = serde_json::json!({
+            "schema_version": 2,
+            "gpu_profiles": {
+                "balanced": {
+                    "name": "Balanced",
+                    "default": {
+                        "enabled": true,
+                        "power_limit_w": 300,
+                        "core_clock_mhz": 1620,
+                        "memory_clock_mhz": 810
+                    },
+                    "per_gpu": {
+                        "GPU-empty": {"enabled": true},
+                        "GPU-custom": {"enabled": true, "power_limit_w": 250}
+                    }
+                }
+            }
+        });
+        let cfg: Config = serde_json::from_value(value).unwrap();
+        let cfg = cfg.normalize();
+        assert_eq!(cfg.schema_version, 3);
+        let profile = cfg.gpu_profiles.get("balanced").unwrap();
+        assert!(!profile.is_custom("GPU-empty"));
+        assert_eq!(profile.tuning_for("GPU-empty").power_limit_w, Some(300));
+        assert!(profile.is_custom("GPU-custom"));
+        assert_eq!(profile.tuning_for("GPU-custom").power_limit_w, Some(250));
+    }
+
+    #[test]
+    fn custom_flag_is_omitted_when_false() {
+        let tuning = GpuTuning::default();
+        let text = serde_json::to_string(&tuning).unwrap();
+        assert!(!text.contains("custom"), "{text}");
+        let custom = GpuTuning {
+            custom: true,
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&custom).unwrap();
+        assert!(text.contains("\"custom\":true"), "{text}");
+    }
+
+    #[test]
+    fn restore_off_with_tuning_warns() {
+        let mut cfg = Config::default();
+        cfg.behavior.restore_stock_on_stop = false;
+        *cfg.gpu_profiles.get_mut("balanced").unwrap() = GpuProfile {
+            default: tuned_default_profile(),
+            ..Default::default()
+        };
+        let warnings = cfg.warnings();
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("Restore stock")
+                    || warning.contains("Возврат стока")),
+            "{warnings:?}"
+        );
     }
 
     #[test]

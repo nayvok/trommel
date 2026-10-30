@@ -77,11 +77,31 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Показать или вернуть настройки GPU (снимок/сток драйвера)
+    Oc {
+        #[command(subcommand)]
+        command: OcCmd,
+    },
     /// MCP server over stdio for Codex and other agents (read-only by default)
     Mcp {
         /// Allow start/stop/apply tools
         #[arg(long)]
         allow_write: bool,
+    },
+    /// Internal fail-safe: stop our miner and restore the stock snapshot
+    #[command(hide = true)]
+    EmergencyStop {
+        /// Where the call came from: manual, service-stop, guard or startup
+        #[arg(long, default_value = "manual")]
+        reason: String,
+    },
+    /// Internal: watch a daemon and run emergency-stop when it disappears
+    #[command(hide = true)]
+    Guard {
+        #[arg(long)]
+        daemon_pid: u32,
+        #[arg(long)]
+        daemon_start: u64,
     },
 }
 
@@ -136,6 +156,20 @@ enum MinerCmd {
 }
 
 #[derive(Subcommand)]
+enum OcCmd {
+    /// Показать снимок, текущие значения и цели восстановления
+    Report {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Вернуть снимок (snapshot) или сток драйвера (defaults)
+    Restore {
+        #[arg(long, default_value = "snapshot")]
+        mode: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum ConfigCmd {
     /// Напечатать путь к config.json
     Path,
@@ -170,6 +204,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Cmd::Preset { command }) => run_preset_command(command).await,
         Some(Cmd::Miner { command }) => run_miner_command(command).await,
         Some(Cmd::Config { command }) => run_config_command(command).await,
+        Some(Cmd::Oc { command }) => run_oc_command(command).await,
         Some(Cmd::Gpus { json }) => {
             let gpus = trommel_core::nvidia::query_all()?;
             if json {
@@ -200,6 +235,11 @@ async fn main() -> anyhow::Result<()> {
                 Err(_) => Err(anyhow!("MCP server thread panicked")),
             }
         }
+        Some(Cmd::EmergencyStop { reason }) => run_emergency_stop(&reason),
+        Some(Cmd::Guard {
+            daemon_pid,
+            daemon_start,
+        }) => trommel_core::guard::run(daemon_pid, daemon_start),
         Some(Cmd::Diagnose { json }) => {
             let status = match connect().await {
                 Ok(proxy) => proxy
@@ -239,7 +279,17 @@ async fn main() -> anyhow::Result<()> {
         Some(Cmd::Stop) => {
             let proxy = connect().await?;
             proxy.stop().await?;
-            println!("Майнинг остановлен, питание и частоты возвращены в сток");
+            let status = proxy
+                .refresh()
+                .await
+                .ok()
+                .and_then(|raw| Status::from_json(&raw).ok());
+            match status {
+                Some(status) if status.oc.needs_restore => println!(
+                    "Майнинг остановлен; настройки GPU оставлены применёнными (верните сток в «Настройках»)"
+                ),
+                _ => println!("Майнинг остановлен, питание и частоты возвращены в сток"),
+            }
             Ok(())
         }
         Some(Cmd::Toggle) => {
@@ -275,6 +325,65 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+async fn run_oc_command(command: OcCmd) -> anyhow::Result<()> {
+    let proxy = connect().await?;
+    match command {
+        OcCmd::Report { json } => {
+            let raw = proxy.oc_report().await?;
+            if json {
+                println!("{raw}");
+            } else {
+                let value: serde_json::Value = serde_json::from_str(&raw)?;
+                println!(
+                    "OC: applied={} snapshot={} stale={} needs_restore={} restore_on_stop={}",
+                    value["applied"],
+                    value["snapshot_available"],
+                    value["stale"],
+                    value["needs_restore"],
+                    value["restore_on_stop"],
+                );
+                if let Some(current) = value["current"].as_array() {
+                    for gpu in current {
+                        println!(
+                            "#{} {}: limit {} W, default {} W, core {} MHz, mem {} MHz",
+                            gpu["index"],
+                            gpu["name"].as_str().unwrap_or("GPU"),
+                            gpu["power_limit_w"],
+                            gpu["power_default_w"],
+                            gpu["core_mhz"],
+                            gpu["mem_mhz"],
+                        );
+                    }
+                }
+                if let Some(err) = value["snapshot"]["last_error"].as_str() {
+                    println!("last OC error: {err}");
+                }
+            }
+        }
+        OcCmd::Restore { mode } => {
+            if trommel_core::oc::RestoreMode::parse(&mode).is_none() {
+                anyhow::bail!("mode must be snapshot|defaults");
+            }
+            let raw = proxy.restore_oc(&mode).await?;
+            let parsed = serde_json::from_str::<serde_json::Value>(&raw).ok();
+            let effective = parsed
+                .as_ref()
+                .and_then(|value| value["mode"].as_str())
+                .unwrap_or(&mode);
+            let count = parsed
+                .as_ref()
+                .and_then(|value| value["restored"].as_u64())
+                .unwrap_or(0);
+            if effective == "defaults" {
+                println!("Сброшено на сток драйвера: {count} GPU");
+            } else {
+                println!("Возвращён снимок: {count} GPU");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Connect to the daemon, starting it if needed.
@@ -335,6 +444,19 @@ fn run_daemon() -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!("trommeld завершился с кодом {:?}", status.code());
     }
+    Ok(())
+}
+
+/// Idempotent fail-safe used by systemd, the guard and startup recovery.
+///
+/// Deliberately does not connect to D-Bus: the daemon is usually already gone
+/// when this runs. A non-zero exit code means the miner could not be stopped or
+/// the snapshot could not be restored; both records are kept for a retry.
+fn run_emergency_stop(reason: &str) -> anyhow::Result<()> {
+    let reason = trommel_core::emergency::Reason::parse(reason)
+        .ok_or_else(|| anyhow!("reason must be one of: service-stop, guard, startup, manual"))?;
+    let outcome = trommel_core::emergency::run(reason)?;
+    println!("{}", outcome.summary(reason));
     Ok(())
 }
 
@@ -680,8 +802,17 @@ fn print_human(status: &Status) {
         );
     } else {
         for gpu in &status.gpus {
+            let role = status
+                .participation
+                .iter()
+                .find(|card| card.uuid == gpu.uuid);
+            let role_text = match role {
+                Some(card) if !card.enabled => " · исключена",
+                Some(card) if card.mining => " · майнит",
+                _ => "",
+            };
             println!(
-                "GPU #{}:   {} · {} °C · {} W · вентилятор {}% · {} / {} MHz · {}",
+                "GPU #{}:   {} · {} °C · {} W · вентилятор {}% · {} / {} MHz · {}{}",
                 gpu.index,
                 gpu.name,
                 gpu.temp_c
@@ -699,7 +830,8 @@ fn print_human(status: &Status) {
                 gpu.mem_mhz
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "—".into()),
-                gpu.uuid
+                gpu.uuid,
+                role_text
             );
         }
     }

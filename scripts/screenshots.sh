@@ -17,11 +17,28 @@ mkdir -p "$WORK/bin" "$WORK/config/trommel" "$WORK/state/trommel" "$WORK/cache"
 
 cat > "$WORK/bin/nvidia-smi" <<'SH'
 #!/bin/bash
+# The values follow a slow sine of wall-clock time instead of constants so the
+# dashboard sparklines have a curve to draw; the numbers stay plausible for a
+# mining rig.
 args="$*"
 case "$args" in
   *index,uuid*)
-    echo "0, GPU-11111111-1111-1111-1111-111111111111, NVIDIA GeForce RTX 3080 Ti, 61, 68, 301.40, 300.00, 350.00, 100.00, 400.00, 1620, 810, 100, 8472"
-    echo "1, GPU-22222222-2222-2222-2222-222222222222, NVIDIA GeForce RTX 3060, 55, 62, 128.20, 130.00, 170.00, 60.00, 200.00, 1500, 750, 99, 4096"
+    awk -v t="$(date +%s)" 'BEGIN{
+      p0=301+20*sin(t/6.0)+6*sin(t/2.7);
+      p1=128+10*sin(t/5.0)+4*sin(t/2.1);
+      t0=61+3*sin(t/9.0);
+      t1=55+2.4*sin(t/7.5+1.0);
+      c0=1620+45*sin(t/5.0);
+      c1=1500+35*sin(t/5.5+0.5);
+      m0=810+26*sin(t/7.0+2.0);
+      m1=750+20*sin(t/6.5+2.5);
+      f0=68+5*sin(t/3.5);
+      f1=62+4*sin(t/4.0+1.0);
+      u0=97+3*sin(t/3.0);
+      u1=95+4*sin(t/3.6+0.7);
+      printf "0, GPU-11111111-1111-1111-1111-111111111111, NVIDIA GeForce RTX 3080 Ti, %.0f, %.0f, %.2f, 300.00, 350.00, 100.00, 400.00, %.0f, %.0f, %.0f, 8472\n", t0, f0, p0, c0, m0, u0;
+      printf "1, GPU-22222222-2222-2222-2222-222222222222, NVIDIA GeForce RTX 3060, %.0f, %.0f, %.2f, 130.00, 170.00, 60.00, 200.00, %.0f, %.0f, %.0f, 4096\n", t1, f1, p1, c1, m1, u1
+    }'
     ;;
   *power.limit*) echo "300.00" ;;
   *) exit 0 ;;
@@ -110,6 +127,11 @@ setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
 DAEMON_PID=$!
 sleep 2
 
+# Set ONLY=substring to regenerate just the matching images while iterating;
+# a full run leaves it empty.
+ONLY="${ONLY:-}"
+wanted() { [ -z "$ONLY" ] || case "$(basename "$1")" in *"$ONLY"*) true ;; *) false ;; esac; }
+
 configure() {
   local language="$1" simple="$2"
   python3 - "$WORK" "$language" "$simple" <<'PY'
@@ -128,14 +150,18 @@ PY
 
 shot() {
   local theme="$1" language="$2" page="$3" target="$4" simple="${5:-1}" scroll="${6:-}" height="${7:-}"
+  wanted "$target" || return 0
   configure "$language" "$simple"
   if [ -n "$scroll" ]; then export TROMMEL_SCREENSHOT_SCROLL="$scroll"; else unset TROMMEL_SCREENSHOT_SCROLL; fi
   if [ -n "$height" ]; then export TROMMEL_WINDOW_HEIGHT="$height"; else unset TROMMEL_WINDOW_HEIGHT; fi
+  # The dashboard sparklines need a handful of samples; other pages do not.
+  local delay=6
+  [ "$page" = dashboard ] && delay=14
   local attempt
   for attempt in 1 2; do
     rm -f "$target"
     TROMMEL_COLOR_SCHEME="$theme" TROMMEL_SCREENSHOT="$target" TROMMEL_SCREENSHOT_PAGE="$page" \
-      TROMMEL_SCREENSHOT_DELAY=6 timeout 55 "$BIN/trommel" > "$WORK/gui-$theme-$language-$page.log" 2>&1 || true
+      TROMMEL_SCREENSHOT_DELAY="$delay" timeout 55 "$BIN/trommel" > "$WORK/gui-$theme-$language-$page.log" 2>&1 || true
     [ -f "$target" ] && break
     echo "  … retrying $(basename "$target")" >&2
   done
@@ -144,12 +170,13 @@ shot() {
 
 tune_shot() {
   local theme="$1" language="$2" target="$3"
+  wanted "$target" || return 0
   configure "$language" 0
   local attempt
   for attempt in 1 2; do
     rm -f "$target"
     TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_TUNE=1 TROMMEL_TUNE_SCREENSHOT="$target" \
-      timeout 50 "$BIN/trommel" > "$WORK/gui-tune-$theme-$language.log" 2>&1 || true
+      TROMMEL_WINDOW_HEIGHT=820 timeout 50 "$BIN/trommel" > "$WORK/gui-tune-$theme-$language.log" 2>&1 || true
     [ -f "$target" ] && break
     echo "  … retrying $(basename "$target")" >&2
   done
@@ -158,12 +185,13 @@ tune_shot() {
 
 preset_shot() {
   local theme="$1" language="$2" target="$3"
+  wanted "$target" || return 0
   configure "$language" 1
   local attempt
   for attempt in 1 2; do
     rm -f "$target"
     TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_PRESET=1 TROMMEL_PRESET_SCREENSHOT="$target" \
-      timeout 50 "$BIN/trommel" > "$WORK/gui-preset-$theme-$language.log" 2>&1 || true
+      TROMMEL_WINDOW_HEIGHT=820 timeout 50 "$BIN/trommel" > "$WORK/gui-preset-$theme-$language.log" 2>&1 || true
     [ -f "$target" ] && break
     echo "  … retrying $(basename "$target")" >&2
   done
@@ -172,12 +200,13 @@ preset_shot() {
 
 install_shot() {
   local theme="$1" language="$2" target="$3"
+  wanted "$target" || return 0
   configure "$language" 1
   local attempt
   for attempt in 1 2; do
     rm -f "$target"
     TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_INSTALL=1 TROMMEL_INSTALL_SCREENSHOT="$target" \
-      timeout 50 "$BIN/trommel" > "$WORK/gui-install-$theme-$language.log" 2>&1 || true
+      TROMMEL_WINDOW_HEIGHT=820 timeout 50 "$BIN/trommel" > "$WORK/gui-install-$theme-$language.log" 2>&1 || true
     [ -f "$target" ] && break
     echo "  … retrying $(basename "$target")" >&2
   done
@@ -186,11 +215,13 @@ install_shot() {
 
 wizard_shot() {
   local theme="$1" language="$2" target="$3" step="${4:-0}"
+  wanted "$target" || return 0
   configure "$language" 1
   local attempt
   for attempt in 1 2; do
     rm -f "$target"
     TROMMEL_COLOR_SCHEME="$theme" TROMMEL_OPEN_WIZARD=1 TROMMEL_WIZARD_SCREENSHOT="$target" \
+      TROMMEL_WINDOW_HEIGHT=820 \
       TROMMEL_WIZARD_STEP="$step" timeout 50 "$BIN/trommel" > "$WORK/gui-wizard-$theme-$language-$step.log" 2>&1 || true
     [ -f "$target" ] && break
     echo "  … retrying $(basename "$target")" >&2
@@ -198,7 +229,7 @@ wizard_shot() {
   [ -f "$target" ] && echo "  ✓ $(basename "$target")" || echo "  ✗ $target" >&2
 }
 
-shot dark en dashboard "$DOCS/dashboard-en-dark.png" 1 "" 900
+shot dark en dashboard "$DOCS/dashboard-en-dark.png" 1 "" 960
 shot dark en presets "$DOCS/presets-en-dark.png"
 shot dark en miners "$DOCS/miners-en-dark.png"
 shot dark en settings "$DOCS/settings-en-dark.png"
@@ -208,8 +239,8 @@ install_shot dark en "$DOCS/miner-install-en-dark.png"
 tune_shot dark en "$DOCS/gpu-tune-en-dark.png"
 wizard_shot dark en "$DOCS/setup-en-dark.png"
 wizard_shot dark en "$DOCS/setup-wallet-en-dark.png" 2
-shot dark ru dashboard "$DOCS/dashboard-ru-dark.png" 1 "" 900
+shot dark ru dashboard "$DOCS/dashboard-ru-dark.png" 1 "" 960
 shot dark ru settings "$DOCS/settings-ru-dark.png"
-shot light en dashboard "$DOCS/dashboard-en-light.png" 1 "" 900
-shot light ru dashboard "$DOCS/dashboard-ru-light.png" 1 "" 900
+shot light en dashboard "$DOCS/dashboard-en-light.png" 1 "" 960
+shot light ru dashboard "$DOCS/dashboard-ru-light.png" 1 "" 960
 echo "done"

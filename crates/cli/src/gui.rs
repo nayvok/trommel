@@ -5,7 +5,7 @@
 //! privileged work (GPU tuning, miner process) happens in `trommeld`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +14,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use trommel_core::catalog::{self, MinerOption, OptionKind};
-use trommel_core::config::{Appearance, ChangeClass, Config, MinerInstall, Preset};
+use trommel_core::config::{Appearance, Behavior, ChangeClass, Config, MinerInstall, Preset};
 use trommel_core::dbus::MinerProxy;
 use trommel_core::i18n::{self, tr};
 use trommel_core::nvidia::GpuStats;
@@ -36,7 +36,9 @@ enum Cmd {
     ApplyStart {
         json: String,
     },
-    ResetOc,
+    RestoreOc {
+        mode: String,
+    },
     Bench {
         minutes: u64,
     },
@@ -49,6 +51,7 @@ enum Ev {
     ServiceDown(String),
     Error(String),
     Applied { message: String, quiet: bool },
+    Busy(bool),
     Bench(String),
 }
 
@@ -104,21 +107,26 @@ fn spawn_worker(emit: Arc<dyn Fn(Ev) + Send + Sync>) -> tokio::sync::mpsc::Unbou
                                     if let Ok(cfg) = client.get_config().await { emit(Ev::Config(cfg)); }
                                 }
                                 Cmd::Toggle => {
+                                    emit(Ev::Busy(true));
                                     match client.toggle().await {
                                         Ok(_) => { if let Ok(json) = client.refresh().await { emit(Ev::Status(json)); } }
                                         Err(err) => emit(Ev::Error(err.to_string())),
                                     }
+                                    emit(Ev::Busy(false));
                                 }
                                 Cmd::Apply { json, mode, quiet } => {
+                                    emit(Ev::Busy(true));
                                     match client.apply_config(&json, &mode).await {
-                                        Ok(result) => emit(Ev::Applied {
-                                            message: result,
+                                        Ok(_result) => emit(Ev::Applied {
+                                            message: String::new(),
                                             quiet,
                                         }),
                                         Err(err) => emit(Ev::Error(err.to_string())),
                                     }
+                                    emit(Ev::Busy(false));
                                 }
                                 Cmd::ApplyStart { json } => {
+                                    emit(Ev::Busy(true));
                                     match client.apply_config(&json, "live").await {
                                         Ok(_) => match client.start().await {
                                             Ok(_) => {
@@ -134,15 +142,40 @@ fn spawn_worker(emit: Arc<dyn Fn(Ev) + Send + Sync>) -> tokio::sync::mpsc::Unbou
                                         },
                                         Err(err) => emit(Ev::Error(err.to_string())),
                                     }
+                                    emit(Ev::Busy(false));
                                 }
-                                Cmd::ResetOc => {
-                                    match client.reset_oc().await {
-                                        Ok(_) => emit(Ev::Applied {
-                                            message: "Stock settings restored".into(),
-                                            quiet: true,
-                                        }),
+                                Cmd::RestoreOc { mode } => {
+                                    emit(Ev::Busy(true));
+                                    match client.restore_oc(&mode).await {
+                                        Ok(report) => {
+                                            let parsed = serde_json::from_str::<serde_json::Value>(&report).ok();
+                                            let mode = parsed
+                                                .as_ref()
+                                                .and_then(|value| value["mode"].as_str())
+                                                .unwrap_or("snapshot");
+                                            let count = parsed
+                                                .as_ref()
+                                                .and_then(|value| value["restored"].as_u64())
+                                                .unwrap_or(0);
+                                            let message = if mode == "defaults" {
+                                                tr(
+                                                    &format!("Reset {count} GPU(s) to driver defaults"),
+                                                    &format!("Сброшено на сток драйвера: {count} GPU"),
+                                                ).to_string()
+                                            } else {
+                                                tr(
+                                                    &format!("Restored {count} GPU(s) to the pre-mining snapshot"),
+                                                    &format!("Возвращён снимок: {count} GPU"),
+                                                ).to_string()
+                                            };
+                                            emit(Ev::Applied { message, quiet: true });
+                                            if let Ok(json) = client.refresh().await {
+                                                emit(Ev::Status(json));
+                                            }
+                                        }
                                         Err(err) => emit(Ev::Error(err.to_string())),
                                     }
+                                    emit(Ev::Busy(false));
                                 }
                                 Cmd::Bench { minutes } => {
                                     let request = serde_json::json!({"seconds": minutes.saturating_mul(60)}).to_string();
@@ -203,20 +236,8 @@ struct SettingsWidgets {
     poll: adw::SpinRow,
     language: adw::ComboRow,
     appearance: adw::ComboRow,
-    power: adw::SpinRow,
-    core_lock: adw::SwitchRow,
-    core: adw::SpinRow,
-    memory_lock: adw::SwitchRow,
-    memory: adw::SpinRow,
     temp_limit: adw::SpinRow,
     temp_resume: adw::SpinRow,
-    gpu_settings_box: gtk::Box,
-    panel_mode: adw::ComboRow,
-    quick_toggle: adw::SwitchRow,
-    live_activity: adw::SwitchRow,
-    extension_state: adw::ActionRow,
-    extension_enable: gtk::Button,
-    extension_manager: gtk::Button,
     diagnostics: gtk::Button,
 }
 
@@ -225,6 +246,7 @@ struct App {
     toast: adw::ToastOverlay,
     stack: adw::ViewStack,
     banner: adw::Banner,
+    oc_banner: adw::Banner,
     tx: tokio::sync::mpsc::UnboundedSender<Cmd>,
     status: RefCell<Option<Status>>,
     config: RefCell<Config>,
@@ -232,16 +254,20 @@ struct App {
     dirty: Cell<bool>,
     action_button: gtk::Button,
     action_label: gtk::Label,
+    action_icon: gtk::Image,
     quick_button: gtk::Button,
     hero_hashrate: gtk::Label,
     hero_line: gtk::Label,
     hero_meta: gtk::Label,
     pill: gtk::Label,
+    total_gpus: adw::ActionRow,
     total_power: adw::ActionRow,
     total_temp: adw::ActionRow,
-    gpu_flow: gtk::FlowBox,
-    gpu_settings_sig: RefCell<String>,
+    gpu_host: gtk::Box,
     gpu_sig: RefCell<String>,
+    /// Rolling GPU metrics behind the sparklines in the cards.
+    history: Rc<RefCell<History>>,
+    sparklines: RefCell<Vec<SparkEntry>>,
     shares_ok: gtk::Label,
     shares_bad: gtk::Label,
     pool_balance_value: gtk::Label,
@@ -266,31 +292,58 @@ fn install_css() {
             padding: 12px;
             box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22), 0 6px 18px rgba(0, 0, 0, 0.12);
         }
-        .trommel-gpu-card:hover {
-            background-color: alpha(@card_fg_color, 0.05);
+        .trommel-gpu-card-wide {
+            padding: 16px;
         }
         .trommel-hero {
-            background-color: alpha(@card_bg_color, 0.55);
-            border-radius: 12px;
-            padding: 12px 14px;
+            background-color: alpha(@accent_bg_color, 0.10);
+            border: 1px solid alpha(@accent_bg_color, 0.22);
+            border-radius: 16px;
+            padding: 18px 20px;
+            box-shadow: 0 10px 28px alpha(@accent_bg_color, 0.12);
+        }
+        .trommel-hero-caption {
+            font-size: 0.7em;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            opacity: 0.55;
         }
         .trommel-hero-hashrate {
-            font-size: 2.4em;
+            font-size: 2.6em;
             font-weight: 800;
-            letter-spacing: -0.02em;
+            letter-spacing: -0.03em;
+        }
+        .trommel-hero-line { font-weight: 500; }
+        .trommel-hero-rule {
+            background-color: alpha(@card_fg_color, 0.12);
+            min-height: 1px;
+            margin-top: 6px;
+            margin-bottom: 2px;
+        }
+        .trommel-hero-meta { opacity: 0.72; }
+        .trommel-dialog-footer {
+            padding: 10px 12px 12px;
+            border-top: 1px solid alpha(@card_fg_color, 0.10);
+        }
+        .trommel-hero-action {
+            font-weight: 600;
+            min-height: 38px;
+            padding: 2px 22px;
         }
         .trommel-gpu-title { font-weight: 700; }
-        .trommel-gpu-settings-card {
-            background-color: alpha(@card_fg_color, 0.045);
-            border: 1px solid alpha(@card_fg_color, 0.08);
-            border-radius: 12px;
-            padding: 10px 12px;
+        .trommel-gpu-stat {
+            background-color: alpha(@card_fg_color, 0.06);
+            border-radius: 10px;
+            padding: 0;
         }
-        .trommel-gpu-settings-card:hover {
-            background-color: alpha(@card_fg_color, 0.07);
+        .trommel-gpu-stat-body { padding: 6px 9px 0; }
+        .trommel-gpu-stat-value {
+            font-weight: 700;
+            font-size: 1.05em;
+            font-feature-settings: "tnum";
         }
-        .trommel-gpu-settings-name { font-weight: 700; }
-        .trommel-gpu-settings-icon { opacity: 0.55; }
+        .trommel-gpu-stat-label { font-size: 0.72em; opacity: 0.65; }
+        .trommel-gpu-stat-hint { font-size: 0.7em; opacity: 0.5; }
         .trommel-gpu-chip {
             background-color: alpha(@card_fg_color, 0.07);
             border-radius: 999px;
@@ -298,8 +351,6 @@ fn install_css() {
             font-size: 0.9em;
             font-feature-settings: "tnum";
         }
-        .trommel-metric-label { font-size: 0.78em; opacity: 0.65; }
-        .trommel-metric-value { font-weight: 700; font-feature-settings: "tnum"; }
         .trommel-hot { color: @error_color; }
         .trommel-warm { color: @warning_color; }
         .trommel-muted { opacity: 0.6; }
@@ -377,10 +428,30 @@ fn clear_box(container: &gtk::Box) {
     }
 }
 
-fn clear_flow(flow: &gtk::FlowBox) {
-    while let Some(child) = flow.first_child() {
-        flow.remove(&child);
-    }
+/// Dialog chrome rule: the header carries the title (and the close control)
+/// only. Actions live in a footer below the scrolling content, so they never
+/// scroll away and never crowd the title — secondary actions on the left, the
+/// primary action on the right.
+fn dialog_footer() -> gtk::Box {
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    footer.add_css_class("trommel-dialog-footer");
+    footer
+}
+
+/// A horizontal spacer for a [`dialog_footer`] that pushes the primary action
+/// to the trailing edge.
+fn dialog_footer_spacer() -> gtk::Box {
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    spacer
+}
+
+/// Compose a dialog body from its scrolling content and its action footer.
+fn dialog_body(content: &impl IsA<gtk::Widget>, footer: &gtk::Box) -> gtk::Box {
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    body.append(content);
+    body.append(footer);
+    body
 }
 
 fn set_page_icon(stack: &adw::ViewStack, child: &impl IsA<gtk::Widget>, icon: &str) {
@@ -444,7 +515,12 @@ fn build_ui(app: &adw::Application) {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Trommel")
-        .default_width(680)
+        // The header carries navigation only (refresh, switcher, menu), so the
+        // one-line view switcher fits from about 850 px in Russian, the wider
+        // locale. 880 keeps a small margin without making the window feel wide;
+        // below that the switcher stacks its labels under the icons (still in
+        // the header) and only at ~740 it moves to the bottom bar.
+        .default_width(880)
         .default_height(760)
         .build();
     window.set_size_request(400, 420);
@@ -466,17 +542,29 @@ fn build_ui(app: &adw::Application) {
     stack.set_transition_duration(220);
     toast.set_child(Some(&stack));
 
-    let title = adw::WindowTitle::new(
-        "Trommel",
-        &tr("NVIDIA mining rig manager", "Менеджер NVIDIA-рига"),
-    );
-    // One navigation surface, always available: the bottom switcher bar. The
-    // header keeps the window title, so the switcher can never be duplicated
-    // at the top and disappear at the bottom on narrow windows.
+    // Top-level navigation lives in the header bar: the four views are the
+    // primary destinations, so the switcher is the title widget. It falls back
+    // to the app title when the window is too narrow for the labels, and only
+    // then the switcher bar reveals itself at the bottom. That is the stock
+    // libadwaita adaptive pattern and keeps a single visible navigation
+    // surface at any width. (AdwViewSwitcherTitle is deprecated since 1.4 in
+    // favour of hand-wired AdwBreakpoint setters; it still is the concise
+    // implementation of exactly this behaviour.)
+    let title = adw::ViewSwitcherTitle::builder()
+        .stack(&stack)
+        .title("Trommel")
+        .subtitle(tr("NVIDIA mining rig manager", "Менеджер NVIDIA-рига"))
+        .build();
     let switcher_bar = adw::ViewSwitcherBar::builder().stack(&stack).build();
-    switcher_bar.set_reveal(true);
+    {
+        let switcher_bar = switcher_bar.clone();
+        title.connect_notify_local(Some("title-visible"), move |title, _| {
+            switcher_bar.set_reveal(title.is_title_visible());
+        });
+    }
 
     let header = adw::HeaderBar::new();
+    header.set_centering_policy(adw::CenteringPolicy::Strict);
     header.set_title_widget(Some(&title));
 
     let refresh = gtk::Button::builder()
@@ -495,13 +583,6 @@ fn build_ui(app: &adw::Application) {
         .build();
     header.pack_end(&menu);
 
-    let action_label = gtk::Label::new(Some(&tr("Start", "Запустить")));
-    let action_button = gtk::Button::builder()
-        .css_classes(["suggested-action", "pill"])
-        .child(&action_label)
-        .build();
-    header.pack_end(&action_button);
-
     let banner = adw::Banner::builder()
         .title(tr(
             "You have unsaved changes",
@@ -510,12 +591,21 @@ fn build_ui(app: &adw::Application) {
         .button_label(tr("Apply", "Применить"))
         .build();
     banner.set_revealed(false);
+    let oc_banner = adw::Banner::builder()
+        .title(tr(
+            "GPU settings are still applied",
+            "Настройки GPU всё ещё применены",
+        ))
+        .button_label(tr("Restore stock", "Вернуть сток"))
+        .build();
+    oc_banner.set_revealed(false);
 
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
     toolbar.add_bottom_bar(&switcher_bar);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&banner);
+    content.append(&oc_banner);
     content.append(&toast);
     toolbar.set_content(Some(&content));
     window.set_content(Some(&toolbar));
@@ -547,27 +637,72 @@ fn build_ui(app: &adw::Application) {
     hero.set_margin_bottom(12);
     hero.set_margin_start(6);
     hero.set_margin_end(6);
-    let hero_top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let hero_top = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let hero_left = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    hero_left.set_hexpand(true);
+    let hero_caption = label(
+        &tr("HASHRATE", "ХЕШРЕЙТ"),
+        &["caption", "trommel-hero-caption"],
+    );
     let hero_hashrate = label("—", &["trommel-hero-hashrate", "numeric", "dim-label"]);
-    hero_hashrate.set_hexpand(true);
+    hero_left.append(&hero_caption);
+    hero_left.append(&hero_hashrate);
     let pill = label(
         &tr("stopped", "остановлен"),
         &["caption", "trommel-pill", "trommel-pill-stopped"],
     );
     pill.set_valign(gtk::Align::Center);
-    hero_top.append(&hero_hashrate);
+    hero_top.append(&hero_left);
     hero_top.append(&pill);
-    let hero_line = label(&tr("No preset", "Нет пресета"), &["caption"]);
-    let hero_meta = label("", &["caption", "dim-label", "numeric"]);
+    let hero_line = label(
+        &tr("No preset", "Нет пресета"),
+        &["caption", "trommel-hero-line"],
+    );
+    let hero_rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+    hero_rule.add_css_class("trommel-hero-rule");
+    let hero_meta = label(
+        "",
+        &["caption", "dim-label", "numeric", "trommel-hero-meta"],
+    );
+    hero_line.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    hero_meta.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    // Start/Stop is the action of this page, not of the app chrome: it sits in
+    // the hero footer so the card's brightest control is anchored to its
+    // bottom edge and the header keeps navigation only (refresh, switcher,
+    // menu), which stays single-line at narrower widths.
+    let action_label = gtk::Label::new(Some(&tr("Start", "Запустить")));
+    let action_icon = gtk::Image::from_icon_name("media-playback-start-symbolic");
+    let action_content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    action_content.set_halign(gtk::Align::Center);
+    action_content.append(&action_icon);
+    action_content.append(&action_label);
+    let action_button = gtk::Button::builder()
+        .css_classes(["suggested-action", "pill", "trommel-hero-action"])
+        .child(&action_content)
+        .valign(gtk::Align::Center)
+        .build();
+    // The button has a custom child (icon + label), so GTK cannot derive its
+    // accessible name from a plain label property; set it explicitly and keep
+    // it in sync with the visible text.
+    set_action_text(&action_button, &action_label, &tr("Start", "Запустить"));
+    let hero_footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    hero_footer.set_margin_top(2);
+    hero_meta.set_hexpand(true);
+    hero_meta.set_valign(gtk::Align::Center);
+    hero_footer.append(&hero_meta);
+    hero_footer.append(&action_button);
+    // Secondary affordance: the hero already carries the primary Start, and
+    // both paths open the same wizard on an unfinished install.
     let quick_button = gtk::Button::builder()
         .label(tr("Quick setup", "Быстрая настройка"))
-        .css_classes(["suggested-action", "pill"])
+        .css_classes(["flat", "pill"])
         .halign(gtk::Align::Start)
         .build();
     quick_button.set_visible(false);
     hero.append(&hero_top);
     hero.append(&hero_line);
-    hero.append(&hero_meta);
+    hero.append(&hero_rule);
+    hero.append(&hero_footer);
     hero.append(&quick_button);
     hero_group.add(&hero);
     dashboard_box.append(&hero_group);
@@ -576,20 +711,19 @@ fn build_ui(app: &adw::Application) {
         .title(tr("Rig", "Риг"))
         .description(tr("Per-GPU live state", "Живое состояние каждой карты"))
         .build();
-    let gpu_flow = gtk::FlowBox::new();
-    gpu_flow.set_selection_mode(gtk::SelectionMode::None);
-    gpu_flow.set_max_children_per_line(3);
-    gpu_flow.set_min_children_per_line(1);
-    gpu_flow.set_homogeneous(true);
-    gpu_flow.set_column_spacing(10);
-    gpu_flow.set_row_spacing(10);
-    gpu_flow.set_margin_top(6);
-    gpu_flow.set_margin_bottom(6);
-    rig_group.add(&gpu_flow);
+    let gpu_host = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    gpu_host.set_hexpand(true);
+    gpu_host.set_margin_top(6);
+    gpu_host.set_margin_bottom(6);
+    rig_group.add(&gpu_host);
     dashboard_box.append(&rig_group);
 
     let totals_group = adw::PreferencesGroup::builder()
         .title(tr("Totals", "Итого"))
+        .build();
+    let total_gpus = adw::ActionRow::builder()
+        .title(tr("Cards", "Карты"))
+        .subtitle("—")
         .build();
     let total_power = adw::ActionRow::builder()
         .title(tr("Power", "Мощность"))
@@ -599,6 +733,7 @@ fn build_ui(app: &adw::Application) {
         .title(tr("Max temperature", "Макс. температура"))
         .subtitle("—")
         .build();
+    totals_group.add(&total_gpus);
     totals_group.add(&total_power);
     totals_group.add(&total_temp);
     dashboard_box.append(&totals_group);
@@ -668,6 +803,7 @@ fn build_ui(app: &adw::Application) {
         toast: toast.clone(),
         stack: stack.clone(),
         banner: banner.clone(),
+        oc_banner: oc_banner.clone(),
         tx,
         status: RefCell::new(None),
         applied: RefCell::new(cfg.clone()),
@@ -675,16 +811,19 @@ fn build_ui(app: &adw::Application) {
         dirty: Cell::new(false),
         action_button: action_button.clone(),
         action_label: action_label.clone(),
+        action_icon: action_icon.clone(),
         quick_button: quick_button.clone(),
         hero_hashrate,
         hero_line,
         hero_meta,
         pill,
+        total_gpus,
         total_power,
         total_temp,
-        gpu_flow,
-        gpu_settings_sig: RefCell::new(String::new()),
+        gpu_host,
         gpu_sig: RefCell::new(String::new()),
+        history: Rc::new(RefCell::new(History::default())),
+        sparklines: RefCell::new(Vec::new()),
         shares_ok,
         shares_bad,
         pool_balance_value,
@@ -704,7 +843,6 @@ fn build_ui(app: &adw::Application) {
     refresh_preset_list(&app_state);
     refresh_miners(&app_state);
     load_settings(&app_state);
-    apply_simple_mode(&app_state);
     update_dirty(&app_state);
 
     {
@@ -893,15 +1031,15 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     let restore_stock = switch_row(
         &tr("Restore stock on stop", "Возвращать сток при остановке"),
         &tr(
-            "Restore the power limit captured before mining",
-            "Возвращать лимит питания, снятый до майнинга",
+            "Restore the captured power limit and unlock clocks on Stop (on by default)",
+            "Возвращать снятый лимит питания и разлочивать частоты при остановке (включено по умолчанию)",
         ),
     );
     let notifications = switch_row(
         &tr("Notifications", "Уведомления"),
         &tr(
-            "Start, stop and overheat; shown by the GNOME extension",
-            "Старт, стоп и перегрев; показывает расширение GNOME",
+            "Show a desktop notification for crashes, errors and overheat",
+            "Показывать уведомление при падении, ошибке и перегреве",
         ),
     );
     let start_login = switch_row(
@@ -917,6 +1055,26 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             "Hide advanced miner options and extra arguments",
             "Скрыть продвинутые настройки майнера и extra args",
         ),
+    );
+    let temp_limit = spin_row(
+        &tr("Temperature limit", "Порог температуры"),
+        &tr(
+            "°C — overheat warning; passed to miners that support a temperature limit",
+            "°C — предупреждение о перегреве; передаётся майнерам с поддержкой лимита температуры",
+        ),
+        90.0,
+        60.0,
+        100.0,
+    );
+    let temp_resume = spin_row(
+        &tr("Resume temperature", "Температура возобновления"),
+        &tr(
+            "°C — resume below this temperature",
+            "°C — возобновление ниже этой температуры",
+        ),
+        65.0,
+        40.0,
+        95.0,
     );
     let poll = spin_row(
         &tr("Poll interval", "Интервал опроса"),
@@ -942,6 +1100,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     ] {
         behavior.add(row);
     }
+    behavior.add(&temp_limit);
+    behavior.add(&temp_resume);
     let appearance = adw::ComboRow::builder()
         .title(tr("Appearance", "Оформление"))
         .subtitle(tr(
@@ -958,149 +1118,6 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     behavior.add(&language);
     behavior.add(&appearance);
     page.add(&behavior);
-
-    let gpu = adw::PreferencesGroup::builder()
-        .title(tr("GPU defaults", "Настройки GPU по умолчанию"))
-        .description(tr(
-            "Per-GPU overrides are stored in the config; this is the default profile.",
-            "Переопределения по картам хранятся в конфиге; здесь — профиль по умолчанию.",
-        ))
-        .build();
-    let power = spin_row(
-        &tr("Power limit", "Лимит питания"),
-        &tr("W — 0 = driver auto", "Вт — 0 = авто драйвера"),
-        300.0,
-        0.0,
-        1000.0,
-    );
-    let core_lock = switch_row(
-        &tr("Lock core clock", "Лочить частоту ядра"),
-        &tr(
-            "Optional; off = driver auto",
-            "Опционально; выкл. = авто драйвера",
-        ),
-    );
-    let core = spin_row(
-        &tr("Core clock", "Частота ядра"),
-        "MHz",
-        1620.0,
-        100.0,
-        4000.0,
-    );
-    core.set_sensitive(core_lock.is_active());
-    let memory_lock = switch_row(
-        &tr("Lock memory clock", "Лочить частоту памяти"),
-        &tr(
-            "Optional; a lower lock can save power on some coins",
-            "Опционально; низкий лок может экономить питание на некоторых монетах",
-        ),
-    );
-    let memory = spin_row(
-        &tr("Memory clock", "Частота памяти"),
-        "MHz",
-        810.0,
-        100.0,
-        12000.0,
-    );
-    memory.set_sensitive(memory_lock.is_active());
-    let temp_limit = spin_row(
-        &tr("Temperature limit", "Порог температуры"),
-        "°C",
-        90.0,
-        60.0,
-        100.0,
-    );
-    let temp_resume = spin_row(
-        &tr("Resume temperature", "Температура возобновления"),
-        "°C",
-        65.0,
-        40.0,
-        95.0,
-    );
-    gpu.add(&power);
-    gpu.add(&core_lock);
-    gpu.add(&core);
-    gpu.add(&memory_lock);
-    gpu.add(&memory);
-    gpu.add(&temp_limit);
-    gpu.add(&temp_resume);
-    {
-        let core_row = core.clone();
-        core_lock.connect_notify_local(Some("active"), move |row, _| {
-            core_row.set_sensitive(row.is_active());
-        });
-        let memory_row = memory.clone();
-        memory_lock.connect_notify_local(Some("active"), move |row, _| {
-            memory_row.set_sensitive(row.is_active());
-        });
-    }
-    page.add(&gpu);
-
-    let detected = adw::PreferencesGroup::builder()
-        .title(tr("Detected GPUs", "Обнаруженные карты"))
-        .description(tr(
-            "Power and clock locks are per card; temperature and fan shown here are live values.",
-            "Питание и локи частот — по картам; температура и вентилятор здесь — живые значения.",
-        ))
-        .build();
-    let gpu_settings_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    detected.add(&gpu_settings_box);
-    page.add(&detected);
-
-    let extension = adw::PreferencesGroup::builder()
-        .title(tr("GNOME integration", "Интеграция с GNOME"))
-        .description(tr(
-            "The panel applet is optional; mining works without it. Settings here are shared with the extension via GSettings.",
-            "Апплет в панели необязателен; майнинг работает и без него. Настройки здесь общие с расширением через GSettings.",
-        ))
-        .build();
-    let panel_mode = adw::ComboRow::builder()
-        .title(tr("Panel label", "Подпись в панели"))
-        .model(&gtk::StringList::new(&[
-            tr("Icon only", "Только иконка").as_str(),
-            tr("Hashrate", "Хешрейт").as_str(),
-            tr("Temperature", "Температура").as_str(),
-            tr("Hashrate and temperature", "Хешрейт и температура").as_str(),
-        ]))
-        .build();
-    let quick_toggle = switch_row(
-        &tr("Quick Settings toggle", "Переключатель в Quick Settings"),
-        &tr(
-            "Start/stop mining from the system menu",
-            "Старт/стоп из системного меню",
-        ),
-    );
-    let live_activity = switch_row(
-        &tr("Live activity card", "Живая карточка"),
-        &tr(
-            "Show hashrate and temperature in the popup",
-            "Показывать хешрейт и температуру в поповере",
-        ),
-    );
-    let extension_state = adw::ActionRow::builder()
-        .title(tr("GNOME Shell extension", "Расширение GNOME Shell"))
-        .subtitle(tr("Checking…", "Проверяю…"))
-        .build();
-    let extension_enable = gtk::Button::builder()
-        .label(tr("Enable", "Включить"))
-        .css_classes(["pill"])
-        .valign(gtk::Align::Center)
-        .build();
-    // Icon-only: on a 400 px window a labelled button squeezed the row title
-    // into a one-character column. The tooltip keeps it discoverable.
-    let extension_manager = gtk::Button::builder()
-        .icon_name("application-x-addon-symbolic")
-        .tooltip_text(tr("Extension Manager", "Менеджер расширений"))
-        .css_classes(["flat", "pill"])
-        .valign(gtk::Align::Center)
-        .build();
-    extension_state.add_suffix(&extension_manager);
-    extension_state.add_suffix(&extension_enable);
-    extension.add(&panel_mode);
-    extension.add(&quick_toggle);
-    extension.add(&live_activity);
-    extension.add(&extension_state);
-    page.add(&extension);
 
     let actions = adw::PreferencesGroup::builder()
         .title(tr("Actions", "Действия"))
@@ -1135,8 +1152,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     let stock_row = adw::ActionRow::builder()
         .title(tr("Restore stock now", "Вернуть сток сейчас"))
         .subtitle(tr(
-            "Restores the snapshot captured before mining",
-            "Возвращает снимок, снятый до майнинга",
+            "Restore the pre-mining snapshot or reset to the driver default",
+            "Вернуть снимок до майнинга или сбросить на сток драйвера",
         ))
         .build();
     stock_row.add_suffix(&stock);
@@ -1158,20 +1175,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             poll,
             language,
             appearance,
-            power,
-            core_lock,
-            core,
-            memory_lock,
-            memory,
             temp_limit,
             temp_resume,
-            gpu_settings_box,
-            panel_mode,
-            quick_toggle,
-            live_activity,
-            extension_state,
-            extension_enable,
-            extension_manager,
             diagnostics,
         },
     )
@@ -1180,6 +1185,135 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
 thread_local! {
     static SAVE_SETTINGS_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
     static STOCK_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
+}
+
+// --------------------------------------------------------------- restore
+
+/// Ask before changing power/clocks and explain exactly what will be written.
+/// The daemon owns the snapshot; the status only carries a summary, so a
+/// multi-GPU rig still gets a per-GPU report in the toast afterwards.
+fn restore_stock_dialog(app: &Rc<App>) {
+    let running = app
+        .status
+        .borrow()
+        .as_ref()
+        .map(|status| status.state.running)
+        .unwrap_or(false);
+    if running {
+        app.toast.add_toast(adw::Toast::new(&tr(
+            "Stop the miner before restoring the stock profile",
+            "Сначала остановите майнер, затем верните сток",
+        )));
+        return;
+    }
+    let status = match app.status.borrow().clone() {
+        Some(status) => status,
+        None => {
+            app.toast.add_toast(adw::Toast::new(&tr(
+                "Status is not available yet; wait for the daemon",
+                "Статус ещё не получен — дождитесь демона",
+            )));
+            return;
+        }
+    };
+    let oc = status.oc.clone();
+    let has_snapshot = oc.snapshot_available && !oc.stale && oc.restore_power_w.is_some();
+    let snapshot_w = oc.restore_power_w;
+    let default_w = oc.driver_default_w;
+    let cards = status.gpus.len().max(1);
+    let mut body = String::new();
+    if has_snapshot {
+        body.push_str(&tr(
+            &format!(
+                "Restore the values captured before mining: {} W, clocks unlocked.",
+                snapshot_w.unwrap_or(0)
+            ),
+            &format!(
+                "Вернуть значения, снятые до майнинга: {} W, частоты разлочены.",
+                snapshot_w.unwrap_or(0)
+            ),
+        ));
+        if oc.was_tuned {
+            body.push(' ');
+            body.push_str(&tr(
+                &format!(
+                    "The card already had a non-default limit before mining; the driver default is {} W.",
+                    default_w.unwrap_or(0)
+                ),
+                &format!(
+                    "До майнинга на карте уже был нестандартный лимит; сток драйвера — {} W.",
+                    default_w.unwrap_or(0)
+                ),
+            ));
+        }
+    } else {
+        body.push_str(&tr(
+            &format!(
+                "No usable pre-mining snapshot. Reset power to the driver default ({} W) and unlock clocks.",
+                default_w.unwrap_or(0)
+            ),
+            &format!(
+                "Подходящего снимка нет. Сбросить питание на сток драйвера ({} W) и разлочить частоты.",
+                default_w.unwrap_or(0)
+            ),
+        ));
+    }
+    if cards > 1 {
+        body.push(' ');
+        body.push_str(&tr(
+            &format!("Applies to all {cards} cards."),
+            &format!("Применится ко всем картам: {cards}."),
+        ));
+    }
+    if let Some(err) = &oc.last_error {
+        body.push(' ');
+        body.push_str(&tr(
+            &format!("Last error: {err}"),
+            &format!("Последняя ошибка: {err}"),
+        ));
+    }
+
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr("Restore GPU stock?", "Вернуть сток GPU?"))
+        .body(&body)
+        .build();
+    dialog.add_response("cancel", &tr("Cancel", "Отмена"));
+    if has_snapshot {
+        dialog.add_response("snapshot", &tr("Restore snapshot", "Вернуть снимок"));
+        dialog.set_response_appearance("snapshot", adw::ResponseAppearance::Suggested);
+    }
+    let can_defaults = default_w.is_some() && (!has_snapshot || default_w != snapshot_w);
+    if can_defaults || !has_snapshot {
+        dialog.add_response("defaults", &tr("Driver defaults", "Сток драйвера"));
+        if !has_snapshot {
+            dialog.set_response_appearance("defaults", adw::ResponseAppearance::Suggested);
+        }
+    }
+    if !has_snapshot && default_w.is_none() {
+        dialog.set_body(&tr(
+            "No snapshot and no power limit reported by nvidia-smi; nothing to restore.",
+            "Нет ни снимка, ни лимита питания от nvidia-smi — возвращать нечего.",
+        ));
+        dialog.add_response("close", &tr("Close", "Закрыть"));
+        dialog.set_default_response(Some("close"));
+        dialog.set_close_response("close");
+        dialog.choose(Some(&app.window), None::<&gio::Cancellable>, |_| {});
+        return;
+    }
+    dialog.set_default_response(Some(if has_snapshot { "snapshot" } else { "defaults" }));
+    dialog.set_close_response("cancel");
+    let window = app.window.clone();
+    let app = app.clone();
+    dialog.choose(Some(&window), None::<&gio::Cancellable>, move |response| {
+        let mode = match response.as_str() {
+            "snapshot" => "snapshot",
+            "defaults" => "defaults",
+            _ => return,
+        };
+        let _ = app.tx.send(Cmd::RestoreOc {
+            mode: mode.to_string(),
+        });
+    });
 }
 
 // --------------------------------------------------------------- signals
@@ -1224,6 +1358,13 @@ fn connect_signals(app: &Rc<App>) {
     }
     {
         let app = app.clone();
+        let banner = app.oc_banner.clone();
+        banner.connect_button_clicked(move |_| {
+            restore_stock_dialog(&app);
+        });
+    }
+    {
+        let app = app.clone();
         let button = app.quick_button.clone();
         button.connect_clicked(move |_| {
             quick_setup_wizard(&app);
@@ -1241,20 +1382,10 @@ fn connect_signals(app: &Rc<App>) {
         });
     }
     if let Some(button) = STOCK_BUTTON.with(|slot| slot.borrow().clone()) {
-        let tx = app.tx.clone();
+        let app = app.clone();
         button.connect_clicked(move |_| {
-            let _ = tx.send(Cmd::ResetOc);
+            restore_stock_dialog(&app);
         });
-    }
-    {
-        let app = app.clone();
-        let button = app.settings.extension_enable.clone();
-        button.connect_clicked(move |_| enable_extension(&app));
-    }
-    {
-        let app = app.clone();
-        let button = app.settings.extension_manager.clone();
-        button.connect_clicked(move |_| open_extension_manager(&app));
     }
     {
         let app = app.clone();
@@ -1262,8 +1393,9 @@ fn connect_signals(app: &Rc<App>) {
         button.connect_clicked(move |_| copy_diagnostics(&app));
     }
     {
-        // The simple-mode switch is part of the draft: apply it immediately so
-        // the advanced GPU table and the clock lock rows match the switch.
+        // The simple-mode switch is part of the draft. The tune dialog and the
+        // preset editor read the flag when they open, so nothing on this page
+        // has to be rebuilt.
         let app = app.clone();
         let simple_row = app.settings.simple_mode.clone();
         simple_row.connect_notify_local(Some("active"), move |row, _| {
@@ -1271,33 +1403,51 @@ fn connect_signals(app: &Rc<App>) {
                 return;
             }
             app.config.borrow_mut().behavior.simple_mode = row.is_active();
-            apply_simple_mode(&app);
             mark_dirty(&app);
-            let gpus = app
-                .status
-                .borrow()
-                .as_ref()
-                .map(|status| status.gpus.clone())
-                .unwrap_or_default();
-            refresh_gpu_settings(&app, &gpus);
         });
     }
     {
-        // The lock rows are only shown while their switch is on; without this
-        // the Settings page kept a disabled 1620/810 visible and looked as if
-        // the lock were configured.
-        let app = app.clone();
-        app.settings
-            .core_lock
-            .clone()
-            .connect_notify_local(Some("active"), move |_, _| apply_simple_mode(&app));
-    }
-    {
-        let app = app.clone();
-        app.settings
-            .memory_lock
-            .clone()
-            .connect_notify_local(Some("active"), move |_, _| apply_simple_mode(&app));
+        // Settings switches are part of the draft, exactly like the preset
+        // editor. Without this, toggling "restore stock on stop" and pressing
+        // the global Apply banner silently applied the old value: the Save
+        // button was the only path that copied the switches into the config.
+        let row = app.settings.auto_restart.clone();
+        bind_switch_draft(
+            app,
+            &row,
+            |behavior| behavior.auto_restart,
+            |behavior, value| behavior.auto_restart = value,
+        );
+        let row = app.settings.restore_stock.clone();
+        bind_switch_draft(
+            app,
+            &row,
+            |behavior| behavior.restore_stock_on_stop,
+            |behavior, value| behavior.restore_stock_on_stop = value,
+        );
+        let row = app.settings.notifications.clone();
+        bind_switch_draft(
+            app,
+            &row,
+            |behavior| behavior.notifications,
+            |behavior, value| behavior.notifications = value,
+        );
+        let row = app.settings.start_login.clone();
+        bind_switch_draft(
+            app,
+            &row,
+            |behavior| behavior.start_mining_on_login,
+            |behavior, value| behavior.start_mining_on_login = value,
+        );
+        let row = app.settings.poll.clone();
+        bind_spin_draft(
+            app,
+            &row,
+            |behavior| behavior.poll_interval_s,
+            |behavior, value| behavior.poll_interval_s = value,
+        );
+        let row = app.settings.language.clone();
+        bind_language_draft(app, &row);
     }
     {
         // Appearance applies immediately; it is also part of the draft so it
@@ -1386,6 +1536,138 @@ fn update_dirty(app: &Rc<App>) {
 fn mark_dirty(app: &Rc<App>) {
     app.dirty.set(true);
     update_dirty(app);
+}
+
+/// Keep a Settings switch in sync with the draft as soon as it is toggled.
+///
+/// The Settings page also has an explicit **Save and apply** button, but the
+/// global unsaved-changes banner applies the draft directly. If the switches
+/// only wrote into the draft from `save_settings`, that second path dropped
+/// the change and the old value (for example “restore stock on stop = off”)
+/// was saved while the switch on screen showed the new one.
+fn bind_switch_draft<G, S>(app: &Rc<App>, row: &adw::SwitchRow, get: G, set: S)
+where
+    G: Fn(&Behavior) -> bool + 'static,
+    S: Fn(&mut Behavior, bool) + 'static,
+{
+    let app = app.clone();
+    row.connect_notify_local(Some("active"), move |row, _| {
+        let value = row.is_active();
+        if get(&app.config.borrow().behavior) == value {
+            return;
+        }
+        set(&mut app.config.borrow_mut().behavior, value);
+        mark_dirty(&app);
+    });
+}
+
+fn bind_spin_draft<G, S>(app: &Rc<App>, row: &adw::SpinRow, get: G, set: S)
+where
+    G: Fn(&Behavior) -> u64 + 'static,
+    S: Fn(&mut Behavior, u64) + 'static,
+{
+    let app = app.clone();
+    row.connect_notify_local(Some("value"), move |row, _| {
+        let value = row.value() as u64;
+        if get(&app.config.borrow().behavior) == value {
+            return;
+        }
+        set(&mut app.config.borrow_mut().behavior, value);
+        mark_dirty(&app);
+    });
+}
+
+fn bind_language_draft(app: &Rc<App>, row: &adw::ComboRow) {
+    let app = app.clone();
+    row.connect_notify_local(Some("selected"), move |row, _| {
+        let value = match row.selected() {
+            1 => i18n::Language::En,
+            2 => i18n::Language::Ru,
+            _ => i18n::Language::System,
+        };
+        if app.config.borrow().behavior.language == value {
+            return;
+        }
+        app.config.borrow_mut().behavior.language = value;
+        mark_dirty(&app);
+    });
+}
+
+/// Errors are usually longer than one toast line. Show the short form with a
+/// Details button; the dialog keeps the full text selectable and copyable.
+fn show_error_toast(app: &Rc<App>, message: &str) {
+    let toast = adw::Toast::builder()
+        .title(message)
+        .button_label(tr("Details", "Подробнее"))
+        .timeout(10)
+        .build();
+    let app_for_details = app.clone();
+    let message = message.to_string();
+    toast.connect_button_clicked(move |_| show_error_details(&app_for_details, &message));
+    app.toast.add_toast(toast);
+}
+
+fn show_error_details(app: &Rc<App>, message: &str) {
+    // An AdwDialog, not a window: it lives inside the main window, inherits the
+    // app style and uses libadwaita's spring presentation (the same bounce as
+    // the alert dialogs) instead of the compositor's window-open scale.
+    let dialog = adw::Dialog::builder()
+        .title(tr("Error details", "Подробности ошибки"))
+        .content_width(560)
+        .content_height(320)
+        .build();
+    let header = adw::HeaderBar::new();
+    // The explicit Close button is the only dismiss control; the automatic
+    // dialog-title close would duplicate it.
+    header.set_show_end_title_buttons(false);
+    let copy = gtk::Button::builder()
+        .label(tr("Copy", "Копировать"))
+        .css_classes(["flat", "pill"])
+        .build();
+    let close = gtk::Button::builder()
+        .label(tr("Close", "Закрыть"))
+        .css_classes(["suggested-action", "pill"])
+        .build();
+    let footer = dialog_footer();
+    footer.append(&copy);
+    footer.append(&dialog_footer_spacer());
+    footer.append(&close);
+    let view = gtk::TextView::builder()
+        .editable(false)
+        .cursor_visible(false)
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .left_margin(16)
+        .right_margin(16)
+        .top_margin(12)
+        .bottom_margin(12)
+        .build();
+    view.buffer().set_text(message);
+    let scroll = gtk::ScrolledWindow::builder()
+        .child(&view)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&dialog_body(&scroll, &footer)));
+    dialog.set_child(Some(&toolbar));
+    {
+        let dialog = dialog.clone();
+        close.connect_clicked(move |_| {
+            dialog.close();
+        });
+    }
+    {
+        let copy_button = copy.clone();
+        let message = message.to_string();
+        copy.connect_clicked(move |_| {
+            if let Some(display) = gdk::Display::default() {
+                display.clipboard().set_text(&message);
+            }
+            copy_button.set_label(&tr("Copied", "Скопировано"));
+        });
+    }
+    dialog.present(Some(&app.window));
 }
 
 fn pool_names() -> Vec<String> {
@@ -1653,28 +1935,34 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     };
     let simple = app.config.borrow().behavior.simple_mode;
 
-    let window = gtk::Window::builder()
+    let dialog = adw::Dialog::builder()
         .title(tr("Preset", "Пресет"))
-        .modal(true)
-        .transient_for(&app.window)
-        .default_width(600)
-        .default_height(700)
+        .content_width(600)
+        .content_height(700)
         .build();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(
         &base.name,
         &tr("Preset", "Пресет"),
     )));
-    let cancel = gtk::Button::with_label(&tr("Cancel", "Отмена"));
-    header.pack_start(&cancel);
+    // Cancel is the dismiss control, so the header needs no second close
+    // button; Save sits in the footer with the rest of the actions.
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk::Button::builder()
+        .label(tr("Cancel", "Отмена"))
+        .css_classes(["flat", "pill"])
+        .build();
     let save = gtk::Button::builder()
         .label(tr("Save", "Сохранить"))
         .css_classes(["suggested-action", "pill"])
         .build();
-    header.pack_end(&save);
-    window.set_titlebar(Some(&header));
+    let footer = dialog_footer();
+    footer.append(&cancel);
+    footer.append(&dialog_footer_spacer());
+    footer.append(&save);
 
     let page = adw::PreferencesPage::new();
+    page.set_vexpand(true);
 
     let miner_group = adw::PreferencesGroup::builder()
         .title(tr("Miner", "Майнер"))
@@ -1804,7 +2092,10 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     actions.append(&delete);
     actions_group.add(&actions);
     page.add(&actions_group);
-    window.set_child(Some(&page));
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&dialog_body(&page, &footer)));
+    dialog.set_child(Some(&toolbar));
 
     let options: Rc<RefCell<Vec<OptionRow>>> = Rc::new(RefCell::new(Vec::new()));
     preset_editor_versions(app, &miner, &version, &base.miner_version);
@@ -1905,7 +2196,7 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     }
     {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
         let id = id.to_string();
         let name = name.clone();
         let pool = pool.clone();
@@ -1961,39 +2252,41 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
             mark_dirty(&app);
             refresh_preset_list(&app);
             refresh_miners(&app);
-            window.close();
+            dialog.close();
             save_and_apply(&app);
         });
     }
     {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
         let id = id.to_string();
         duplicate.connect_clicked(move |_| {
             if let Some(new_id) = duplicate_preset(&app, &id) {
-                window.close();
+                dialog.close();
                 preset_editor_dialog(&app, &new_id);
             }
         });
     }
     {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
         let id = id.to_string();
-        delete.connect_clicked(move |_| delete_preset(&app, &window, &id));
+        delete.connect_clicked(move |_| delete_preset(&app, &dialog, &id));
     }
     {
-        let window = window.clone();
-        cancel.connect_clicked(move |_| window.close());
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| {
+            dialog.close();
+        });
     }
-    window.present();
+    dialog.present(Some(&app.window));
     if let Some(path) = std::env::var_os("TROMMEL_PRESET_SCREENSHOT") {
         let path = path.to_string_lossy().into_owned();
-        let capture = window.clone();
+        let capture = app.window.clone();
         let application = app.window.application();
         glib::timeout_add_seconds_local(2, move || {
             if let Some(application) = application.clone() {
-                schedule_window_screenshot(capture.clone(), path.clone(), application, 0);
+                schedule_screenshot(capture.clone(), path.clone(), application, 0);
             }
             glib::ControlFlow::Break
         });
@@ -2050,15 +2343,25 @@ fn duplicate_preset(app: &Rc<App>, id: &str) -> Option<String> {
     Some(new_id)
 }
 
-fn delete_preset(app: &Rc<App>, window: &gtk::Window, id: &str) {
+fn delete_preset(app: &Rc<App>, editor: &adw::Dialog, id: &str) {
     let Some(preset) = app.config.borrow().presets.get(id).cloned() else {
         return;
     };
     if app.config.borrow().presets.len() <= 1 {
-        app.toast.add_toast(adw::Toast::new(&tr(
-            "At least one preset is required.",
-            "Нужен хотя бы один пресет.",
-        )));
+        // A toast would be painted behind the modal dialog, so say it in place.
+        let alert = adw::AlertDialog::builder()
+            .heading(tr(
+                "At least one preset is required",
+                "Нужен хотя бы один пресет",
+            ))
+            .body(tr(
+                "Create another preset first, then delete this one.",
+                "Сначала создайте другой пресет, потом удаляйте этот.",
+            ))
+            .build();
+        alert.add_response("close", &tr("Close", "Закрыть"));
+        alert.set_close_response("close");
+        alert.present(Some(&app.window));
         return;
     }
     let dialog = adw::AlertDialog::builder()
@@ -2078,8 +2381,8 @@ fn delete_preset(app: &Rc<App>, window: &gtk::Window, id: &str) {
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
     dialog.set_close_response("cancel");
     let app = app.clone();
-    let window = window.clone();
-    let parent = window.clone();
+    let editor = editor.clone();
+    let parent = app.window.clone();
     let id = id.to_string();
     dialog.choose(Some(&parent), None::<&gio::Cancellable>, move |response| {
         if response != "delete" {
@@ -2094,7 +2397,7 @@ fn delete_preset(app: &Rc<App>, window: &gtk::Window, id: &str) {
         }
         mark_dirty(&app);
         refresh_preset_list(&app);
-        window.close();
+        editor.close();
     });
 }
 
@@ -2210,90 +2513,6 @@ fn refresh_miners(app: &Rc<App>) {
     }
 }
 
-fn extension_settings() -> Option<gio::Settings> {
-    let source = gio::SettingsSchemaSource::default()?;
-    let schema = source.lookup("org.gnome.shell.extensions.trommel", true)?;
-    Some(gio::Settings::new_full(
-        &schema,
-        None::<&gio::SettingsBackend>,
-        None,
-    ))
-}
-
-fn refresh_extension_state(app: &Rc<App>) {
-    let info = std::process::Command::new("gnome-extensions")
-        .args(["info", "trommel@nayvok.github.io"])
-        .output();
-    let enabled = std::process::Command::new("gnome-extensions")
-        .args(["list", "--enabled"])
-        .output()
-        .map(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .any(|line| line.trim() == "trommel@nayvok.github.io")
-        })
-        .unwrap_or(false);
-    let text = match info {
-        Ok(output) => format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ),
-        Err(_) => String::new(),
-    };
-    if text.contains("не найден") || text.contains("not found") || text.is_empty() {
-        app.settings.extension_state.set_subtitle(&tr(
-            "Not installed — install the package or run install.sh",
-            "Не установлено — установите пакет или запустите install.sh",
-        ));
-        app.settings.extension_enable.set_sensitive(false);
-        return;
-    }
-    let state_text = if enabled {
-        tr("Enabled", "Включено")
-    } else {
-        tr(
-            "Disabled — enable it here or in Extension Manager",
-            "Выключено — включите здесь или в менеджере расширений",
-        )
-    };
-    app.settings.extension_state.set_subtitle(&state_text);
-    app.settings.extension_enable.set_sensitive(!enabled);
-}
-
-fn enable_extension(app: &Rc<App>) {
-    let output = std::process::Command::new("gnome-extensions")
-        .args(["enable", "trommel@nayvok.github.io"])
-        .output();
-    match output {
-        Ok(output) if output.status.success() => {
-            refresh_extension_state(app);
-            app.toast.add_toast(adw::Toast::new(&tr(
-                "Extension enabled. Log out and back in if the panel icon does not appear.",
-                "Расширение включено. Если иконка не появилась — перелогиньтесь.",
-            )));
-        }
-        Ok(output) => {
-            let text = String::from_utf8_lossy(&output.stderr).to_string();
-            app.toast.add_toast(adw::Toast::new(&text));
-        }
-        Err(err) => app.toast.add_toast(adw::Toast::new(&err.to_string())),
-    }
-}
-
-fn open_extension_manager(app: &Rc<App>) {
-    let launched = std::process::Command::new("gtk-launch")
-        .arg("com.mattjakeman.ExtensionManager")
-        .spawn()
-        .is_ok();
-    if !launched {
-        app.toast.add_toast(adw::Toast::new(&tr(
-            "Extension Manager is not installed.",
-            "Менеджер расширений не установлен.",
-        )));
-    }
-}
-
 fn copy_diagnostics(app: &Rc<App>) {
     let report = {
         let cfg = app.config.borrow();
@@ -2326,7 +2545,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         .cloned()
         .unwrap_or_default();
     let tuning = profile.tuning_for(&uuid);
-    let custom = profile.per_gpu.contains_key(&uuid);
+    let custom = profile.is_custom(&uuid);
     let enabled = tuning.enabled;
     let (same_uuids, all_uuids) = {
         let status = app.status.borrow();
@@ -2345,32 +2564,65 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
         }
     };
 
-    let window = gtk::Window::builder()
+    let dialog = adw::Dialog::builder()
         .title(format!("{name} · {}", tr("GPU tuning", "Настройка GPU")))
-        .modal(true)
-        .transient_for(&app.window)
-        .default_width(540)
+        .content_width(540)
         .build();
     let header = adw::HeaderBar::new();
     let title = label(&format!("GPU #{} · {name}", gpu.index), &["heading"]);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     header.set_title_widget(Some(&title));
+    let presets_popover = gtk::Popover::new();
+    let presets_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    presets_box.set_margin_top(6);
+    presets_box.set_margin_bottom(6);
+    presets_box.set_margin_start(6);
+    presets_box.set_margin_end(6);
     let recommended = gtk::Button::builder()
         .label(tr("Recommended", "Рекомендуемый"))
         .tooltip_text(tr(
             "80 % of the stock power limit; clock locks are turned off",
             "80 % от стокового лимита питания; локи частот выключаются",
         ))
+        .css_classes(["flat"])
+        .halign(gtk::Align::Fill)
+        .build();
+    let profile_default = gtk::Button::builder()
+        .label(tr("Profile default", "Профиль по умолчанию"))
+        .tooltip_text(tr(
+            "Remove this card's override; it will follow the built-in profile (auto power, no clock locks)",
+            "Убрать настройку этой карты; останутся базовые значения профиля (авто-питание, без локов частот)",
+        ))
+        .css_classes(["flat"])
+        .halign(gtk::Align::Fill)
+        .visible(custom)
+        .build();
+    presets_box.append(&recommended);
+    presets_box.append(&profile_default);
+    presets_popover.set_child(Some(&presets_box));
+    {
+        let popover = presets_popover.clone();
+        recommended.connect_clicked(move |_| popover.popdown());
+    }
+    // The tuning presets are content, not window chrome: a labelled menu in
+    // the footer, next to the Save it feeds into.
+    let presets = gtk::MenuButton::builder()
+        .label(tr("Presets", "Пресеты"))
+        .tooltip_text(tr("Tuning presets", "Пресеты настройки"))
         .css_classes(["flat", "pill"])
+        .always_show_arrow(true)
+        .popover(&presets_popover)
         .build();
     let save = gtk::Button::builder()
         .label(tr("Save", "Сохранить"))
         .css_classes(["suggested-action", "pill"])
         .build();
-    header.pack_end(&save);
-    header.pack_start(&recommended);
-    window.set_titlebar(Some(&header));
+    let footer = dialog_footer();
+    footer.append(&presets);
+    footer.append(&dialog_footer_spacer());
+    footer.append(&save);
     let page = adw::PreferencesPage::new();
+    page.set_vexpand(true);
 
     let group = adw::PreferencesGroup::builder()
         .title(format!("GPU #{} · {name}", gpu.index))
@@ -2492,8 +2744,8 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     group.add(&source_hint);
     let global_hint = label(
         &tr(
-            "Temperature limit is global (Settings → GPU defaults); fan speed is a miner option in the preset editor.",
-            "Порог температуры — глобальный (Настройки → Настройки GPU); вентилятор — опция майнера в редакторе пресета.",
+            "Temperature limit is global (Settings → Behavior); fan speed is a miner option in the preset editor.",
+            "Порог температуры — глобальный (Настройки → Поведение); вентилятор — опция майнера в редакторе пресета.",
         ),
         &["caption", "dim-label"],
     );
@@ -2547,7 +2799,10 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     }
     let apply_similar = apply_similar;
     let apply_all = apply_all;
-    window.set_child(Some(&page));
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&dialog_body(&page, &footer)));
+    dialog.set_child(Some(&toolbar));
 
     {
         let power_row = power.clone();
@@ -2600,7 +2855,26 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
     }
     {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
+        let uuid = uuid.clone();
+        profile_default.connect_clicked(move |_| {
+            {
+                let mut cfg = app.config.borrow_mut();
+                let profile = cfg.gpu_profile_mut();
+                profile.per_gpu.remove(&uuid);
+            }
+            mark_dirty(&app);
+            dialog.close();
+            app.toast.add_toast(adw::Toast::new(&tr(
+                "Card follows the profile default again",
+                "Карта снова использует профиль по умолчанию",
+            )));
+            save_and_apply(&app);
+        });
+    }
+    {
+        let app = app.clone();
+        let dialog = dialog.clone();
         let uuid = uuid.clone();
         let same_uuids = same_uuids.clone();
         let all_uuids = all_uuids.clone();
@@ -2612,6 +2886,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
             // global and are edited elsewhere).
             let mut tuning = base_tuning.clone();
             tuning.enabled = enabled;
+            tuning.custom = true;
             tuning.power_limit_w = nonzero(power.value() as u32);
             tuning.core_clock_mhz = if core_lock.is_active() && core_value >= 100 {
                 Some(core_value)
@@ -2647,7 +2922,7 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
                 }
             }
             mark_dirty(&app);
-            window.close();
+            dialog.close();
             app.toast.add_toast(adw::Toast::new(&format!(
                 "{}: {}",
                 tr(
@@ -2659,14 +2934,14 @@ fn gpu_tune_dialog(app: &Rc<App>, gpu: &GpuStats) {
             save_and_apply(&app);
         });
     }
-    window.present();
+    dialog.present(Some(&app.window));
     if let Some(path) = std::env::var_os("TROMMEL_TUNE_SCREENSHOT") {
         let path = path.to_string_lossy().into_owned();
-        let capture = window.clone();
+        let capture = app.window.clone();
         let application = app.window.application();
         glib::timeout_add_seconds_local(2, move || {
             if let Some(application) = application.clone() {
-                schedule_window_screenshot(capture.clone(), path.clone(), application, 0);
+                schedule_screenshot(capture.clone(), path.clone(), application, 0);
             }
             glib::ControlFlow::Break
         });
@@ -2767,7 +3042,7 @@ fn setup_miner_state(
 fn show_setup_step(
     step: u32,
     stack: &gtk::Stack,
-    step_label: &gtk::Label,
+    title: &adw::WindowTitle,
     back: &gtk::Button,
     next: &gtk::Button,
     status: &gtk::Label,
@@ -2780,7 +3055,7 @@ fn show_setup_step(
     ];
     let index = (step as usize).min(pages.len() - 1);
     stack.set_visible_child_name(pages[index]);
-    step_label.set_text(&titles[index]);
+    title.set_subtitle(&titles[index]);
     let back_text = if index == 0 {
         tr("Cancel", "Отмена")
     } else {
@@ -2812,19 +3087,19 @@ fn quick_setup_wizard(app: &Rc<App>) {
         )
     };
 
-    let mut builder = gtk::Window::builder()
+    let dialog = adw::Dialog::builder()
         .title(tr("Quick setup", "Быстрая настройка"))
-        .modal(true)
-        .transient_for(&app.window)
-        .default_width(620)
-        .default_height(680);
-    if let Some(application) = app.window.application() {
-        builder = builder.application(&application);
-    }
-    let window = builder.build();
+        .content_width(620)
+        .build();
     let header = adw::HeaderBar::new();
-    let step_label = label(&tr("Step 1 of 3", "Шаг 1 из 3"), &["caption", "dim-label"]);
-    step_label.set_halign(gtk::Align::Center);
+    // The step name is a subtitle, not a page title: the header stays a plain
+    // title bar, and Cancel/Back/Next live in the footer.
+    let window_title = adw::WindowTitle::new(
+        &tr("Quick setup", "Быстрая настройка"),
+        &tr("Step 1 of 3 · Cards", "Шаг 1 из 3 · Карты"),
+    );
+    header.set_title_widget(Some(&window_title));
+    header.set_show_end_title_buttons(false);
     let back = gtk::Button::builder()
         .label(tr("Cancel", "Отмена"))
         .css_classes(["flat", "pill"])
@@ -2833,10 +3108,10 @@ fn quick_setup_wizard(app: &Rc<App>) {
         .label(tr("Next", "Далее"))
         .css_classes(["suggested-action", "pill"])
         .build();
-    header.set_title_widget(Some(&step_label));
-    header.pack_start(&back);
-    header.pack_end(&next);
-    window.set_titlebar(Some(&header));
+    let footer = dialog_footer();
+    footer.append(&back);
+    footer.append(&dialog_footer_spacer());
+    footer.append(&next);
 
     let stack = gtk::Stack::new();
     stack.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
@@ -2849,8 +3124,8 @@ fn quick_setup_wizard(app: &Rc<App>) {
     let cards_group = adw::PreferencesGroup::builder()
         .title(tr("Cards to mine on", "Карты для майнинга"))
         .description(tr(
-            "Each card keeps its own power limit. Untick a card to leave it untouched.",
-            "У каждой карты свой лимит питания. Снимите галочку, чтобы не трогать карту.",
+            "Each card keeps its own power limit. Untick a card to exclude it from mining: it is not passed to the miner and is not tuned.",
+            "У каждой карты свой лимит питания. Снимите галочку, чтобы исключить карту из майнинга: она не передаётся майнеру и не разгоняется.",
         ))
         .build();
     for gpu in &gpus {
@@ -3146,27 +3421,31 @@ fn quick_setup_wizard(app: &Rc<App>) {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&stack);
     content.append(&status);
-    window.set_child(Some(&content));
+    content.append(&footer);
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&content));
+    dialog.set_child(Some(&toolbar));
 
     let step = Rc::new(Cell::new(0u32));
     {
-        let window = window.clone();
+        let dialog = dialog.clone();
         let step = step.clone();
         let stack = stack.clone();
-        let step_label = step_label.clone();
+        let window_title = window_title.clone();
         let back_button = back.clone();
         let next_button = next.clone();
         let status = status.clone();
         back.connect_clicked(move |_| {
             if step.get() == 0 {
-                window.close();
+                dialog.close();
                 return;
             }
             step.set(step.get() - 1);
             show_setup_step(
                 step.get(),
                 &stack,
-                &step_label,
+                &window_title,
                 &back_button,
                 &next_button,
                 &status,
@@ -3175,10 +3454,10 @@ fn quick_setup_wizard(app: &Rc<App>) {
     }
     {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
         let step = step.clone();
         let stack = stack.clone();
-        let step_label = step_label.clone();
+        let window_title = window_title.clone();
         let back_button = back.clone();
         let next_button = next.clone();
         let status = status.clone();
@@ -3210,17 +3489,31 @@ fn quick_setup_wizard(app: &Rc<App>) {
                     return;
                 }
                 step.set(1);
-                show_setup_step(1, &stack, &step_label, &back_button, &next_button, &status);
+                show_setup_step(
+                    1,
+                    &stack,
+                    &window_title,
+                    &back_button,
+                    &next_button,
+                    &status,
+                );
             }
             1 => {
                 setup_miner_state(&app, &miner_row, &version_row, &install_row, &fee_row);
                 step.set(2);
-                show_setup_step(2, &stack, &step_label, &back_button, &next_button, &status);
+                show_setup_step(
+                    2,
+                    &stack,
+                    &window_title,
+                    &back_button,
+                    &next_button,
+                    &status,
+                );
             }
             _ => {
                 finish_quick_setup(
                     &app,
-                    &window,
+                    &dialog,
                     &cards,
                     &miner_row,
                     &version_row,
@@ -3243,17 +3536,17 @@ fn quick_setup_wizard(app: &Rc<App>) {
         let initial = initial.min(2);
         if initial > 0 {
             step.set(initial);
-            show_setup_step(initial, &stack, &step_label, &back, &next, &status);
+            show_setup_step(initial, &stack, &window_title, &back, &next, &status);
         }
     }
-    window.present();
+    dialog.present(Some(&app.window));
     if let Some(path) = std::env::var_os("TROMMEL_WIZARD_SCREENSHOT") {
         let path = path.to_string_lossy().into_owned();
-        let capture = window.clone();
+        let capture = app.window.clone();
         let application = app.window.application();
         glib::timeout_add_seconds_local(3, move || {
             if let Some(application) = application.clone() {
-                schedule_window_screenshot(capture.clone(), path.clone(), application, 0);
+                schedule_screenshot(capture.clone(), path.clone(), application, 0);
             }
             glib::ControlFlow::Break
         });
@@ -3264,7 +3557,7 @@ fn quick_setup_wizard(app: &Rc<App>) {
 #[allow(clippy::too_many_arguments)]
 fn finish_quick_setup(
     app: &Rc<App>,
-    window: &gtk::Window,
+    dialog: &adw::Dialog,
     cards: &Rc<RefCell<Vec<SetupCard>>>,
     miner_row: &adw::ComboRow,
     version_row: &adw::ComboRow,
@@ -3366,17 +3659,25 @@ fn finish_quick_setup(
         cfg.active_preset = Some(id);
         {
             let profile = cfg.gpu_profile_mut();
+            let default_power = profile.default.power_limit_w;
+            let default_enabled = profile.default.enabled;
             for card in cards.borrow().iter() {
+                let was_custom = profile.is_custom(&card.uuid);
                 let mut tuning = profile.tuning_for(&card.uuid);
                 tuning.enabled = card.row.enables_expansion();
                 tuning.power_limit_w = nonzero(card.power.value() as u32);
+                // Only an actual difference from the default is an override;
+                // otherwise the card keeps following the profile defaults.
+                tuning.custom = was_custom
+                    || tuning.power_limit_w != default_power
+                    || tuning.enabled != default_enabled;
                 profile.per_gpu.insert(card.uuid.clone(), tuning);
             }
         }
     }
     mark_dirty(app);
     refresh_preset_list(app);
-    window.close();
+    dialog.close();
     app.stack.set_visible_child_name("dashboard");
     if running {
         app.toast.add_toast(adw::Toast::new(&tr(
@@ -3452,48 +3753,40 @@ fn miner_install_dialog(
         }
     }
 
-    let window = gtk::Window::builder()
+    let dialog = adw::Dialog::builder()
         .title(tr("Install miner", "Установка майнера"))
-        .modal(true)
-        .transient_for(&app.window)
-        .default_width(580)
+        .content_width(580)
         .build();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(
         &def.name,
         &tr("Install miner", "Установка майнера"),
     )));
-    let cancel = gtk::Button::with_label(&tr("Cancel", "Отмена"));
-    header.pack_start(&cancel);
-    if !def.source_url.is_empty() {
-        let release = gtk::Button::builder()
-            .icon_name("web-browser-symbolic")
-            .tooltip_text(tr("Release page", "Страница релиза"))
-            .css_classes(["flat"])
-            .build();
-        let source_url = def.source_url.clone();
-        release.connect_clicked(move |_| {
-            let _ =
-                gio::AppInfo::launch_default_for_uri(&source_url, None::<&gio::AppLaunchContext>);
-        });
-        header.pack_end(&release);
-    }
-    window.set_titlebar(Some(&header));
+    // Cancel dismisses the dialog and the header needs no second close
+    // button; all actions live in the footer.
+    let cancel = gtk::Button::builder()
+        .label(tr("Cancel", "Отмена"))
+        .css_classes(["flat", "pill"])
+        .build();
+    header.set_show_end_title_buttons(false);
 
     let page = adw::PreferencesPage::new();
 
+    // Two groups: what to install, then how. The download fields sit in an
+    // expander because a catalogue version fills them anyway, and the dialog
+    // has to fit a 760 px window without scrolling away its own footer.
     let version_group = adw::PreferencesGroup::builder()
         .title(tr("Version", "Версия"))
         .description(tr(
-            "Miners are updated often. Pick a catalogue version, or type the version name of a build you downloaded upstream.",
-            "Майнеры часто обновляются. Выберите версию из каталога или введите название версии сборки, скачанной самостоятельно.",
+            "Pick a catalogue build, or type the name of a build you downloaded upstream.",
+            "Выберите сборку из каталога или введите название скачанной вручную.",
         ))
         .build();
     let version_combo = adw::ComboRow::builder()
         .title(tr("Catalogue version", "Версия из каталога"))
         .subtitle(tr(
-            "Fills the URL and checksum",
-            "Подставляет ссылку и контрольную сумму",
+            "Fills the URL and SHA-256",
+            "Подставляет ссылку и SHA-256",
         ))
         .model(&string_list(
             &choices
@@ -3512,23 +3805,57 @@ fn miner_install_dialog(
         .title(tr("Version name", "Название версии"))
         .text(&version)
         .build();
-    let state_row = adw::ActionRow::builder()
+    version_group.add(&version_combo);
+    version_group.add(&version_entry);
+    page.add(&version_group);
+
+    let install_group = adw::PreferencesGroup::builder()
         .title(tr("Installation", "Установка"))
+        .description(tr(
+            "One install serves every preset. HTTPS only; a SHA-256 is checked when the catalogue lists one.",
+            "Одна установка служит всем пресетам. Только HTTPS; SHA-256 сверяется, если он указан в каталоге.",
+        ))
+        .build();
+    let state_row = adw::ActionRow::builder()
+        .title(tr("State", "Состояние"))
         .build();
     let state_label = label("", &["caption"]);
     state_row.add_suffix(&state_label);
-    version_group.add(&version_combo);
-    version_group.add(&version_entry);
-    version_group.add(&state_row);
-    page.add(&version_group);
-
-    let source_group = adw::PreferencesGroup::builder()
-        .title(tr("Download", "Загрузка"))
-        .description(tr(
-            "HTTPS only. A SHA-256 is checked when provided; archives are extracted without path escapes.",
-            "Только HTTPS. SHA-256 проверяется, если указан; архивы распаковываются без выхода за каталог.",
+    install_group.add(&state_row);
+    // Importing a local binary is the second source for the same install. As a
+    // row it stays readable at any window width; as a footer button it pushed
+    // the primary action past the dialog edge on narrow windows.
+    let import = adw::ActionRow::builder()
+        .title(tr("Import binary", "Импортировать бинарник"))
+        .subtitle(tr(
+            "Install a binary from disk",
+            "Установить бинарник с диска",
         ))
+        .activatable(true)
         .build();
+    let import_icon = gtk::Image::from_icon_name("document-open-symbolic");
+    import_icon.add_css_class("dim-label");
+    import.add_suffix(&import_icon);
+    install_group.add(&import);
+    // The upstream link belongs to the version it documents, not to the window
+    // chrome: an activatable row beats a stray icon in the header.
+    if !def.source_url.is_empty() {
+        let release = adw::ActionRow::builder()
+            .title(tr("Release page", "Страница релиза"))
+            .subtitle(def.source_url.clone())
+            .activatable(true)
+            .build();
+        release.set_subtitle_lines(1);
+        let icon = gtk::Image::from_icon_name("web-browser-symbolic");
+        icon.add_css_class("dim-label");
+        release.add_suffix(&icon);
+        let source_url = def.source_url.clone();
+        release.connect_activated(move |_| {
+            let _ =
+                gio::AppInfo::launch_default_for_uri(&source_url, None::<&gio::AppLaunchContext>);
+        });
+        install_group.add(&release);
+    }
     let url_entry = adw::EntryRow::builder()
         .title("URL")
         .text(
@@ -3545,10 +3872,13 @@ fn miner_install_dialog(
                 .unwrap_or_default(),
         )
         .build();
+    // The expander subtitle carries the URL, so tucking the fields away hides
+    // nothing the user needs before pressing the primary action.
     let details = adw::ExpanderRow::builder()
-        .title(tr("Archive details", "Параметры архива"))
-        .subtitle(tr("binary, tar.gz or zip", "binary, tar.gz или zip"))
+        .title(tr("Download source", "Источник загрузки"))
+        .subtitle(tr("URL, checksum and archive", "URL, сумма и архив"))
         .build();
+    details.set_subtitle_lines(1);
     let archive_entry = adw::EntryRow::builder()
         .title(tr("Archive", "Архив"))
         .text(
@@ -3565,36 +3895,53 @@ fn miner_install_dialog(
                 .unwrap_or_else(|| "wildrig-multi".into()),
         )
         .build();
+    details.add_row(&url_entry);
+    details.add_row(&sha_entry);
     details.add_row(&archive_entry);
     details.add_row(&binary_entry);
-    source_group.add(&url_entry);
-    source_group.add(&sha_entry);
-    source_group.add(&details);
-    page.add(&source_group);
+    install_group.add(&details);
+    page.add(&install_group);
+    {
+        let details = details.clone();
+        let url_row = url_entry.clone();
+        let refresh = move || {
+            let url = url_row.text();
+            let url = url.trim();
+            if url.is_empty() {
+                details.set_subtitle(&tr("URL, checksum and archive", "URL, сумма и архив"));
+            } else {
+                details.set_subtitle(url);
+            }
+        };
+        refresh();
+        let refresh = Rc::new(refresh);
+        url_entry.connect_notify_local(Some("text"), move |_, _| refresh());
+    }
 
-    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    footer.set_margin_top(10);
-    footer.set_margin_bottom(12);
-    footer.set_margin_start(12);
-    footer.set_margin_end(12);
+    let footer = dialog_footer();
     let status = label("", &["caption", "dim-label"]);
     status.set_hexpand(true);
-    let import = gtk::Button::builder()
-        .label(tr("Import binary…", "Импортировать бинарник…"))
-        .css_classes(["flat", "pill"])
-        .build();
+    status.set_valign(gtk::Align::Center);
+    // Long download/import messages must not widen the footer: ellipsize them
+    // and keep the full text in the tooltip (set_status_text does that).
+    status.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    // A short label keeps the footer on one line down to the smallest window;
+    // the dialog title already says the action installs a miner.
     let download = gtk::Button::builder()
-        .label(tr("Download and install", "Скачать и установить"))
+        .label(tr("Install", "Установить"))
         .css_classes(["suggested-action", "pill"])
         .build();
+    footer.append(&cancel);
     footer.append(&status);
-    footer.append(&import);
     footer.append(&download);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     page.set_vexpand(true);
     content.append(&page);
     content.append(&footer);
-    window.set_child(Some(&content));
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&content));
+    dialog.set_child(Some(&toolbar));
 
     let update_state: Rc<dyn Fn()> = {
         let app = app.clone();
@@ -3612,10 +3959,10 @@ fn miner_install_dialog(
                     state_label.set_css_classes(&["caption", "success"]);
                 }
                 None => {
-                    state_row.set_subtitle(&tr(
-                        "Not installed; one installation is shared by every preset.",
-                        "Не установлен; одна установка доступна всем пресетам.",
-                    ));
+                    // The group description already explains that one install
+                    // serves every preset; repeating it here just made the row
+                    // taller than its neighbours.
+                    state_row.set_subtitle("");
                     state_label.set_text(&tr("not installed", "не установлен"));
                     state_label.set_css_classes(&["caption", "warning"]);
                 }
@@ -3626,7 +3973,7 @@ fn miner_install_dialog(
 
     let finish_install: Rc<dyn Fn(MinerInstall)> = {
         let app = app.clone();
-        let window = window.clone();
+        let dialog = dialog.clone();
         let on_done = on_done.clone();
         Rc::new(move |install: MinerInstall| {
             {
@@ -3657,7 +4004,7 @@ fn miner_install_dialog(
                 "Miner installed. It is available in every preset.",
                 "Майнер установлен. Он доступен во всех пресетах.",
             )));
-            window.close();
+            dialog.close();
         })
     };
 
@@ -3692,26 +4039,28 @@ fn miner_install_dialog(
         version_entry.connect_notify_local(Some("text"), move |_, _| update_state());
     }
     {
-        let window = window.clone();
-        cancel.connect_clicked(move |_| window.close());
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| {
+            dialog.close();
+        });
     }
     {
-        let window = window.clone();
+        let parent = app.window.clone();
         let miner_id = miner_id.to_string();
         let version_entry = version_entry.clone();
         let finish_install = finish_install.clone();
         let status = status.clone();
-        import.connect_clicked(move |button| {
+        import.connect_activated(move |row| {
             let dialog = gtk::FileChooserNative::builder()
                 .title(tr("Select miner binary", "Выберите бинарник майнера"))
                 .action(gtk::FileChooserAction::Open)
                 .build();
-            dialog.set_transient_for(Some(&window));
+            dialog.set_transient_for(Some(&parent));
             let miner_id = miner_id.clone();
             let version_entry = version_entry.clone();
             let finish_install = finish_install.clone();
             let status = status.clone();
-            let button = button.clone();
+            let row = row.clone();
             dialog.connect_response(move |dialog, response| {
                 if response == gtk::ResponseType::Accept {
                     if let Some(path) = dialog.file().and_then(|file| file.path()) {
@@ -3719,8 +4068,8 @@ fn miner_install_dialog(
                         if version.is_empty() {
                             version = tr("custom", "своя").to_string();
                         }
-                        button.set_sensitive(false);
-                        button.set_label(&tr("Importing…", "Импортирую…"));
+                        row.set_sensitive(false);
+                        row.set_subtitle(&tr("Importing…", "Импортирую…"));
                         set_status_text(
                             &status,
                             &tr(
@@ -3743,7 +4092,7 @@ fn miner_install_dialog(
                             .map_err(|err| err.to_string());
                             let _ = tx.send(result);
                         });
-                        let button = button.clone();
+                        let row = row.clone();
                         let status = status.clone();
                         let finish_install = finish_install.clone();
                         glib::timeout_add_local(Duration::from_millis(100), move || {
@@ -3754,10 +4103,10 @@ fn miner_install_dialog(
                                 }
                                 Ok(Err(error)) => {
                                     set_status_text(&status, &error, "error");
-                                    button.set_sensitive(true);
-                                    button.set_label(&tr(
-                                        "Import binary…",
-                                        "Импортировать бинарник…",
+                                    row.set_sensitive(true);
+                                    row.set_subtitle(&tr(
+                                        "Install a binary you already have on disk",
+                                        "Установить бинарник, который уже есть на диске",
                                     ));
                                     glib::ControlFlow::Break
                                 }
@@ -3773,10 +4122,10 @@ fn miner_install_dialog(
                                         ),
                                         "error",
                                     );
-                                    button.set_sensitive(true);
-                                    button.set_label(&tr(
-                                        "Import binary…",
-                                        "Импортировать бинарник…",
+                                    row.set_sensitive(true);
+                                    row.set_subtitle(&tr(
+                                        "Install a binary you already have on disk",
+                                        "Установить бинарник, который уже есть на диске",
                                     ));
                                     glib::ControlFlow::Break
                                 }
@@ -3854,7 +4203,7 @@ fn miner_install_dialog(
                 Ok(Err(error)) => {
                     set_status_text(&status, &error, "error");
                     button.set_sensitive(true);
-                    button.set_label(&tr("Download and install", "Скачать и установить"));
+                    button.set_label(&tr("Install", "Установить"));
                     glib::ControlFlow::Break
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
@@ -3872,14 +4221,14 @@ fn miner_install_dialog(
             });
         });
     }
-    window.present();
+    dialog.present(Some(&app.window));
     if let Some(path) = std::env::var_os("TROMMEL_INSTALL_SCREENSHOT") {
         let path = path.to_string_lossy().into_owned();
-        let capture = window.clone();
+        let capture = app.window.clone();
         let application = app.window.application();
         glib::timeout_add_seconds_local(2, move || {
             if let Some(application) = application.clone() {
-                schedule_window_screenshot(capture.clone(), path.clone(), application, 0);
+                schedule_screenshot(capture.clone(), path.clone(), application, 0);
             }
             glib::ControlFlow::Break
         });
@@ -3889,6 +4238,9 @@ fn miner_install_dialog(
 /// Set text plus one semantic colour class on a status label.
 fn set_status_text(widget: &gtk::Label, text: &str, class: &str) {
     widget.set_text(text);
+    // Footer status lines ellipsize on narrow dialogs; the tooltip still carries
+    // the whole message.
+    widget.set_tooltip_text((!text.is_empty()).then_some(text));
     if class.is_empty() {
         widget.set_css_classes(&["caption", "dim-label"]);
     } else {
@@ -3925,53 +4277,12 @@ fn load_settings(app: &Rc<App>) {
         });
     if let Some(profile) = cfg.gpu_profile() {
         app.settings
-            .power
-            .set_value(profile.default.power_limit_w.unwrap_or(0) as f64);
-        app.settings
-            .core_lock
-            .set_active(profile.default.core_clock_mhz.is_some());
-        app.settings
-            .core
-            .set_value(profile.default.core_clock_mhz.unwrap_or(1620) as f64);
-        app.settings
-            .core
-            .set_sensitive(profile.default.core_clock_mhz.is_some());
-        app.settings
-            .memory_lock
-            .set_active(profile.default.memory_clock_mhz.is_some());
-        app.settings
-            .memory
-            .set_value(profile.default.memory_clock_mhz.unwrap_or(810) as f64);
-        app.settings
-            .memory
-            .set_sensitive(profile.default.memory_clock_mhz.is_some());
-        app.settings
             .temp_limit
             .set_value(profile.default.temp_limit_c as f64);
         app.settings
             .temp_resume
             .set_value(profile.default.temp_resume_c as f64);
     }
-    if let Some(settings) = extension_settings() {
-        let mode = settings.string("panel-mode");
-        app.settings.panel_mode.set_selected(match mode.as_str() {
-            "icon" => 0,
-            "hashrate" => 1,
-            "temperature" => 2,
-            _ => 3,
-        });
-        app.settings
-            .quick_toggle
-            .set_active(settings.boolean("quick-toggle-enabled"));
-        app.settings
-            .live_activity
-            .set_active(settings.boolean("live-activity-enabled"));
-    } else {
-        app.settings.panel_mode.set_sensitive(false);
-        app.settings.quick_toggle.set_sensitive(false);
-        app.settings.live_activity.set_sensitive(false);
-    }
-    refresh_extension_state(app);
 }
 
 fn apply_appearance(appearance: Appearance) {
@@ -3980,14 +4291,6 @@ fn apply_appearance(appearance: Appearance) {
         Appearance::Light => adw::ColorScheme::ForceLight,
         Appearance::Dark => adw::ColorScheme::ForceDark,
     });
-}
-
-fn apply_simple_mode(app: &Rc<App>) {
-    let simple = app.config.borrow().behavior.simple_mode;
-    app.settings.core_lock.set_visible(!simple);
-    app.settings.memory_lock.set_visible(!simple);
-    sync_lock_row(&app.settings.core_lock, &app.settings.core, !simple);
-    sync_lock_row(&app.settings.memory_lock, &app.settings.memory, !simple);
 }
 
 fn save_settings(app: &Rc<App>) {
@@ -4009,37 +4312,9 @@ fn save_settings(app: &Rc<App>) {
         _ => Appearance::System,
     };
     let profile = cfg.gpu_profile_mut();
-    profile.default.power_limit_w = nonzero(app.settings.power.value() as u32);
-    profile.default.core_clock_mhz = if app.settings.core_lock.is_active() {
-        nonzero(app.settings.core.value() as u32)
-    } else {
-        None
-    };
-    profile.default.memory_clock_mhz = if app.settings.memory_lock.is_active() {
-        nonzero(app.settings.memory.value() as u32)
-    } else {
-        None
-    };
     profile.default.temp_limit_c = app.settings.temp_limit.value() as u32;
     profile.default.temp_resume_c = app.settings.temp_resume.value() as u32;
     set_autostart_unit(app.settings.start_login.is_active());
-    if let Some(settings) = extension_settings() {
-        let mode = match app.settings.panel_mode.selected() {
-            0 => "icon",
-            1 => "hashrate",
-            2 => "temperature",
-            _ => "both",
-        };
-        let _ = settings.set_string("panel-mode", mode);
-        let _ = settings.set_boolean(
-            "quick-toggle-enabled",
-            app.settings.quick_toggle.is_active(),
-        );
-        let _ = settings.set_boolean(
-            "live-activity-enabled",
-            app.settings.live_activity.is_active(),
-        );
-    }
     mark_dirty(app);
 }
 
@@ -4079,7 +4354,7 @@ fn save_and_apply(app: &Rc<App>) {
 
 /// Apply the draft. While mining, a restart/stop confirmation is shown; when
 /// it is cancelled, `on_cancel` restores whatever the caller changed
-/// optimistically (the GPU enable switch is the main case).
+/// optimistically (the GPU participation switch is the main case).
 fn save_and_apply_with(app: &Rc<App>, on_cancel: Option<Rc<dyn Fn()>>) {
     // The editor/settings callbacks commit first; this only decides the mode.
     let draft = app.config.borrow().clone();
@@ -4155,7 +4430,6 @@ fn handle_event(app: &Rc<App>, event: Ev) {
                 if !app.dirty.get() {
                     *app.config.borrow_mut() = cfg;
                     load_settings(app);
-                    apply_simple_mode(app);
                     refresh_preset_list(app);
                     refresh_miners(app);
                 }
@@ -4171,17 +4445,50 @@ fn handle_event(app: &Rc<App>, event: Ev) {
                 .set_css_classes(&["caption", "trommel-pill", "trommel-pill-offline"]);
         }
         Ev::Error(message) => {
-            app.toast.add_toast(adw::Toast::new(&message));
+            show_error_toast(app, &message);
         }
         Ev::Applied { message, quiet } => {
             if !quiet {
                 app.dirty.set(false);
                 update_dirty(app);
             }
-            app.toast
-                .add_toast(adw::Toast::new(&tr("Applied", "Применено")));
-            let _ = message;
+            let text = if message.trim().is_empty() {
+                tr("Applied", "Применено").to_string()
+            } else {
+                message
+            };
+            app.toast.add_toast(adw::Toast::new(&text));
             let _ = app.tx.send(Cmd::Refresh);
+        }
+        Ev::Busy(busy) => {
+            app.action_button
+                .set_sensitive(!busy && start_block_reason(app).is_none());
+            if busy {
+                set_action_text(
+                    &app.action_button,
+                    &app.action_label,
+                    &tr("Waiting for authorization…", "Жду подтверждения…"),
+                );
+            } else {
+                let running = app
+                    .status
+                    .borrow()
+                    .as_ref()
+                    .map(|status| status.state.running)
+                    .unwrap_or(false);
+                set_action_text(
+                    &app.action_button,
+                    &app.action_label,
+                    &tr(
+                        if running { "Stop" } else { "Start" },
+                        if running {
+                            "Остановить"
+                        } else {
+                            "Запустить"
+                        },
+                    ),
+                );
+            }
         }
         Ev::Bench(json) => {
             if let Ok(report) = trommel_core::bench::BenchReport::from_json(&json) {
@@ -4202,23 +4509,394 @@ fn handle_event(app: &Rc<App>, event: Ev) {
     }
 }
 
-fn metric(label_text: &str, value_text: &str, value_class: &str) -> gtk::Box {
-    let box_ = gtk::Box::new(gtk::Orientation::Vertical, 1);
-    let key = label(label_text, &["trommel-metric-label"]);
-    let mut classes = vec!["trommel-metric-value"];
+/// Metrics that get a sparkline in the GPU cards. The order is the sample
+/// layout in [`History`]; `index()` must stay in sync with it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Metric {
+    Power,
+    Core,
+    Memory,
+    Temp,
+    Fan,
+    Load,
+}
+
+impl Metric {
+    fn index(self) -> usize {
+        match self {
+            Self::Power => 0,
+            Self::Core => 1,
+            Self::Memory => 2,
+            Self::Temp => 3,
+            Self::Fan => 4,
+            Self::Load => 5,
+        }
+    }
+
+    fn unit(self) -> &'static str {
+        match self {
+            Self::Power => "W",
+            Self::Core | Self::Memory => "MHz",
+            Self::Temp => "°C",
+            Self::Fan | Self::Load => "%",
+        }
+    }
+
+    /// CSS colour name used for the line: hot tiles keep their red tint.
+    fn color_key(self, value_class: &str) -> &'static str {
+        match value_class {
+            "trommel-hot" => "error_color",
+            "trommel-warm" => "warning_color",
+            _ => "accent_bg_color",
+        }
+    }
+}
+
+const METRIC_COUNT: usize = 6;
+/// How much history a sparkline shows and how many samples it keeps at most
+/// (a 1 s GUI poll over 5 minutes is 300 samples).
+const HISTORY_SECS: u64 = 300;
+const HISTORY_MAX: usize = 360;
+const SPARK_HEIGHT: i32 = 24;
+
+type GpuSample = (u64, [Option<f64>; METRIC_COUNT]);
+
+#[derive(Default)]
+struct History {
+    gpus: BTreeMap<String, VecDeque<GpuSample>>,
+}
+
+impl History {
+    /// Store one status snapshot per GPU. The daemon reports the same `ts`
+    /// while its own poll has not advanced, so repeated timestamps replace the
+    /// last sample instead of widening the graph with duplicates.
+    fn record(&mut self, gpus: &[GpuStats], ts: u64) {
+        for gpu in gpus {
+            let samples = self.gpus.entry(gpu.uuid.clone()).or_default();
+            let values = [
+                gpu.power_w,
+                gpu.core_mhz.map(f64::from),
+                gpu.mem_mhz.map(f64::from),
+                gpu.temp_c.map(f64::from),
+                gpu.fan_pct.map(f64::from),
+                gpu.util_pct.map(f64::from),
+            ];
+            match samples.back_mut() {
+                Some((last_ts, last)) if *last_ts == ts => *last = values,
+                _ => samples.push_back((ts, values)),
+            }
+            while let Some((old, _)) = samples.front() {
+                if ts.saturating_sub(*old) <= HISTORY_SECS {
+                    break;
+                }
+                samples.pop_front();
+            }
+            while samples.len() > HISTORY_MAX {
+                samples.pop_front();
+            }
+        }
+    }
+
+    fn series(&self, uuid: &str, metric: Metric) -> Vec<(u64, f64)> {
+        let Some(samples) = self.gpus.get(uuid) else {
+            return Vec::new();
+        };
+        samples
+            .iter()
+            .filter_map(|(ts, values)| values[metric.index()].map(|value| (*ts, value)))
+            .collect()
+    }
+}
+
+/// A live sparkline; `apply_status` redraws every registered area once per
+/// poll, so the graph keeps moving without rebuilding the whole card.
+struct SparkEntry {
+    area: glib::WeakRef<gtk::DrawingArea>,
+    uuid: String,
+    metric: Metric,
+    label: String,
+}
+
+fn spark_color(area: &gtk::DrawingArea, key: &str) -> gdk::RGBA {
+    let context = area.style_context();
+    if let Some(color) = context.lookup_color(key) {
+        return color;
+    }
+    match key {
+        "error_color" => context
+            .lookup_color("error_bg_color")
+            .unwrap_or(gdk::RGBA::new(0.88, 0.11, 0.14, 1.0)),
+        "warning_color" => context
+            .lookup_color("warning_bg_color")
+            .unwrap_or(gdk::RGBA::new(0.90, 0.42, 0.0, 1.0)),
+        _ => gdk::RGBA::new(0.21, 0.52, 0.89, 1.0),
+    }
+}
+
+/// Draw a smooth area sparkline: a faint wash under a thin accent line.
+///
+/// The x axis is wall-clock time, so a stalled daemon leaves a visible gap
+/// instead of stretching the old samples over the whole width.
+fn draw_sparkline(
+    area: &gtk::DrawingArea,
+    ctx: &gtk::cairo::Context,
+    width: i32,
+    height: i32,
+    series: &[(u64, f64)],
+    color_key: &str,
+) {
+    if series.len() < 2 || width <= 4 || height <= 4 {
+        return;
+    }
+    let (first_ts, _) = series[0];
+    let (last_ts, _) = series[series.len() - 1];
+    if last_ts <= first_ts {
+        return;
+    }
+    let (mut lo, mut hi) = series.iter().fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(lo, hi), (_, value)| (lo.min(*value), hi.max(*value)),
+    );
+    // A flat series would divide by zero; give it a unit window so the line
+    // sits in the middle of the tile instead of jumping between edges.
+    if hi - lo < 1.0 {
+        let mid = (hi + lo) / 2.0;
+        lo = mid - 1.0;
+        hi = mid + 1.0;
+    }
+    let w = width as f64;
+    let h = height as f64;
+    // The wash reaches the tile's rounded floor; the plot keeps only a 2 px
+    // margin, because a line that floats far above the bottom edge reads as
+    // detached from the tile. At 2 px the corner rounding trims at most ~1 px
+    // off the last sample.
+    let radius = 10.0_f64.min(h / 2.0).min(w / 2.0);
+    let top = 3.0;
+    let bottom = 2.0;
+    let usable = (h - bottom - top).max(1.0);
+    let x_of = |ts: u64| (ts.saturating_sub(first_ts) as f64) * w / (last_ts - first_ts) as f64;
+    let y_of = |value: f64| top + (1.0 - (value - lo) / (hi - lo)) * usable;
+    let color = spark_color(area, color_key);
+    let (red, green, blue) = (
+        f64::from(color.red()),
+        f64::from(color.green()),
+        f64::from(color.blue()),
+    );
+
+    let points: Vec<(f64, f64)> = series
+        .iter()
+        .map(|(ts, value)| (x_of(*ts), y_of(*value)))
+        .collect();
+    let (start_x, start_y) = points[0];
+    let (end_x, _) = points[points.len() - 1];
+
+    let _ = ctx.save();
+    // The chart is the floor of the tile: square at the top, rounded at the
+    // bottom so the wash follows the card's 10 px corner radius.
+    ctx.move_to(0.0, 0.0);
+    ctx.line_to(w, 0.0);
+    ctx.line_to(w, h - radius);
+    ctx.arc(
+        w - radius,
+        h - radius,
+        radius,
+        0.0,
+        std::f64::consts::FRAC_PI_2,
+    );
+    ctx.line_to(radius, h);
+    ctx.arc(
+        radius,
+        h - radius,
+        radius,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+    );
+    ctx.close_path();
+    ctx.clip();
+
+    // Soft wash under the line: strongest at the baseline, gone at the top.
+    let gradient = gtk::cairo::LinearGradient::new(0.0, top, 0.0, h);
+    gradient.add_color_stop_rgba(0.0, red, green, blue, 0.0);
+    gradient.add_color_stop_rgba(1.0, red, green, blue, 0.12);
+    // Overdraw by one pixel into the clip so antialiasing cannot leave a
+    // hairline of tile background at the bottom or right edge.
+    ctx.move_to(start_x, h + 1.0);
+    ctx.line_to(start_x, start_y);
+    spark_curve(ctx, &points);
+    ctx.line_to(end_x + 1.0, h + 1.0);
+    ctx.close_path();
+    let _ = ctx.set_source(&gradient);
+    let _ = ctx.fill();
+
+    ctx.set_line_join(gtk::cairo::LineJoin::Round);
+    ctx.set_line_cap(gtk::cairo::LineCap::Round);
+    // A wider, almost transparent pass gives the line a faint glow instead of
+    // a hard 1 px stroke that disappears on light backgrounds.
+    for (width, alpha) in [(4.0, 0.10), (1.4, 0.85)] {
+        ctx.move_to(start_x, start_y);
+        spark_curve(ctx, &points);
+        ctx.set_line_width(width);
+        ctx.set_source_rgba(red, green, blue, alpha);
+        let _ = ctx.stroke();
+    }
+    let _ = ctx.restore();
+}
+
+/// Trace a Catmull-Rom spline through the samples so a handful of points still
+/// reads as a curve rather than a zigzag. The caller owns the initial
+/// `move_to`.
+fn spark_curve(ctx: &gtk::cairo::Context, points: &[(f64, f64)]) {
+    let count = points.len();
+    if count < 3 {
+        for (x, y) in points {
+            ctx.line_to(*x, *y);
+        }
+        return;
+    }
+    for index in 0..count - 1 {
+        let p0 = points[index.saturating_sub(1)];
+        let p1 = points[index];
+        let p2 = points[index + 1];
+        let p3 = points[(index + 2).min(count - 1)];
+        ctx.curve_to(
+            p1.0 + (p2.0 - p0.0) / 6.0,
+            p1.1 + (p2.1 - p0.1) / 6.0,
+            p2.0 - (p3.0 - p1.0) / 6.0,
+            p2.1 - (p3.1 - p1.1) / 6.0,
+            p2.0,
+            p2.1,
+        );
+    }
+}
+
+fn sparkline(
+    app: &Rc<App>,
+    uuid: &str,
+    metric: Metric,
+    value_class: &str,
+    label_text: &str,
+) -> gtk::DrawingArea {
+    let history = app.history.clone();
+    let uuid_owned = uuid.to_string();
+    let color_key = metric.color_key(value_class).to_string();
+    let area = gtk::DrawingArea::builder()
+        .height_request(SPARK_HEIGHT)
+        .hexpand(true)
+        .valign(gtk::Align::End)
+        .build();
+    area.add_css_class("trommel-spark");
+    // The chart is decorative for pointer users (it has a tooltip) but still
+    // needs a name for screen readers and the UI smoke test.
+    area.set_accessible_role(gtk::AccessibleRole::Img);
+    let accessible = tr(
+        &format!("{label_text} chart"),
+        &format!("График: {label_text}"),
+    );
+    area.update_property(&[gtk::accessible::Property::Label(&accessible)]);
+    area.set_draw_func(move |area, ctx, width, height| {
+        let series = history.borrow().series(&uuid_owned, metric);
+        draw_sparkline(area, ctx, width, height, &series, &color_key);
+    });
+    app.sparklines.borrow_mut().push(SparkEntry {
+        area: area.downgrade(),
+        uuid: uuid.to_string(),
+        metric,
+        label: label_text.to_string(),
+    });
+    area
+}
+
+/// Redraw the graphs and refresh their "last N min: low–high" tooltips.
+fn update_sparklines(app: &Rc<App>) {
+    let history = app.history.borrow();
+    let mut entries = app.sparklines.borrow_mut();
+    entries.retain(|entry| entry.area.upgrade().is_some());
+    for entry in entries.iter() {
+        let Some(area) = entry.area.upgrade() else {
+            continue;
+        };
+        let series = history.series(&entry.uuid, entry.metric);
+        area.set_tooltip_text(spark_tooltip(&series, &entry.label, entry.metric).as_deref());
+        area.queue_draw();
+    }
+}
+
+fn spark_tooltip(series: &[(u64, f64)], label: &str, metric: Metric) -> Option<String> {
+    let first = series.first()?.0;
+    let last = series.last()?.0;
+    if series.len() < 2 || last <= first {
+        return None;
+    }
+    let lo = series
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(f64::INFINITY, f64::min);
+    let hi = series
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let minutes = (last - first).div_ceil(60).max(1);
+    let window = tr(&format!("last {minutes} min"), &format!("за {minutes} мин"));
+    Some(format!(
+        "{label} · {window}: {lo:.0}–{hi:.0} {}",
+        metric.unit()
+    ))
+}
+
+fn gpu_stat(
+    spark: Option<gtk::DrawingArea>,
+    label_text: &str,
+    value_text: &str,
+    hint: Option<&str>,
+    value_class: &str,
+) -> gtk::Box {
+    let box_ = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    box_.add_css_class("trommel-gpu-stat");
+    box_.set_hexpand(true);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    body.add_css_class("trommel-gpu-stat-body");
+    let mut classes = vec!["trommel-gpu-stat-value"];
     if !value_class.is_empty() {
         classes.push(value_class);
     }
-    let value = label(value_text, &classes);
-    box_.append(&key);
-    box_.append(&value);
+    body.append(&label(value_text, &classes));
+    body.append(&label(label_text, &["trommel-gpu-stat-label"]));
+    if let Some(hint) = hint {
+        let hint_label = label(hint, &["trommel-gpu-stat-hint"]);
+        hint_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        hint_label.set_tooltip_text(Some(hint));
+        body.append(&hint_label);
+    }
+    // A grid row is as tall as its tallest tile, and a row-mate that carries a
+    // hint line is taller than a tile without one. Give the leftover height to
+    // the text body, not to the holder: the holder then keeps its natural
+    // height and every graph in the row keeps the same height and still ends on
+    // the tile floor. Letting the holder expand instead left the chart pinned
+    // to the top of the extra space.
+    body.set_vexpand(true);
+    box_.append(&body);
+    if let Some(spark) = spark {
+        let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        holder.set_margin_top(4);
+        holder.append(&spark);
+        box_.append(&holder);
+    }
     box_
 }
 
-fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
+fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool, status: &Status) -> gtk::Widget {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
     card.add_css_class("trommel-gpu-card");
-    card.set_size_request(240, -1);
+    if wide {
+        // A one-card rig should use the whole row instead of a lonely 240 px
+        // tile with empty space to the right.
+        card.add_css_class("trommel-gpu-card-wide");
+        card.set_hexpand(true);
+        card.set_halign(gtk::Align::Fill);
+    } else {
+        card.set_hexpand(true);
+        card.set_size_request(240, -1);
+    }
     card.set_tooltip_text(Some(&gpu.uuid));
 
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -4227,7 +4905,7 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
     let title = label(&format!("GPU #{}", gpu.index), &["trommel-gpu-title"]);
     let name = label(&gpu.name, &["caption", "dim-label"]);
     name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    name.set_max_width_chars(14);
+    name.set_max_width_chars(if wide { 48 } else { 14 });
     titles.append(&title);
     titles.append(&name);
     header.append(&titles);
@@ -4242,12 +4920,12 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
     toggle.set_active(enabled);
     toggle.set_valign(gtk::Align::Center);
     toggle.set_tooltip_text(Some(&tr(
-        "Enable this GPU in the active profile",
-        "Включить эту карту в активном профиле",
+        "Mine with this GPU. An excluded card is not passed to the miner and is not tuned.",
+        "Майнить на этой карте. Исключённая карта не передаётся майнеру и не разгоняется.",
     )));
     let switch_label = tr(
-        &format!("GPU {} enable", gpu.index),
-        &format!("Карта {} включена", gpu.index),
+        &format!("GPU {} mining", gpu.index),
+        &format!("Карта {} в майнинге", gpu.index),
     );
     toggle.update_property(&[gtk::accessible::Property::Label(&switch_label)]);
     {
@@ -4277,7 +4955,9 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
             {
                 let mut cfg = app.config.borrow_mut();
                 let profile = cfg.gpu_profile_mut();
+                let custom = profile.is_custom(&uuid);
                 let mut tuning = profile.tuning_for(&uuid);
+                tuning.custom = custom;
                 tuning.enabled = new_enabled;
                 profile.per_gpu.insert(uuid.clone(), tuning);
             }
@@ -4318,10 +4998,6 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
     header.append(&toggle);
     card.append(&header);
 
-    let grid = gtk::Grid::new();
-    grid.set_column_spacing(16);
-    grid.set_row_spacing(6);
-    grid.set_column_homogeneous(true);
     let temp = gpu
         .temp_c
         .map(|value| format!("{value} °C"))
@@ -4331,18 +5007,9 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
         Some(value) if value >= 70 => "trommel-warm",
         _ => "",
     };
-    let power = format!(
-        "{} / {} W",
-        gpu.power_w
-            .map(|value| format!("{value:.0}"))
-            .unwrap_or_else(|| "—".into()),
-        gpu.power_limit_w
-            .map(|value| format!("{value:.0}"))
-            .unwrap_or_else(|| "—".into())
-    );
-    let fan = gpu
-        .fan_pct
-        .map(|value| format!("{value}%"))
+    let power = gpu
+        .power_w
+        .map(|value| format!("{value:.0} W"))
         .unwrap_or_else(|| "—".into());
     let tuning = app
         .config
@@ -4350,42 +5017,66 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
         .gpu_profile()
         .map(|profile| profile.tuning_for(&gpu.uuid))
         .unwrap_or_default();
-    let core_label = tuning
-        .core_clock_mhz
-        .map(|value| format!("{} · {} {value}", tr("Core", "Ядро"), tr("lock", "лок")))
-        .unwrap_or_else(|| tr("Core", "Ядро"));
-    let memory_label = tuning
-        .memory_clock_mhz
-        .map(|value| format!("{} · {} {value}", tr("Memory", "Память"), tr("lock", "лок")))
-        .unwrap_or_else(|| tr("Memory", "Память"));
+    let power_class = if tuning
+        .power_limit_w
+        .zip(gpu.power_limit_w)
+        .map(|(want, have)| (want as f64 - have).abs() > 1.0)
+        .unwrap_or(false)
+    {
+        "trommel-hot"
+    } else {
+        ""
+    };
+    let power_hint = tuning
+        .power_limit_w
+        .map(|value| format!("{} {value} W", tr("target", "цель")))
+        .or_else(|| {
+            gpu.power_limit_w
+                .map(|value| format!("{} {value:.0} W", tr("limit", "лимит")))
+        });
     let core_text = gpu
         .core_mhz
         .map(|value| format!("{value} MHz"))
         .unwrap_or_else(|| "— MHz".into());
+    let core_hint = tuning
+        .core_clock_mhz
+        .map(|value| format!("{} {value}", tr("lock", "лок")));
+    // Clocks idle far below a lock when the card is not mining; only flag a
+    // mismatch while the GPU is actually loaded.
+    let loaded = gpu.util_pct.unwrap_or(0) >= 50;
+    let core_class = if loaded
+        && tuning
+            .core_clock_mhz
+            .zip(gpu.core_mhz)
+            .map(|(want, have)| want.abs_diff(have) > 100)
+            .unwrap_or(false)
+    {
+        "trommel-hot"
+    } else {
+        ""
+    };
     let memory_text = gpu
         .mem_mhz
         .map(|value| format!("{value} MHz"))
         .unwrap_or_else(|| "— MHz".into());
-    let core_class = if tuning
-        .core_clock_mhz
-        .zip(gpu.core_mhz)
-        .map(|(want, have)| want.abs_diff(have) > 100)
-        .unwrap_or(false)
-    {
-        "trommel-hot"
-    } else {
-        ""
-    };
-    let memory_class = if tuning
+    let memory_hint = tuning
         .memory_clock_mhz
-        .zip(gpu.mem_mhz)
-        .map(|(want, have)| want.abs_diff(have) > 50)
-        .unwrap_or(false)
+        .map(|value| format!("{} {value}", tr("lock", "лок")));
+    let memory_class = if loaded
+        && tuning
+            .memory_clock_mhz
+            .zip(gpu.mem_mhz)
+            .map(|(want, have)| want.abs_diff(have) > 50)
+            .unwrap_or(false)
     {
         "trommel-hot"
     } else {
         ""
     };
+    let fan = gpu
+        .fan_pct
+        .map(|value| format!("{value}%"))
+        .unwrap_or_else(|| "—".into());
     let utilization = gpu
         .util_pct
         .map(|value| format!("{value}%"))
@@ -4394,39 +5085,86 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
         .config
         .borrow()
         .gpu_profile()
-        .map(|profile| profile.per_gpu.contains_key(&gpu.uuid))
+        .map(|profile| profile.is_custom(&gpu.uuid))
         .unwrap_or(false)
     {
         tr("custom", "своя")
     } else {
         tr("profile default", "профиль")
     };
-    for (col, row, item) in [
-        (0, 0, metric(&tr("Temp", "Темп."), &temp, temp_class)),
-        (1, 0, metric(&tr("Power", "Мощность"), &power, "")),
-        (0, 1, metric(&core_label, &core_text, core_class)),
-        (1, 1, metric(&memory_label, &memory_text, memory_class)),
-        (0, 2, metric(&tr("Fan", "Вентилятор"), &fan, "")),
+    let stats = gtk::Grid::new();
+    stats.set_column_spacing(if wide { 10 } else { 8 });
+    stats.set_row_spacing(if wide { 10 } else { 8 });
+    stats.set_column_homogeneous(true);
+    // One card gets three columns (two rows); a rig of several cards keeps
+    // the compact 2 x 3 block.
+    let columns: i32 = if wide { 3 } else { 2 };
+    let stats_data = [
         (
-            0,
-            3,
-            metric(&tr("Utilization", "Загрузка"), &utilization, ""),
+            Metric::Power,
+            tr("Power", "Питание"),
+            power,
+            power_hint.as_deref(),
+            power_class,
         ),
         (
+            Metric::Core,
+            tr("Core", "Ядро"),
+            core_text,
+            core_hint.as_deref(),
+            core_class,
+        ),
+        (
+            Metric::Memory,
+            tr("Memory", "Память"),
+            memory_text,
+            memory_hint.as_deref(),
+            memory_class,
+        ),
+        (Metric::Temp, tr("Temp", "Темп."), temp, None, temp_class),
+        (Metric::Fan, tr("Fan", "Кулер"), fan, None, ""),
+        (Metric::Load, tr("Load", "Загрузка"), utilization, None, ""),
+    ];
+    for (index, (metric, label_text, value_text, hint, class)) in stats_data.iter().enumerate() {
+        let spark = sparkline(app, &gpu.uuid, *metric, class, label_text);
+        stats.attach(
+            &gpu_stat(Some(spark), label_text, value_text, *hint, class),
+            index as i32 % columns,
+            index as i32 / columns,
             1,
-            3,
-            metric(&tr("Tuning", "Настройка"), &tuning_label, "trommel-muted"),
-        ),
-    ] {
-        grid.attach(&item, col, row, 1, 1);
+            1,
+        );
     }
-    card.append(&grid);
+    card.append(&stats);
+
+    let role = status
+        .participation
+        .iter()
+        .find(|card| card.uuid == gpu.uuid);
+    let role_enabled = role.map(|card| card.enabled).unwrap_or(enabled);
+    let mining = role.map(|card| card.mining).unwrap_or(false);
+    // The chip describes the applied session, not the draft switch. A card
+    // whose switch was just turned off still says "mining" until Apply.
+    let (role_text, role_class) = if status.state.external {
+        (tr("external", "вручную"), "trommel-warm")
+    } else if !role_enabled {
+        (tr("excluded", "исключена"), "trommel-muted")
+    } else if mining {
+        (tr("mining", "майнит"), "success")
+    } else if status.state.running {
+        (tr("not mining", "не майнит"), "trommel-warm")
+    } else {
+        (String::new(), "")
+    };
 
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let uuid = label(&gpu.uuid, &["caption", "trommel-muted"]);
-    uuid.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-    uuid.set_max_width_chars(20);
-    uuid.set_hexpand(true);
+    if !role_text.is_empty() {
+        footer.append(&gpu_chip(&role_text, role_class));
+    }
+    footer.append(&gpu_chip(&tuning_label, "trommel-muted"));
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    footer.append(&spacer);
     let tune = gtk::Button::builder()
         .label(tr("Tune", "Настроить"))
         .css_classes(["pill", "flat"])
@@ -4436,201 +5174,44 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats) -> gtk::Widget {
         let gpu = gpu.clone();
         tune.connect_clicked(move |_| gpu_tune_dialog(&app, &gpu));
     }
-    footer.append(&uuid);
     footer.append(&tune);
     card.append(&footer);
     card.upcast()
 }
 
-fn refresh_gpu_cards(app: &Rc<App>, gpus: &[GpuStats]) {
-    clear_flow(&app.gpu_flow);
+fn refresh_gpu_cards(app: &Rc<App>, status: &Status) {
+    let gpus = &status.gpus;
+    // The registry only holds weak refs, but the old areas are about to be
+    // destroyed, so drop their entries now instead of on the next tick.
+    app.sparklines.borrow_mut().clear();
+    clear_box(&app.gpu_host);
     if gpus.is_empty() {
         let empty = label(
             &tr("No NVIDIA GPU detected", "NVIDIA GPU не обнаружен"),
             &["dim-label"],
         );
+        empty.set_halign(gtk::Align::Center);
         empty.set_margin_top(8);
         empty.set_margin_bottom(8);
-        let child = gtk::FlowBoxChild::new();
-        child.set_child(Some(&empty));
-        app.gpu_flow.insert(&child, -1);
+        app.gpu_host.append(&empty);
         return;
     }
-    for gpu in gpus {
-        let child = gtk::FlowBoxChild::new();
-        child.set_child(Some(&make_gpu_card(app, gpu)));
-        app.gpu_flow.insert(&child, -1);
+    if gpus.len() == 1 {
+        app.gpu_host
+            .append(&make_gpu_card(app, &gpus[0], true, status));
+        return;
     }
-}
-
-fn tuning_summary(app: &Rc<App>, uuid: &str) -> (String, bool) {
-    let profile = app
-        .config
-        .borrow()
-        .gpu_profile()
-        .cloned()
-        .unwrap_or_default();
-    let tuning = profile.tuning_for(uuid);
-    let custom = profile.per_gpu.contains_key(uuid);
-    let power = tuning
-        .power_limit_w
-        .map(|value| format!("{value} W"))
-        .unwrap_or_else(|| tr("auto", "авто"));
-    let core = tuning
-        .core_clock_mhz
-        .map(|value| format!("{value} MHz"))
-        .unwrap_or_else(|| tr("auto", "авто"));
-    let memory = tuning
-        .memory_clock_mhz
-        .map(|value| format!("{value} MHz"))
-        .unwrap_or_else(|| tr("auto", "авто"));
-    let text = format!(
-        "{} · {}: {} · {}: {} · {}: {}",
-        if custom {
-            tr("custom", "своя")
-        } else {
-            tr("profile default", "профиль")
-        },
-        tr("power", "питание"),
-        power,
-        tr("core", "ядро"),
-        core,
-        tr("memory", "память"),
-        memory
-    );
-    (text, custom)
-}
-
-/// One detected GPU as a readable settings row.
-///
-/// AdwPreferencesGroup styles its direct child as a card, but this list is
-/// rebuilt dynamically, so the rows live in a plain box. The CSS class adds
-/// the padding/separator that an AdwActionRow would otherwise provide.
-fn gpu_settings_row(app: &Rc<App>, gpu: &GpuStats, simple: bool) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Vertical, 7);
-    row.add_css_class("trommel-gpu-settings-card");
-    row.set_margin_top(4);
-    row.set_margin_bottom(4);
-    row.set_margin_start(4);
-    row.set_margin_end(4);
-
-    let tuning = app
-        .config
-        .borrow()
-        .gpu_profile()
-        .map(|profile| profile.tuning_for(&gpu.uuid))
-        .unwrap_or_default();
-    let detail = tuning_summary(app, &gpu.uuid).0;
-    let short_name = gpu
-        .name
-        .strip_prefix("NVIDIA GeForce ")
-        .or_else(|| gpu.name.strip_prefix("NVIDIA "))
-        .unwrap_or(&gpu.name);
-
-    let header = gtk::Box::new(gtk::Orientation::Horizontal, 7);
-    let icon = gtk::Image::from_icon_name("video-display-symbolic");
-    icon.add_css_class("trommel-gpu-settings-icon");
-    icon.set_valign(gtk::Align::Center);
-    header.append(&icon);
-    let name = label(
-        &format!("#{} {}", gpu.index, short_name),
-        &["trommel-gpu-settings-name"],
-    );
-    name.set_hexpand(true);
-    name.set_halign(gtk::Align::Start);
-    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    header.append(&name);
-
-    let tune = gtk::Button::builder()
-        .label(tr("Tune", "Настроить"))
-        .css_classes(["pill", "flat"])
-        .valign(gtk::Align::Center)
+    // WrapBox rather than FlowBox: on a wide window the cards share the row
+    // instead of hugging the left edge, and on a narrow one they wrap.
+    let wrap = adw::WrapBox::builder()
+        .child_spacing(10)
+        .line_spacing(10)
+        .justify(adw::JustifyMode::Fill)
         .build();
-    {
-        let app = app.clone();
-        let gpu = gpu.clone();
-        tune.connect_clicked(move |_| gpu_tune_dialog(&app, &gpu));
+    for gpu in gpus {
+        wrap.append(&make_gpu_card(app, gpu, false, status));
     }
-    header.append(&tune);
-    row.append(&header);
-
-    // Configured values as three mini columns instead of one undifferentiated
-    // "Power / Core / Memory" sentence. This is the part a user reads first.
-    let configured = gtk::Grid::new();
-    configured.set_column_spacing(10);
-    configured.set_column_homogeneous(true);
-    configured.set_margin_top(2);
-    let auto = tr("auto", "авто");
-    let power = tuning
-        .power_limit_w
-        .map(|value| format!("{value} W"))
-        .unwrap_or_else(|| auto.clone());
-    configured.attach(&metric(&tr("Power", "Питание"), &power, ""), 0, 0, 1, 1);
-    if !simple {
-        let core = tuning
-            .core_clock_mhz
-            .map(|value| format!("{value} MHz"))
-            .unwrap_or_else(|| auto.clone());
-        let memory = tuning
-            .memory_clock_mhz
-            .map(|value| format!("{value} MHz"))
-            .unwrap_or_else(|| auto.clone());
-        configured.attach(&metric(&tr("Core", "Ядро"), &core, ""), 1, 0, 1, 1);
-        configured.attach(&metric(&tr("Memory", "Память"), &memory, ""), 2, 0, 1, 1);
-    }
-    row.append(&configured);
-
-    let temp_text = gpu
-        .temp_c
-        .map(|value| format!("{value} °C"))
-        .unwrap_or_else(|| "— °C".into());
-    let temp_class = match gpu.temp_c {
-        Some(value) if value >= 80 => "trommel-hot",
-        Some(value) if value >= 70 => "trommel-warm",
-        _ => "trommel-muted",
-    };
-    let live_line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    live_line.set_halign(gtk::Align::Start);
-    live_line.append(&gpu_chip(&temp_text, temp_class));
-    if !simple {
-        live_line.append(&gpu_chip(
-            &format!(
-                "{} {}",
-                tr("fan", "вентилятор"),
-                gpu.fan_pct
-                    .map(|value| format!("{value}%"))
-                    .unwrap_or_else(|| "—".into())
-            ),
-            "trommel-muted",
-        ));
-    }
-    live_line.append(&gpu_chip(
-        &format!(
-            "{} {}",
-            tr("load", "загрузка"),
-            gpu.util_pct
-                .map(|value| format!("{value}%"))
-                .unwrap_or_else(|| "—".into())
-        ),
-        "trommel-muted",
-    ));
-    row.append(&live_line);
-
-    let tooltip = format!("{}\n{}\n{}", gpu.uuid, detail, {
-        if app
-            .config
-            .borrow()
-            .gpu_profile()
-            .map(|profile| profile.per_gpu.contains_key(&gpu.uuid))
-            .unwrap_or(false)
-        {
-            tr("Per-card override", "Своя настройка карты")
-        } else {
-            tr("Profile default", "Из профиля по умолчанию")
-        }
-    });
-    row.set_tooltip_text(Some(&tooltip));
-    row
+    app.gpu_host.append(&wrap);
 }
 
 fn gpu_chip(text: &str, class: &str) -> gtk::Label {
@@ -4641,94 +5222,83 @@ fn gpu_chip(text: &str, class: &str) -> gtk::Label {
     chip
 }
 
-fn refresh_gpu_settings(app: &Rc<App>, gpus: &[GpuStats]) {
-    let simple = app.config.borrow().behavior.simple_mode;
-    let signature = format!(
-        "simple={simple}|{}",
-        gpus.iter()
-            .map(|gpu| {
-                let tuning = app
-                    .config
-                    .borrow()
-                    .gpu_profile()
-                    .map(|profile| profile.tuning_for(&gpu.uuid));
-                format!("{}:{}:{:?}", gpu.uuid, gpu.name, tuning)
-            })
-            .collect::<Vec<_>>()
-            .join("|")
-    );
-    if *app.gpu_settings_sig.borrow() == signature {
-        return;
-    }
-    *app.gpu_settings_sig.borrow_mut() = signature;
-    clear_box(&app.settings.gpu_settings_box);
+fn has_selected_gpu(app: &Rc<App>, gpus: &[GpuStats]) -> bool {
     if gpus.is_empty() {
-        let row = adw::ActionRow::builder()
-            .title(tr("No GPU detected", "Карты не обнаружены"))
-            .subtitle(tr(
-                "Check the NVIDIA driver and nvidia-smi",
-                "Проверьте драйвер NVIDIA и nvidia-smi",
-            ))
-            .build();
-        app.settings.gpu_settings_box.append(&row);
-        return;
+        return true;
     }
+    let profile = app
+        .config
+        .borrow()
+        .gpu_profile()
+        .cloned()
+        .unwrap_or_default();
+    gpus.iter().any(|gpu| profile.tuning_for(&gpu.uuid).enabled)
+}
 
-    // One readable card per GPU: what is configured, what the card is doing
-    // right now, and one explicit action. A six-column grid made the window
-    // ~700 px wide and reduced the values to an unlabelled "auto / auto" line.
-    for gpu in gpus {
-        app.settings
-            .gpu_settings_box
-            .append(&gpu_settings_row(app, gpu, simple));
+/// Why Start is disabled, or `None` when it is allowed.
+///
+/// Besides "every card is excluded", this catches the case the daemon would
+/// refuse anyway: a partial exclusion on a miner without a documented device
+/// flag. Explaining it in the button tooltip is better than a failed start.
+fn start_block_reason(app: &Rc<App>) -> Option<String> {
+    let status = app.status.borrow();
+    let status = status.as_ref()?;
+    if status.state.running || status.gpus.is_empty() {
+        return None;
     }
+    if !has_selected_gpu(app, &status.gpus) {
+        return Some(tr(
+            "All GPUs are excluded from mining; enable one on the dashboard before starting",
+            "Все карты исключены из майнинга — включите хотя бы одну на дашборде перед запуском",
+        ));
+    }
+    let cfg = app.config.borrow().clone();
+    let preset = cfg.preset()?;
+    trommel_core::miners::device_plan(&cfg, preset, &status.gpus)
+        .err()
+        .map(|err| err.to_string())
+}
 
-    if simple {
-        let hint = label(
-            &tr(
-                "Simple mode shows power and temperature only. Clock locks live under Advanced.",
-                "Простой режим показывает только питание и температуру. Локи частот — в «Продвинутом».",
-            ),
-            &["caption", "dim-label"],
-        );
-        hint.set_margin_top(6);
-        hint.set_margin_start(6);
-        app.settings.gpu_settings_box.append(&hint);
-        let advanced = gtk::Button::builder()
-            .label(tr("Advanced settings", "Продвинутые настройки"))
-            .css_classes(["flat", "pill"])
-            .halign(gtk::Align::Start)
-            .build();
-        {
-            let app = app.clone();
-            advanced.connect_clicked(move |_| {
-                app.settings.simple_mode.set_active(false);
-            });
-        }
-        app.settings.gpu_settings_box.append(&advanced);
-    } else if gpus.len() > 1 {
-        let hint = label(
-            &tr(
-                "Each card keeps its own settings. Tune copies a profile to similar or all cards.",
-                "У каждой карты свои настройки. В «Настроить» профиль копируется на одинаковые или все карты.",
-            ),
-            &["caption", "dim-label"],
-        );
-        hint.set_margin_top(6);
-        hint.set_margin_start(6);
-        app.settings.gpu_settings_box.append(&hint);
+/// Keep the hero action's visible text and its accessible name in sync: the
+/// button wraps an icon and a label, so there is no `label` property to derive
+/// the name from.
+fn set_action_text(button: &gtk::Button, label: &gtk::Label, text: &str) {
+    label.set_text(text);
+    button.update_property(&[gtk::accessible::Property::Label(text)]);
+}
+
+fn update_start_sensitivity(app: &Rc<App>, reason: Option<String>) {
+    app.action_button.set_sensitive(reason.is_none());
+    app.action_button.set_tooltip_text(reason.as_deref());
+}
+
+/// Tooltip text: one header line plus one line per card, when there is any.
+fn card_tooltip(header: &str, lines: &[String]) -> String {
+    if lines.is_empty() {
+        header.to_string()
+    } else {
+        format!("{header}\n\n{}", lines.join("\n"))
     }
 }
 
 fn apply_status(app: &Rc<App>, status: Status) {
     let running = status.state.running;
-    app.action_button.set_sensitive(true);
+    // The sparklines read this rolling window; a fresh status may repeat the
+    // previous timestamp, in which case `record` replaces the last sample.
+    app.history.borrow_mut().record(&status.gpus, status.ts);
+    let blocked = start_block_reason(app);
+    update_start_sensitivity(app, blocked);
     let action_text = if running {
         tr("Stop", "Остановить")
     } else {
         tr("Start", "Запустить")
     };
-    app.action_label.set_text(&action_text);
+    set_action_text(&app.action_button, &app.action_label, &action_text);
+    app.action_icon.set_icon_name(Some(if running {
+        "media-playback-stop-symbolic"
+    } else {
+        "media-playback-start-symbolic"
+    }));
     app.action_button.set_css_classes(&[if running {
         "destructive-action"
     } else {
@@ -4815,6 +5385,56 @@ fn apply_status(app: &Rc<App>, status: Status) {
                     warning.to_lowercase().contains("wallet") || warning.contains("Кошелёк")
                 })),
     );
+    let selected = status.total.gpus_enabled;
+    let total = status.total.gpus_total;
+    let role_word = if status.state.external {
+        tr("external miner", "внешний майнер")
+    } else if running {
+        tr("mining", "майнят")
+    } else {
+        tr("selected", "выбрано")
+    };
+    let cards_subtitle = if status.state.external {
+        format!(
+            "{selected} {} {total} · {}",
+            tr("of", "из"),
+            tr("external miner", "внешний майнер")
+        )
+    } else {
+        format!("{selected} {} {total} {role_word}", tr("of", "из"))
+    };
+    app.total_gpus.set_subtitle(&cards_subtitle);
+    let participation_lines: Vec<String> = status
+        .participation
+        .iter()
+        .map(|card| {
+            format!(
+                "{} #{} · {}",
+                tr("Card", "Карта"),
+                card.index,
+                if card.enabled {
+                    tr("selected", "выбрана")
+                } else {
+                    tr("excluded", "исключена")
+                }
+            )
+        })
+        .collect();
+    let participation_header = if status.state.external {
+        tr(
+            "The external miner selects its own devices; these switches apply to a Trommel session.",
+            "Внешний майнер сам выбирает карты; эти переключатели действуют только на сессию Trommel.",
+        )
+    } else {
+        tr(
+            "Cards passed to the active miner. An excluded card is not tuned and does not mine.",
+            "Карты, передаваемые активному майнеру. Исключённая карта не разгоняется и не майнит.",
+        )
+    };
+    app.total_gpus.set_tooltip_text(Some(&card_tooltip(
+        &participation_header,
+        &participation_lines,
+    )));
     app.total_power.set_subtitle(&format!(
         "{} W",
         status
@@ -4823,6 +5443,21 @@ fn apply_status(app: &Rc<App>, status: Status) {
             .map(|v| format!("{v:.0}"))
             .unwrap_or_else(|| "—".into())
     ));
+    let power_lines: Vec<String> = status
+        .gpus
+        .iter()
+        .filter_map(|gpu| gpu.power_w.map(|watts| (gpu.index, watts)))
+        .map(|(index, watts)| format!("{} #{index} · {watts:.1} W", tr("Card", "Карта")))
+        .collect();
+    // The tiles above already show one number per card; the totals tooltip is
+    // where the reader can check how the aggregate was formed.
+    app.total_power.set_tooltip_text(Some(&card_tooltip(
+        &tr(
+            "Whole rig: power.draw summed over every detected card, including excluded ones.",
+            "Весь риг: power.draw, просуммированный по всем найденным картам, включая исключённые.",
+        ),
+        &power_lines,
+    )));
     app.total_temp.set_subtitle(&format!(
         "{} °C",
         status
@@ -4831,6 +5466,19 @@ fn apply_status(app: &Rc<App>, status: Status) {
             .map(|v| v.to_string())
             .unwrap_or_else(|| "—".into())
     ));
+    let temp_lines: Vec<String> = status
+        .gpus
+        .iter()
+        .filter_map(|gpu| gpu.temp_c.map(|temp| (gpu.index, temp)))
+        .map(|(index, temp)| format!("{} #{index} · {temp} °C", tr("Card", "Карта")))
+        .collect();
+    app.total_temp.set_tooltip_text(Some(&card_tooltip(
+        &tr(
+            "Hottest card's temperature.gpu, not an average; excluded cards still count.",
+            "temperature.gpu самой горячей карты, не среднее; исключённые карты тоже учитываются.",
+        ),
+        &temp_lines,
+    )));
     app.shares_ok
         .set_text(&status.miner.accepted.unwrap_or(0).to_string());
     app.shares_bad
@@ -4896,6 +5544,26 @@ fn apply_status(app: &Rc<App>, status: Status) {
         "Pool endpoint and total pool fee",
         "Адрес пула и комиссия пула",
     )));
+    app.oc_banner.set_revealed(status.oc.needs_restore);
+    if status.oc.needs_restore {
+        let title = if status.oc.last_error.is_some() {
+            tr(
+                "Stock restore failed; GPU settings may still be applied",
+                "Возврат стока не удался — настройки GPU могли остаться",
+            )
+        } else if !status.oc.restore_on_stop {
+            tr(
+                "GPU settings are still applied (restore on stop is off)",
+                "Настройки GPU всё ещё применены (возврат при остановке выключен)",
+            )
+        } else {
+            tr(
+                "GPU settings are still applied",
+                "Настройки GPU всё ещё применены",
+            )
+        };
+        app.oc_banner.set_title(&title);
+    }
     if status.warnings.is_empty() {
         app.warnings.set_title(&tr("No notes", "Замечаний нет"));
         app.warning_badge.set_text("✓");
@@ -4906,22 +5574,40 @@ fn apply_status(app: &Rc<App>, status: Status) {
         app.warning_badge.set_css_classes(&["caption", "warning"]);
     }
 
-    let signature = status
-        .gpus
-        .iter()
-        .map(|gpu| {
-            format!(
-                "{}:{:?}:{:?}:{:?}",
-                gpu.uuid, gpu.temp_c, gpu.power_w, gpu.util_pct
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("|");
+    let signature = format!(
+        "{:?}|{}|{}|{}|{}",
+        app.config.borrow().gpu_profile(),
+        status.state.running,
+        status.state.external,
+        status
+            .participation
+            .iter()
+            .map(|card| format!("{}:{}:{}", card.index, card.enabled, card.mining))
+            .collect::<Vec<_>>()
+            .join("|"),
+        status
+            .gpus
+            .iter()
+            .map(|gpu| {
+                format!(
+                    "{}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
+                    gpu.uuid,
+                    gpu.temp_c,
+                    gpu.power_w,
+                    gpu.core_mhz,
+                    gpu.mem_mhz,
+                    gpu.util_pct,
+                    gpu.fan_pct
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    );
     if *app.gpu_sig.borrow() != signature {
         *app.gpu_sig.borrow_mut() = signature;
-        refresh_gpu_cards(app, &status.gpus);
+        refresh_gpu_cards(app, &status);
     }
-    refresh_gpu_settings(app, &status.gpus);
+    update_sparklines(app);
     *app.status.borrow_mut() = Some(status);
 }
 
@@ -4971,16 +5657,6 @@ where
             application.quit();
         }
     }
-}
-
-/// Screenshot helper for a transient window (the quick-setup wizard).
-fn schedule_window_screenshot(
-    window: gtk::Window,
-    path: String,
-    application: gtk::Application,
-    attempt: u32,
-) {
-    schedule_screenshot(window, path, application, attempt);
 }
 
 fn save_widget_png<W>(window: &W, path: &str) -> anyhow::Result<()>

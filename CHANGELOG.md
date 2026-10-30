@@ -5,14 +5,272 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
-### Fixed
+## [0.5.0] - 2026-10-29
 
-- The Dashboard navigation icon used `utilities-system-monitor-symbolic`, which
-  is missing from the Adwaita icon theme, so some themes showed a broken-image
-  placeholder. It now uses `view-grid-symbolic`, available in Adwaita and Yaru.
+### Added
+
+- **Per-GPU participation (B2).** A card switched off in the GPU profile is now
+  excluded from the active mining session, not just from tuning: the miner is
+  started with the participating `nvidia-smi` indices only, the excluded card
+  receives no power or clock changes, and any tuning left by a previous
+  restore-off session is returned to stock before the new session starts. The
+  status document exposes `participation[]` (`enabled`, `mining`), the dashboard
+  marks each card `mining`/`excluded` and Totals counts `N of M`.
+
+- **Documented device-selection flags.** The catalogue now carries
+  `device_flag` next to `per_gpu_devices`: WildRig `--gpu-list`, SRBMiner
+  `--gpu-id`, OneZero `--devices`. A miner without a documented flag refuses a
+  partial rig with an explicit error instead of silently mining on every card;
+  a device flag in `extra_args` is rejected while Trommel supplies the list.
+  Benchmarks follow the same rule. See
+  [ADR 0007](docs/adr/0007-per-gpu-participation.md).
+
+- **Exclusion coverage in tests.** Unit tests cover every driver branch,
+  comma-separated indices, empty/one/many cards and the unsupported-miner
+  refusal. The e2e run starts with one excluded card and checks the miner
+  arguments, the untouched excluded card, stock restoration for a previously
+  tuned excluded card, a reduced emergency-stop restore and the explicit
+  refusal without spawning.
 
 ### Changed
 
+- `GpuTuning.enabled` now means “participates in the mining session”. An enabled
+  card with no tuning still mines; an excluded card is not passed to the miner.
+  Changing participation is a restart change and uses the normal apply dialog.
+- The snapshot's `applied_gpus` covers only the participating, tuned cards;
+  Stop, shutdown and emergency-stop restore exactly that set. Aggregate rig
+  power and the hottest-card temperature still include excluded cards and say so
+  in their tooltips.
+- The GUI switch is labelled for mining participation (not “profile enable”);
+  the card chip and Totals describe the applied session, so a draft switch never
+  claims the miner already restarted.
+
+### Removed
+
+- **The dashboard Efficiency row.** The J/TH value is still computed and
+  published in the status JSON for agents and diagnostics, but the Totals group
+  no longer shows it.
+
+## [0.4.5] - 2026-10-29
+
+### Added
+
+- **Bounded restart with backoff (B1b).** A crashing miner is restarted at most
+  five times in a row, with an exponential delay from `restart_delay_s` capped
+  at 60 s. When the budget is exhausted the session stops, the stock snapshot is
+  restored and an error notification explains why. `started_at` is reset on
+  every spawn, so uptime is the uptime of the current process.
+
+- **A guard process for manual runs (B1b).** `trommeld` starts a hidden
+  `trommel guard` child in its own session. The guard watches the daemon PID and
+  `/proc` start time; if the daemon is SIGKILLed without disarming, the guard
+  runs the idempotent `emergency-stop`. A graceful shutdown disarms it before
+  the restore, and a new daemon terminates a stale guard after startup
+  recovery.
+
+- **Benchmark safety (B1b).** A benchmark refuses to start while an external
+  miner is running or while the live miner is not owned by this session. It no
+  longer stops a process it cannot prove is its own.
+
+### Changed
+
+- `state.miner_path` is now written on spawn; a custom-named miner is stopped by
+  its absolute path rather than by a name heuristic.
+- `TROMMEL_MAX_RESTARTS`, `TROMMEL_NO_GUARD` and `TROMMEL_GUARD_BIN` are test/
+  debugging hooks, documented in [development.md](docs/development.md).
+- GUI crash test added to the UI smoke and the e2e matrix.
+
+## [0.4.4] - 2026-10-29
+
+### Added
+
+- **Fault-tolerant session ownership (B1a).** `trommel emergency-stop` is an
+  idempotent teardown for a daemon that crashed or was SIGKILLed: it waits for
+  an in-flight GPU helper (or terminates it), stops only the miner recorded in
+  `state.json` when its PID still matches the saved binary path, restores the
+  snapshot with a short timeout, keeps the snapshot and `last_error` on failure
+  and logs the reason (`service-stop`, `guard`, `startup`, `manual`).
+
+- **Startup recovery.** A restarted daemon stops an orphaned miner from the
+  previous session, restores an applied snapshot and leaves mining stopped. It
+  no longer adopts the miner and continues mining.
+
+- **OC file lock and helper lease.** Apply, restore and emergency-stop are
+  serialized with an advisory `flock`; nested acquisition is rejected. The
+  helper receives `--lease-pid/--lease-start` (strict numeric values) and
+  aborts before its first mutation when the daemon PID/start time no longer
+  matches, so a queued polkit request cannot tune a rig that is being restored.
+
+- **Graceful shutdown and lost session bus.** SIGTERM/SIGINT and
+  `connection.closed()` stop only our miner, force a snapshot restore with a
+  short timeout and exit. systemd runs
+  `ExecStopPost=-/usr/bin/trommel emergency-stop --reason=service-stop` with
+  `KillMode=control-group` and `TimeoutStopSec=30`.
+
+- **Path-safe miner installs.** `miner`, `version` and `binary` are validated as
+  one safe path component before any network request or write; `../escape`,
+  `a/b`, empty and `.`/`..` are rejected.
+
+### Changed
+
+- `State` gained the additive `miner_path` field (old files parse unchanged).
+  `State::miner_alive`, Stop and emergency-stop compare `/proc/<pid>/exe` and
+  the script argument in `cmdline`; an external miner is never killed.
+- `find_external_miner(cfg, exclude_pid)` uses the directory/binary basenames of
+  every installed miner in addition to the catalogue names.
+- `Supervisor::with_config` resolves the active preset's binary; startup
+  recovery runs before the daemon serves D-Bus.
+- The failure policy is recorded in
+  [ADR 0005](docs/adr/0005-one-active-session.md) and
+  [ADR 0006](docs/adr/0006-failure-policy.md).
+
+
+### Added
+
+- **Desktop notifications without the panel applet.** The daemon sends crash,
+  error and overheat alerts through `org.freedesktop.Notifications`, so the
+  **Behavior → Notifications** switch keeps working after the GNOME Shell
+  extension was removed. The `Notification` D-Bus signal is still emitted for
+  integrations that want to render their own alert.
+
+- **Totals now explain themselves.** The **Totals** group gained an
+  **Efficiency** row (J/TH, already in the status JSON but never shown), and the
+  power and temperature rows carry a tooltip with one line per card. Power is
+  `power.draw` summed over every detected card, including the ones switched off
+  in the profile; the temperature is the hottest card's reading, not an average.
+
+- **A note when a card is at the temperature limit.** The dashboard **Notes**
+  row now names the hot card and both temperatures (`card #1: 95 °C (limit
+  90 °C)`) instead of staying silent while the miner throttles itself.
+
+- **Sparklines in the GPU cards.** Every metric bubble — power, core and memory
+  clock, temperature, fan and load — ends with a five-minute sparkline on the
+  bubble floor: a thin accent line over a soft wash, tinted like the value when
+  it runs warm or hot. The history is GUI-side (it starts empty and fills at the
+  poll rate), so the daemon status contract and the CLI/MCP JSON are unchanged.
+
+### Changed
+
+- **Default window narrowed to 880 × 760.** The one-line view switcher holds in
+  Russian down to about 850 px, so the window opens a hundred pixels narrower
+  without falling back to the stacked labels or the bottom bar.
+- **Miner install: two groups and a shorter primary action.** Version and
+  installation are separate groups; **Import binary** is a row instead of a
+  third footer button, and the URL, checksum, archive and binary fields sit in a
+  **Download source** expander whose subtitle shows the URL. The footer keeps
+  **Cancel**, the status line and a plain **Install** button, so it fits a
+  400 px window; long status messages ellipsize and keep the full text in a
+  tooltip. The dialog no longer needs to scroll to reach its own footer.
+- **GPU card charts share one floor.** A grid row gives its leftover height to
+  the tile's text block instead of the chart holder, so a chart stays 24 px tall
+  and ends on the bubble floor even when a neighbour in the same row carries a
+  hint line. The temperature chart was the visible case: it stopped a line
+  short of the bottom edge.
+- **Sparklines reach the bubble edges.** The wash is over-drawn to the last
+  pixel and the plot keeps only a 2 px bottom margin, so the graph sits on the
+  bubble floor instead of floating above it or being clipped before the right
+  corner.
+- **Navigation moved into the header bar.** The four sections are an
+  `AdwViewSwitcherTitle`, so the switcher sits next to the window actions
+  instead of in a separate bar at the bottom. When the window is too narrow for
+  labels, libadwaita swaps the switcher back to the title and reveals the
+  `AdwViewSwitcherBar` — one navigation surface at a time. The GPU cards now
+  share the row (`AdwWrapBox`, fill) instead of hugging the left edge.
+- **Start/Stop moved from the header into the dashboard hero.** The header now
+  holds navigation and window chrome only (refresh, switcher, menu), so the
+  one-line switcher fits down to roughly 880 px and the default window shrank
+  back to 960 × 760. The primary action sits in the hero footer with a
+  play/stop icon, right aligned with the uptime line, and keeps its
+  suggested/destructive colouring.
+- **Dialog actions moved into footers.** The preset editor, GPU tuning, miner
+  install, quick setup and error details keep their headers for the title and
+  the window controls only; **Cancel**/**Save**, **Next** and the tuning presets
+  menu now sit in a footer below the content, with the primary action on the
+  right. The tuning dialog's **⋯** menu became a labelled **Presets** menu next
+  to **Save**, and the miner install dialog's release-page icon became a
+  **Release page** row in the version group.
+- **Modal windows became `AdwDialog`s.** The preset editor, miner install, GPU
+  tuning, quick setup and error details are presented inside the main window.
+  They inherit its style and use libadwaita's spring presentation (the same
+  subtle bounce as the alert dialogs) instead of the compositor's window-open
+  scale. Dialog headers drop the automatic close button when they already carry
+  an explicit Cancel/Close.
+- **Settings no longer carries a separate “GPU defaults” group.** Power limits
+  and clock locks are GPU state, so they are edited per card in **Tune**; the
+  profile default is only the built-in base (driver-auto power, no clock locks)
+  that non-custom cards inherit. The global **Temperature limit** and
+  **Resume temperature** rows moved to **Behavior** — they drive the overheat
+  warning and are passed to miners that support a temperature limit.
+
+### Removed
+
+- **The GNOME Shell extension and its shared GSettings schema.** The applet,
+  `data/schemas/org.gnome.shell.extensions.trommel.gschema.xml`, the
+  **Settings → GNOME integration** group and `install.sh --no-extension` are
+  gone; the flag is accepted as a no-op so old commands do not break.
+  `uninstall.sh` still removes an applet left by an older install. Upgrading
+  from a release that shipped the applet leaves its UUID in
+  `org.gnome.shell enabled-extensions`; the package manager removes the files,
+  and the stale entry is removed once in Extensions (or with `gsettings`). See
+  [ADR 0004](docs/adr/0004-remove-extension.md).
+
+### Fixed
+
+- **The overheat notification followed only the first card.** The daemon read
+  `status.gpu`, so on a two-GPU rig a hot second card never produced an alert
+  even though the **Totals** row showed its temperature. The refresher now uses
+  `Status::hottest_gpu`, names the card in the body (`… 95 °C (card #1, limit
+  90 °C)`) and re-arms on the same episode rule as before; the e2e suite drives
+  the second card over the limit to cover it.
+- **GPU settings are now verified, not assumed.** `trommel-oc` reads the power
+  limit back after `-pl` and fails instead of claiming success; `reset` reports
+  a failing `-rgc`/`-rmc`; the supervisor checks memory/core locks once the
+  miner has loaded the GPU. An ignored memory lock stops the miner with the
+  requested and actual frequencies.
+- **The 30 s helper timeout no longer kills the polkit password dialog.** The
+  call waits up to 180 s (`TROMMEL_OC_TIMEOUT_MS` for tests), and the status
+  loop keeps serving the last document while authorization is pending.
+- **A per-GPU entry no longer shadows the default profile.** Schema v3 adds
+  `custom`: entries created by the setup wizard or the GPU enable switch inherit
+  power/clocks/temperature from the profile default; only the tuning
+  dialog creates a custom override. v2 configs are migrated automatically.
+- **Stop and Restore now tell the truth.** With `restore_stock_on_stop=false`
+  Stop keeps the snapshot and reports `oc.needs_restore`; the dashboard shows a
+  banner and the status warning explains it. A failed restore keeps the snapshot
+  and its error. The Restore action offers the pre-mining snapshot or the driver
+  default when they differ, and never reports success for a no-op.
+- **Snapshot hygiene:** a snapshot from another boot is deleted at daemon start
+  and never used; a profile with no tuning creates no snapshot and needs no
+  root; a stock Start restores any lingering applied snapshot first.
+- **Settings switches now stick without the Save button.** Toggling *Restore
+  stock on stop* updated only the widget; pressing the global Apply banner saved
+  the old value and the dashboard warning stayed. Behaviour switches and the
+  poll interval now write into the draft as they change.
+- The Dashboard navigation icon used `utilities-system-monitor-symbolic`, which
+  is missing from the Adwaita icon theme, so some themes showed a broken-image
+  placeholder. It now uses `view-grid-symbolic`, available in Adwaita and Yaru.
+- The Rust `--lmc` validator accepted only up to 4000 MHz while the schema, GUI
+  and helper allow real memory clocks up to 12000 MHz.
+- **All cards off no longer produces a clipped Start error.** Header **Start**
+  is disabled while every detected GPU is off, the status warning covers that
+  case even when the profile default would enable a missing card, and action
+  errors now open a selectable, copyable **Details** dialog.
+
+### Changed
+
+- The status contract is now **3**: `oc` gains `needs_restore`,
+  `restore_on_stop`, `last_error`, snapshot metadata and target summaries.
+- Dashboard GPU cards show live power, clocks, temperature, fan and load in
+  value bubbles with the configured target/lock as a hint. A single-GPU rig
+  uses one full-width card (3×2 bubbles); 2+ cards keep the compact grid. The
+  card itself is not clickable, so its hover tint is gone; **Tune** and the
+  include switch remain the controls. The duplicate *Detected GPUs* group left
+  Settings; per-card edits live in **Tune**. The tune dialog's **Recommended** /
+  **Profile default** actions moved into a **⋯** menu.
+- The dashboard hero is accent-tinted with a soft shadow, a small HASHRATE
+  caption, a larger value, a separator and a quieter uptime/restarts row.
+- New D-Bus `OCReport()` / `RestoreOC(mode)`, CLI `trommel oc report|restore`,
+  MCP `trommel_oc` / `trommel_restore_oc`, and the under-load clock check.
 - Documentation was restructured by audience: a new index, an architecture and
   component reference, a development guide with the test harness, and a design
   specification. The UX map was folded into `docs/design.md` /

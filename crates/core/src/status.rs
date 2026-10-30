@@ -1,10 +1,10 @@
-//! The status contract shared by the daemon, CLI, GUI and GNOME extension.
+//! The status contract shared by the daemon, CLI and GUI.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::catalog;
-use crate::config::Config;
+use crate::config::{Config, GpuProfile};
 use crate::i18n::tr;
 use crate::minerapi::{self, MinerStats};
 use crate::nvidia::{self, GpuStats};
@@ -12,7 +12,7 @@ use crate::pool::{self, PoolStats};
 use crate::state::State;
 use crate::util;
 
-pub const CONTRACT_VERSION: u32 = 2;
+pub const CONTRACT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct StateView {
@@ -53,12 +53,36 @@ pub struct TotalView {
     pub gpus_total: u32,
 }
 
+/// One card's role in the applied session. `enabled` is the profile switch;
+/// `mining` is true only while this card is part of a running session that
+/// Trommel owns (not an external miner, whose device set is unknown).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct GpuParticipation {
+    pub index: u32,
+    pub uuid: String,
+    pub name: String,
+    pub enabled: bool,
+    pub mining: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct OcView {
+    /// Tuning from the current snapshot was applied (or an apply was started).
     pub applied: bool,
+    /// The tuning is still on the cards while the miner is stopped. The GUI
+    /// shows a banner with a Restore action in this state.
+    pub needs_restore: bool,
     pub snapshot_available: bool,
     pub stale: bool,
     pub boot_id: String,
+    pub restore_on_stop: bool,
+    pub last_error: Option<String>,
+    pub snapshot_created_at: Option<u64>,
+    pub snapshot_boot_id: Option<String>,
+    /// Summary for the first card; the full per-GPU targets are in `oc_report`.
+    pub restore_power_w: Option<u32>,
+    pub driver_default_w: Option<u32>,
+    pub was_tuned: bool,
 }
 
 fn default_temp_limit() -> u32 {
@@ -72,6 +96,9 @@ pub struct Status {
     pub preset: Option<String>,
     pub miner_info: MinerInfo,
     pub gpus: Vec<GpuStats>,
+    /// Explicit role of every detected card in the applied profile/session.
+    #[serde(default)]
+    pub participation: Vec<GpuParticipation>,
     /// First GPU, kept for older clients.
     pub gpu: Option<GpuStats>,
     pub gpu_error: Option<String>,
@@ -141,7 +168,134 @@ fn lock_warnings(cfg: &Config, gpus: &[GpuStats], running: bool, uptime_s: u64) 
     warnings
 }
 
+/// Warn when the detected cards are all switched off, even if the profile
+/// default would enable a card that is no longer present. `Config::warnings`
+/// cannot know the detected UUIDs, so the status document adds this one.
+fn enabled_gpu_warning(cfg: &Config, gpus: &[GpuStats]) -> Option<String> {
+    if gpus.is_empty() {
+        return None;
+    }
+    let profile = cfg.gpu_profile()?;
+    if gpus.iter().any(|gpu| profile.tuning_for(&gpu.uuid).enabled) {
+        return None;
+    }
+    Some(tr(
+        "No GPU is selected for mining",
+        "Ни одна видеокарта не выбрана для майнинга",
+    ))
+}
+
+/// Build the per-card role list. `mining` belongs to the running session, not
+/// the draft: a switch change must not make a card look idle before Apply.
+fn participation_view(
+    profile: Option<&GpuProfile>,
+    gpus: &[GpuStats],
+    running_ours: bool,
+) -> Vec<GpuParticipation> {
+    gpus.iter()
+        .map(|gpu| {
+            let enabled = profile
+                .map(|profile| profile.tuning_for(&gpu.uuid).enabled)
+                .unwrap_or(true);
+            GpuParticipation {
+                index: gpu.index,
+                uuid: gpu.uuid.clone(),
+                name: gpu.name.clone(),
+                enabled,
+                mining: enabled && running_ours,
+            }
+        })
+        .collect()
+}
+
+/// User-facing notes for a partial participation: which cards are excluded
+/// and whether the selected miner can honour that at all.
+fn participation_warnings(cfg: &Config, gpus: &[GpuStats]) -> Vec<String> {
+    let Some(profile) = cfg.gpu_profile() else {
+        return Vec::new();
+    };
+    let excluded: Vec<&GpuStats> = gpus
+        .iter()
+        .filter(|gpu| !profile.tuning_for(&gpu.uuid).enabled)
+        .collect();
+    if excluded.is_empty() || excluded.len() == gpus.len() {
+        return Vec::new();
+    }
+    let en = excluded
+        .iter()
+        .map(|gpu| format!("GPU #{}", gpu.index))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ru = excluded
+        .iter()
+        .map(|gpu| format!("карта #{}", gpu.index))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut warnings = vec![tr(
+        &format!("Excluded from mining: {en}"),
+        &format!("Исключены из майнинга: {ru}"),
+    )];
+    if let Some(preset) = cfg.preset() {
+        if !crate::miners::supports_device_selection(&preset.miner) {
+            warnings.push(tr(
+                &format!(
+                    "The selected miner ({}) cannot choose GPUs; enable every card or choose a miner that documents device selection",
+                    preset.miner
+                ),
+                &format!(
+                    "Выбранный майнер ({}) не умеет выбирать видеокарты; включите все карты или выберите майнер с поддержкой выбора устройств",
+                    preset.miner
+                ),
+            ));
+        }
+    }
+    warnings
+}
+
+/// Rig power: `power.draw` summed over every detected card.
+///
+/// Cards excluded from mining still appear (an idle card draws power), and a
+/// card whose reading is `N/A` is skipped, so the sum can be lower than a wall
+/// meter by that card's draw.
+fn total_power(gpus: &[GpuStats]) -> Option<f64> {
+    gpus.iter()
+        .filter_map(|gpu| gpu.power_w)
+        .reduce(|a, b| a + b)
+}
+
+/// Hottest readable card, ties resolved to the lowest index.
+///
+/// Every multi-card consumer (the `total` document, the overheat alert and the
+/// temperature note) goes through this: reading only the first card misses a
+/// hot second card, which is exactly what a dual-GPU rig hits.
+pub fn hottest_gpu(gpus: &[GpuStats]) -> Option<&GpuStats> {
+    gpus.iter()
+        .filter(|gpu| gpu.temp_c.is_some())
+        .max_by_key(|gpu| (gpu.temp_c.unwrap_or_default(), std::cmp::Reverse(gpu.index)))
+}
+
+/// One note while the hottest card sits at or above the profile limit.
+fn temp_warning(gpus: &[GpuStats], temp_limit: u32) -> Option<String> {
+    let gpu = hottest_gpu(gpus)?;
+    let temp = gpu.temp_c?;
+    (temp >= temp_limit).then(|| {
+        format!(
+            "{} #{}: {} °C ({} {} °C)",
+            tr("GPU", "Карта"),
+            gpu.index,
+            temp,
+            tr("limit", "порог"),
+            temp_limit
+        )
+    })
+}
+
 impl Status {
+    /// Hottest readable card, see [`hottest_gpu`].
+    pub fn hottest_gpu(&self) -> Option<&GpuStats> {
+        hottest_gpu(&self.gpus)
+    }
+
     /// Build a status snapshot. Blocking: calls `nvidia-smi` and HTTP APIs.
     pub fn collect(cfg: &Config, state: &State) -> Self {
         let preset = cfg.preset();
@@ -176,19 +330,11 @@ impl Status {
             .map(|p| p.default.temp_limit_c)
             .unwrap_or_else(default_temp_limit);
         let gpus_total = gpus.len() as u32;
-        let gpus_enabled = gpus
-            .iter()
-            .filter(|gpu| {
-                profile
-                    .map(|p| p.tuning_for(&gpu.uuid).enabled)
-                    .unwrap_or(true)
-            })
-            .count() as u32;
-        let power = gpus
-            .iter()
-            .filter_map(|gpu| gpu.power_w)
-            .reduce(|a, b| a + b);
-        let temp_max = gpus.iter().filter_map(|gpu| gpu.temp_c).max();
+        let running_ours = state.running && !state.external;
+        let participation = participation_view(profile, &gpus, running_ours);
+        let gpus_enabled = participation.iter().filter(|card| card.enabled).count() as u32;
+        let power = total_power(&gpus);
+        let temp_max = hottest_gpu(&gpus).and_then(|gpu| gpu.temp_c);
         let hashrate = miner.primary();
         let efficiency = match (power, hashrate) {
             (Some(power), Some(hashrate)) if power > 0.0 && hashrate > 0.0 => {
@@ -235,27 +381,56 @@ impl Status {
         };
 
         let snapshot = crate::oc::load_snapshot();
-        let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-            .map(|text| text.trim().to_string())
-            .unwrap_or_default();
+        let boot_id = crate::oc::current_boot_id();
+        // A snapshot from another boot is diagnostic only: it must never make
+        // the UI offer a restore or claim that settings are still applied.
+        let fresh = snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.boot_id == boot_id);
+        let applied = fresh.map(|s| s.applied).unwrap_or(false);
+        let first = fresh.and_then(|s| s.gpus.first());
         let oc = OcView {
-            applied: snapshot.is_some() && state.running,
-            snapshot_available: snapshot.is_some(),
-            stale: snapshot
-                .as_ref()
-                .map(|s| s.boot_id != boot_id)
-                .unwrap_or(false),
+            applied,
+            needs_restore: applied && !state.running,
+            snapshot_available: fresh.is_some(),
+            stale: snapshot.is_some() && fresh.is_none(),
             boot_id,
+            restore_on_stop: cfg.behavior.restore_stock_on_stop,
+            last_error: fresh.and_then(|s| s.last_error.clone()),
+            snapshot_created_at: fresh.map(|s| s.created_at),
+            snapshot_boot_id: fresh.map(|s| s.boot_id.clone()),
+            restore_power_w: first
+                .and_then(|gpu| gpu.restore_power_w(crate::oc::RestoreMode::Snapshot)),
+            driver_default_w: first
+                .and_then(|gpu| gpu.power_default_w)
+                .map(|value| value.round() as u32),
+            was_tuned: first.map(|gpu| gpu.was_tuned).unwrap_or(false),
         };
 
         let ts = util::now_unix();
         let mut warnings = cfg.warnings();
-        warnings.extend(lock_warnings(
-            cfg,
-            &gpus,
-            state.running && !state.external,
-            state.uptime_s(),
-        ));
+        if let Some(warning) = enabled_gpu_warning(cfg, &gpus) {
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
+        warnings.extend(participation_warnings(cfg, &gpus));
+        warnings.extend(lock_warnings(cfg, &gpus, running_ours, state.uptime_s()));
+        if let Some(warning) = temp_warning(&gpus, temp_limit) {
+            warnings.push(warning);
+        }
+        if oc.needs_restore {
+            warnings.push(tr(
+                "GPU power/clocks are still applied; use Restore stock in Settings",
+                "Питание/частоты GPU всё ещё применены — верните сток в «Настройках»",
+            ));
+        }
+        if let Some(err) = &oc.last_error {
+            warnings.push(format!(
+                "{} {err}",
+                tr("GPU restore failed:", "Возврат стока не удался:")
+            ));
+        }
         Self {
             contract_version: CONTRACT_VERSION,
             state: StateView {
@@ -274,6 +449,7 @@ impl Status {
             preset: cfg.active_preset.clone(),
             miner_info,
             gpus,
+            participation,
             gpu,
             gpu_error,
             total: TotalView {
@@ -376,6 +552,7 @@ mod tests {
             "\"state\"",
             "\"gpu\"",
             "\"gpus\"",
+            "\"participation\"",
             "\"miner\"",
             "\"miner_info\"",
             "\"pool\"",
@@ -412,6 +589,7 @@ mod tests {
                 power_limit_w: Some(300),
                 core_clock_mhz: Some(1620),
                 memory_clock_mhz: Some(810),
+                custom: true,
                 ..Default::default()
             },
         );
@@ -480,5 +658,163 @@ mod tests {
         let mut gpu = tuned_gpu(uuid);
         gpu.mem_mhz = Some(9501);
         assert!(lock_warnings(&cfg, &[gpu], true, 60).is_empty());
+    }
+
+    #[test]
+    fn all_gpus_disabled_warns_even_with_an_enabled_default() {
+        let uuid = "GPU-test";
+        let mut cfg = tuned_config(uuid);
+        cfg.gpu_profiles
+            .get_mut("balanced")
+            .unwrap()
+            .per_gpu
+            .get_mut(uuid)
+            .unwrap()
+            .enabled = false;
+        let warning = enabled_gpu_warning(&cfg, &[tuned_gpu(uuid)]).expect("warning");
+        assert!(!warning.is_empty());
+        assert!(enabled_gpu_warning(&cfg, &[]).is_none());
+    }
+
+    #[test]
+    fn an_enabled_gpu_does_not_warn() {
+        let uuid = "GPU-test";
+        let cfg = tuned_config(uuid);
+        assert!(enabled_gpu_warning(&cfg, &[tuned_gpu(uuid)]).is_none());
+    }
+
+    fn card(index: u32, temp: Option<u32>, power: Option<f64>) -> GpuStats {
+        GpuStats {
+            index,
+            uuid: format!("GPU-{index}"),
+            temp_c: temp,
+            power_w: power,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rig_power_sums_every_card_including_disabled_ones() {
+        let gpus = [
+            card(0, Some(74), Some(145.6)),
+            card(1, Some(81), Some(137.9)),
+        ];
+        assert_eq!(total_power(&gpus), Some(283.5));
+        assert_eq!(total_power(&[]), None);
+    }
+
+    #[test]
+    fn rig_power_skips_cards_without_a_reading() {
+        let gpus = [card(0, Some(74), Some(145.6)), card(1, Some(81), None)];
+        assert_eq!(total_power(&gpus), Some(145.6));
+    }
+
+    #[test]
+    fn hottest_card_is_not_always_the_first() {
+        let gpus = [
+            card(0, Some(74), Some(145.6)),
+            card(1, Some(81), Some(137.9)),
+        ];
+        assert_eq!(hottest_gpu(&gpus).map(|gpu| gpu.index), Some(1));
+        assert_eq!(hottest_gpu(&[]), None);
+        assert_eq!(hottest_gpu(&[card(0, None, Some(1.0))]), None);
+    }
+
+    #[test]
+    fn tying_cards_report_the_lowest_index() {
+        let gpus = [card(0, Some(70), None), card(1, Some(70), None)];
+        assert_eq!(hottest_gpu(&gpus).map(|gpu| gpu.index), Some(0));
+    }
+
+    fn excluded_config(uuid: &str) -> Config {
+        let mut cfg = Config::default();
+        cfg.gpu_profiles
+            .get_mut("balanced")
+            .unwrap()
+            .per_gpu
+            .insert(
+                uuid.to_string(),
+                crate::config::GpuTuning {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
+        cfg
+    }
+
+    #[test]
+    fn participation_marks_excluded_cards_and_only_mining_while_ours() {
+        let cfg = excluded_config("GPU-1");
+        let gpus = [
+            card(0, Some(60), Some(300.0)),
+            card(1, Some(55), Some(130.0)),
+        ];
+        let view = participation_view(cfg.gpu_profile(), &gpus, true);
+        assert!(view[0].enabled && view[0].mining, "{view:?}");
+        assert!(!view[1].enabled && !view[1].mining, "{view:?}");
+
+        // Stopped: the card stays enabled but is not mining.
+        let stopped = participation_view(cfg.gpu_profile(), &gpus, false);
+        assert!(stopped[0].enabled && !stopped[0].mining, "{stopped:?}");
+
+        // External miner: Trommel does not know its device set, so no card is
+        // claimed as mining by this session.
+        let external = participation_view(cfg.gpu_profile(), &gpus, false);
+        assert!(external.iter().all(|card| !card.mining), "{external:?}");
+    }
+
+    #[test]
+    fn participation_warning_names_the_excluded_card() {
+        let cfg = excluded_config("GPU-1");
+        let gpus = [card(0, None, None), card(1, None, None)];
+        let warnings = participation_warnings(&cfg, &gpus);
+        assert!(
+            warnings.iter().any(|warning| warning.contains("#1")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().all(|warning| !warning.contains("#0")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn participation_warning_names_an_unsupported_miner() {
+        let mut cfg = excluded_config("GPU-1");
+        cfg.preset_mut().unwrap().miner = "private-build".into();
+        let gpus = [card(0, None, None), card(1, None, None)];
+        let warnings = participation_warnings(&cfg, &gpus);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("private-build")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn an_all_excluded_rig_does_not_repeat_the_warning() {
+        let mut cfg = excluded_config("GPU-1");
+        cfg.gpu_profiles
+            .get_mut("balanced")
+            .unwrap()
+            .default
+            .enabled = false;
+        let gpus = [card(0, None, None), card(1, None, None)];
+        assert!(participation_warnings(&cfg, &gpus).is_empty());
+        assert!(enabled_gpu_warning(&cfg, &gpus).is_some());
+    }
+
+    #[test]
+    fn a_hot_second_card_adds_the_temperature_note() {
+        let gpus = [card(0, Some(74), None), card(1, Some(81), None)];
+        let warning = temp_warning(&gpus, 80).expect("warning");
+        assert!(warning.contains("81"), "{warning}");
+        assert!(warning.contains("80"), "{warning}");
+        assert!(warning.contains("#1"), "{warning}");
+        // One degree under the limit is not a note, and an unreadable card
+        // must not fake one.
+        assert!(temp_warning(&gpus, 82).is_none());
+        assert!(temp_warning(&[card(0, None, None)], 80).is_none());
     }
 }

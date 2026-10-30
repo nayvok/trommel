@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use trommel_core::dbus::{self, Engine};
+use trommel_core::i18n::tr;
 use trommel_core::status::Status;
 use trommel_core::supervisor::log_line;
 use trommel_core::{paths, OBJECT_PATH};
@@ -13,6 +14,18 @@ use trommel_core::{paths, OBJECT_PATH};
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
     paths::ensure_dirs().ok();
+
+    // Final net after a crash: stop an orphaned miner from the previous
+    // session, restore an applied snapshot, and never resume mining. This runs
+    // before the D-Bus name is owned, so a client can not observe a rig that
+    // is halfway through recovery.
+    match trommel_core::emergency::startup_recovery() {
+        Ok(outcome) => log_line(&format!(
+            "startup: {}",
+            outcome.summary(trommel_core::emergency::Reason::Startup)
+        )),
+        Err(err) => log_line(&format!("startup recovery did not complete: {err}")),
+    }
 
     let engine = Engine::new();
     let connection = zbus::connection::Builder::session()
@@ -25,6 +38,14 @@ async fn main() -> anyhow::Result<()> {
         .object_server()
         .interface::<_, Engine>(OBJECT_PATH)
         .await?;
+
+    // Independent supervisor for manual runs: it survives our SIGKILL and
+    // runs emergency-stop if we disappear without disarming it.
+    let guard_pid = trommel_core::guard::spawn_guard();
+    match guard_pid {
+        Some(pid) => log_line(&format!("guard started pid={pid}")),
+        None => log_line("guard not started (TROMMEL_NO_GUARD set or trommel not found)"),
+    }
 
     log_line("сервис запущен");
     println!(
@@ -39,14 +60,20 @@ async fn main() -> anyhow::Result<()> {
     let refresher = {
         let engine = engine.clone();
         let iface_ref = iface_ref.clone();
+        let connection = connection.clone();
         tokio::spawn(async move {
             let mut last_json = String::new();
             let mut overheated = false;
 
             loop {
-                let (cfg, state) = {
-                    let inner = engine.lock().await;
-                    (inner.cfg.clone(), inner.sup.state.clone())
+                let (cfg, state) = match engine.try_snapshot() {
+                    Some(snapshot) => snapshot,
+                    None => {
+                        // A Start/Stop/Restore is waiting for the polkit
+                        // dialog; keep the previous status and retry shortly.
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        continue;
+                    }
                 };
                 let interval = dbus::poll_interval(&cfg);
                 let temp_limit = cfg
@@ -74,30 +101,31 @@ async fn main() -> anyhow::Result<()> {
                 }
                 engine.set_status(status.clone()).await;
 
-                // Overheat notification, once per episode.
+                // Overheat notification, once per episode. The hot card can be
+                // any card: on a two-GPU rig the duty card is often the second
+                // one, and reading only `status.gpu` silenced the alert.
                 let hot = status
-                    .gpu
-                    .as_ref()
-                    .and_then(|gpu| gpu.temp_c)
-                    .map(|temp| temp >= temp_limit)
-                    .unwrap_or(false);
-                if hot && !overheated && notify_enabled {
-                    overheated = true;
-                    let _ = Engine::emit_notification(
-                        iface_ref.signal_emitter(),
-                        "Trommel: перегрев",
-                        &format!(
-                            "Температура достигла {} °C (порог {} °C). Майнер поставит паузу.",
-                            status
-                                .gpu
-                                .as_ref()
-                                .and_then(|gpu| gpu.temp_c)
-                                .unwrap_or_default(),
-                            temp_limit
-                        ),
-                    )
-                    .await;
-                } else if !hot && overheated {
+                    .hottest_gpu()
+                    .filter(|gpu| gpu.temp_c.unwrap_or_default() >= temp_limit);
+                if let (Some(gpu), true) = (&hot, notify_enabled) {
+                    if !overheated {
+                        overheated = true;
+                        let temp = gpu.temp_c.unwrap_or_default();
+                        let index = gpu.index;
+                        let summary = tr("Trommel: overheat", "Trommel: перегрев");
+                        let body = format!(
+                            "{} {temp} °C ({} #{index}, {} {temp_limit} °C). {}",
+                            tr("Temperature reached", "Температура достигла"),
+                            tr("card", "карта"),
+                            tr("limit", "порог"),
+                            tr("The miner will pause.", "Майнер поставит паузу."),
+                        );
+                        let _ =
+                            Engine::emit_notification(iface_ref.signal_emitter(), &summary, &body)
+                                .await;
+                        dbus::notify_desktop(&connection, &summary, &body);
+                    }
+                } else if hot.is_none() && overheated {
                     overheated = false;
                 }
 
@@ -113,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
     let supervisor_loop = {
         let engine = engine.clone();
         let iface_ref = iface_ref.clone();
+        let connection = connection.clone();
         let refresh_tx = refresh_tx.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(1));
@@ -136,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
                         let _ =
                             Engine::emit_notification(iface_ref.signal_emitter(), &summary, &body)
                                 .await;
+                        dbus::notify_desktop(&connection, &summary, &body);
                     }
                 }
                 let _ = refresh_tx.send(()).await;
@@ -143,14 +173,20 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
-    // Shutdown: leave the miner running (as `start-mining.sh` would); the next
-    // daemon instance adopts it as an external process.
+    // Shutdown: SIGTERM/SIGINT or a closed session bus. Stop only our miner,
+    // force a short-timeout snapshot restore, then let the guard go. A lost
+    // session bus means the control plane is gone; mining must not continue
+    // unattended.
+    let mut bus_closed = false;
     let shutdown = async {
         let mut term = signal_stream(tokio::signal::unix::SignalKind::terminate());
         let mut int = signal_stream(tokio::signal::unix::SignalKind::interrupt());
         tokio::select! {
             _ = term.recv() => {}
             _ = int.recv() => {}
+            _ = connection.closed() => {
+                bus_closed = true;
+            }
         }
     };
 
@@ -160,6 +196,25 @@ async fn main() -> anyhow::Result<()> {
         _ = refresher => {}
     }
 
+    if bus_closed {
+        log_line("сессионная шина закрыта; останавливаю майнер и возвращаю сток");
+    }
+    // Disarm before the potentially long restore so a normal shutdown cannot
+    // race the guard into a second restore.
+    trommel_core::guard::disarm_and_stop();
+    match engine.shutdown().await {
+        Ok(()) => log_line("shutdown: miner stopped and stock restore attempted"),
+        Err(err) => {
+            log_line(&format!(
+                "shutdown: graceful stop failed ({err}); running emergency-stop in-process"
+            ));
+            if let Err(emergency) =
+                trommel_core::emergency::run(trommel_core::emergency::Reason::ServiceStop)
+            {
+                log_line(&format!("shutdown: emergency-stop failed: {emergency}"));
+            }
+        }
+    }
     log_line("сервис остановлен");
     Ok(())
 }

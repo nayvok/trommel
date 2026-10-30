@@ -6,7 +6,8 @@ binaries are bundled; the catalogue links to upstream releases.
 
 The catalogue is parsed once by `trommel_core::catalog` (`OnceLock`) and drives
 the Miners page, the preset editor, the option widgets, the install dialog and
-the fee display. The argument builder is `trommel_core::miners::build_args`.
+the fee display. The argument builder is `trommel_core::miners::build_args` /
+`build_args_with_devices`.
 
 ## Miner entry
 
@@ -25,7 +26,8 @@ fee_pct = 0.0
 fee_configurable = false
 fee_flag = ""
 per_gpu_stats = false
-per_gpu_devices = false
+per_gpu_devices = true
+device_flag = "--gpu-list"
 default_options = { fan_speed = "0" }
 ```
 
@@ -39,7 +41,9 @@ default_options = { fan_speed = "0" }
 | `fee_pct` | Developer fee (percent) on the catalogue algorithm |
 | `fee_configurable` | Only `true` when the miner really accepts a fee flag |
 | `fee_flag` | Flag used when a fee override is applied (e.g. `--fee`) |
-| `per_gpu_stats`, `per_gpu_devices` | Parsed capability flags, currently unused; reserved for future per-device selection |
+| `per_gpu_stats` | The miner reports per-GPU statistics; parsed, not used for device selection |
+| `per_gpu_devices` | The miner can be told which cards to use. Must be paired with `device_flag` |
+| `device_flag` | The documented flag that selects devices (for example `--gpu-id`); empty when the miner cannot choose |
 | `default_options` | Defaults applied by quick setup when it switches miner; the editor falls back to each descriptor's `default` when a value is absent |
 
 ## Version entry
@@ -103,18 +107,59 @@ the new miner does not define are dropped when the preset is saved.
 
 ## Driver branches
 
-`build_args` has three shapes:
+`build_args_with_devices` has three core shapes; the optional device flag (see
+below) is added for every branch:
 
 | Driver | Selected by | Core flags |
 | --- | --- | --- |
-| Generic/WildRig | any id without a branch | `--algo`, `--url`, `--user`, optional `--worker`, `--api-port`, `--api-worker-id`, `--log-file`, `--no-color`, `--print-time 10`, `--gpu-temp-limit`, `--gpu-temp-resume` |
-| SRBMiner | `"srbminer"` | `--algorithm`, `--pool`, `--wallet wallet.worker`, `--password x`, optional `--api-enable/--api-port/--api-rig-name`, `--log-file` |
-| OneZero | `"onezero"` | `-a`, `-o`, `-u`, optional `-w` |
+| Generic/WildRig | any id without a branch | `--algo`, `--url`, `--user`, optional `--worker`, `--api-port`, `--api-worker-id`, `--log-file`, `--no-color`, `--print-time 10`, `--gpu-temp-limit`, `--gpu-temp-resume`, optional `--gpu-list` |
+| SRBMiner | `"srbminer"` | `--algorithm`, `--pool`, `--wallet wallet.worker`, `--password x`, optional `--api-enable/--api-port/--api-rig-name`, `--log-file`, optional `--gpu-id` |
+| OneZero | `"onezero"` | `-a`, `-o`, `-u`, optional `-w`, optional `--devices` |
 
 Add a branch only when the core flags genuinely differ; otherwise a catalogue
 entry is enough. The generic branch is also the custom/imported-miner driver.
 The temperature limit and resume value come from the active GPU profile's
 `default` tuning and are global, not per card.
+
+## Device selection (per-GPU participation)
+
+A card with `GpuTuning.enabled = false` is excluded from the active mining
+session: it is not passed to the miner and it is not tuned. The device list is
+rendered by `build_args_with_devices`; `device_plan` decides whether an explicit
+list is needed and whether the selected miner can honour it.
+
+Only a flag documented upstream is acceptable. The built-in catalogue currently
+ships:
+
+| Miner | `device_flag` | Documented meaning |
+| --- | --- | --- |
+| WildRig Multi | `--gpu-list` | list of GPUs to use; `--print-devices` lists them |
+| SRBMiner-MULTI | `--gpu-id` | GPU ids printed by `--list-devices`, comma-separated |
+| OneZeroMiner | `--devices` | comma-separated list of devices to use |
+
+Rules:
+
+- The list is comma-separated and contains the `nvidia-smi` index of every
+  participating card, in query order (`0`, `1,2`).
+- When every detected card participates, no device flag is passed: the miner's
+  default (“all devices”) is already correct and existing command lines do not
+  change.
+- When at least one card is excluded and the miner has no documented flag,
+  Start fails with an explicit error. Trommel never silently runs the miner on
+  the excluded card. The same rule applies to each benchmark entry.
+- The device list is only emitted for a catalogue miner with both
+  `per_gpu_devices = true` and a non-empty `device_flag`. A custom/imported miner
+  id has no capability and therefore cannot take part in a partial rig.
+- A device flag in the preset's `extra_args` is rejected when Trommel supplies
+  the list: two contradictory selections are not a supported configuration.
+- The indices follow the `nvidia-smi` order shown on the dashboard. For an
+  explicit CUDA list the supervisor sets `CUDA_DEVICE_ORDER=PCI_BUS_ID` unless
+  `preset.env` overrides it, so CUDA enumeration matches `nvidia-smi`. WildRig
+  uses OpenCL, which enumerates in PCI order. A heterogeneous/reordered rig is
+  still verified best with a real benchmark.
+- A card excluded now but tuned by an earlier restore-off session is returned
+  to its snapshot before the new session starts. Snapshot, Stop, shutdown and
+  emergency-stop cover only the participating, tuned cards.
 
 ## Installs and state
 
@@ -127,6 +172,18 @@ The temperature limit and resume value come from the active GPU profile's
   binary by hand leaves the install record and Start reports the missing binary.
 - Downloads and imports update the running daemon immediately (the CLI applies
   the new config after saving).
+- `miner`, `version` and the archive `binary` name are validated as one path
+  component each before any network request or write: non-empty, not `.`/`..`,
+  and no `/`, `\` or NUL. A version such as `1.0.0-rc1` is valid; `../escape`
+  and `a/b` are rejected.
+- A local import is copied into the managed store, so the preset keeps working
+  after the original download is moved. The installed file may have any name —
+  `my-custom-rig`, not just `wildrig-multi` — and the supervisor records its
+  absolute path as `state.miner_path`.
+- Stop, shutdown and `trommel emergency-stop` signal the miner only when
+  `/proc/<pid>/exe` (or the script argument in `cmdline`) still matches that
+  saved path. Custom binaries are therefore stopped correctly without a
+  name-based guess.
 
 ## Coins and pools
 
@@ -157,15 +214,17 @@ total.
 
 1. Add a `[[miners]]` entry to `miners.toml`: description in both languages,
    homepage, license, coins/algos, fee, versions and option descriptors.
-2. Add a driver branch only if the core arguments differ from the generic/WildRig
+2. Add `per_gpu_devices = true` and `device_flag = "--…"` only when the upstream
+   documentation names a device-selection flag. Never guess one.
+3. Add a driver branch only if the core arguments differ from the generic/WildRig
    shape.
-3. Add unit tests for argument rendering and fee handling in
-   `crates/core/src/miners.rs`.
-4. Add a version with a real HTTPS URL. Do not invent a SHA-256 or mark
+4. Add unit tests for argument rendering, fee handling and (when applicable)
+   the device flag in `crates/core/src/miners.rs`.
+5. Add a version with a real HTTPS URL. Do not invent a SHA-256 or mark
    `verified = true` until a download was checked; otherwise leave `sha256 = ""`
    and `verified = false`.
-5. If the miner exposes a local API, check whether the tolerant parser in
+6. If the miner exposes a local API, check whether the tolerant parser in
    `minerapi.rs` picks up its hashrate/shares; add a fixture if it needs a key
    mapping.
-6. Run `cargo test --workspace`, `./scripts/e2e.sh` and a real benchmark before
+7. Run `cargo test --workspace`, `./scripts/e2e.sh` and a real benchmark before
    announcing support.

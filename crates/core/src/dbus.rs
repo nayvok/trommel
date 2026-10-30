@@ -1,5 +1,5 @@
 //! D-Bus service `io.github.nayvok.Trommel.Daemon`: the single source of truth
-//! shared by the daemon, CLI/GUI and the GNOME Shell extension.
+//! shared by the daemon, CLI and GUI.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -13,6 +13,7 @@ use zbus::object_server::SignalEmitter;
 use crate::bench::{self, BenchReport};
 use crate::config::{ApplyMode, ChangeClass, Config};
 use crate::i18n;
+use crate::oc::{self, RestoreMode};
 use crate::state::State;
 use crate::status::Status;
 use crate::supervisor::{Event, Supervisor};
@@ -28,6 +29,27 @@ pub struct Inner {
 pub struct Engine {
     inner: Arc<Mutex<Inner>>,
     running: Arc<AtomicBool>,
+    oc_busy: Arc<AtomicBool>,
+}
+
+/// Rejects a second concurrent GPU operation (Start/Stop/Restore). The guard
+/// is released on every return path.
+struct BusyGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl BusyGuard {
+    fn acquire(flag: &Arc<AtomicBool>) -> Option<Self> {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self { flag: flag.clone() })
+    }
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::Release);
+    }
 }
 
 impl Default for Engine {
@@ -40,10 +62,15 @@ impl Engine {
     pub fn new() -> Self {
         let cfg = Config::load_or_default();
         i18n::set_language(cfg.behavior.language);
-        let sup = Supervisor::new();
+        let sup = Supervisor::with_config(&cfg);
         let state = sup.state.clone();
         let status = Status::collect(&cfg, &state);
         let running = Arc::new(AtomicBool::new(status.state.running));
+        // A snapshot from a previous boot can never describe this boot's
+        // stock state; drop it before any UI/CLI call sees it.
+        if crate::oc::cleanup_stale_snapshot() {
+            crate::supervisor::log_line("removed a stale OC snapshot from a previous boot");
+        }
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 cfg,
@@ -52,7 +79,16 @@ impl Engine {
                 last_report: None,
             })),
             running,
+            oc_busy: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn busy_guard(&self) -> zbus::fdo::Result<BusyGuard> {
+        BusyGuard::acquire(&self.oc_busy).ok_or_else(|| {
+            zbus::fdo::Error::Failed(
+                "another GPU operation is already waiting for authorization".into(),
+            )
+        })
     }
 
     pub async fn lock(&self) -> tokio::sync::MutexGuard<'_, Inner> {
@@ -70,6 +106,34 @@ impl Engine {
 
     pub async fn cfg(&self) -> Config {
         self.inner.lock().await.cfg.clone()
+    }
+
+    /// Graceful daemon shutdown: stop only our miner and force a snapshot
+    /// restore with a short timeout. Bounded so a Start waiting for polkit
+    /// authorization cannot keep the process alive until systemd's SIGKILL;
+    /// systemd's `ExecStopPost` (or the guard) retries after the process exits.
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
+        let mut inner = match tokio::time::timeout(Duration::from_secs(5), self.inner.lock()).await
+        {
+            Ok(inner) => inner,
+            Err(_) => anyhow::bail!(
+                "an OC operation is still waiting; leaving teardown to emergency-stop"
+            ),
+        };
+        let cfg = inner.cfg.clone();
+        let result = tokio::task::block_in_place(|| inner.sup.shutdown(&cfg));
+        self.running.store(false, Ordering::Relaxed);
+        result
+    }
+
+    /// Non-blocking view of the config/state used by the status refresher.
+    /// While an OC call waits for authorization the main mutex is held; the
+    /// daemon must keep serving the last status instead of freezing.
+    pub fn try_snapshot(&self) -> Option<(Config, State)> {
+        self.inner
+            .try_lock()
+            .ok()
+            .map(|inner| (inner.cfg.clone(), inner.sup.state.clone()))
     }
 
     pub async fn status_json(&self) -> String {
@@ -93,6 +157,7 @@ fn default_bench_seconds() -> u64 {
 impl Engine {
     /// Start mining (snapshots stock, applies the GPU profile).
     async fn start(&self) -> zbus::fdo::Result<()> {
+        let _busy = self.busy_guard()?;
         let mut inner = self.inner.lock().await;
         let cfg = inner.cfg.clone();
         let result = tokio::task::block_in_place(|| inner.sup.start(&cfg));
@@ -106,6 +171,7 @@ impl Engine {
 
     /// Stop mining and restore the pre-mining snapshot.
     async fn stop(&self) -> zbus::fdo::Result<()> {
+        let _busy = self.busy_guard()?;
         let mut inner = self.inner.lock().await;
         let cfg = inner.cfg.clone();
         let result = tokio::task::block_in_place(|| inner.sup.stop(&cfg));
@@ -157,6 +223,7 @@ impl Engine {
     /// A running miner whose profile changed cannot be updated live: the call
     /// fails with a clear error so the GUI can offer restart/stop.
     async fn apply_config(&self, json: &str, mode: &str) -> zbus::fdo::Result<String> {
+        let _busy = self.busy_guard()?;
         let next: Config = serde_json::from_str(json)
             .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("config is not valid JSON: {e}")))?;
         let mode = ApplyMode::parse(mode).ok_or_else(|| {
@@ -219,6 +286,7 @@ impl Engine {
     }
 
     async fn run_benchmark(&self, request: &str) -> zbus::fdo::Result<String> {
+        let _busy = self.busy_guard()?;
         let request: BenchRequest = if request.trim().is_empty() {
             BenchRequest {
                 profiles: Vec::new(),
@@ -229,9 +297,28 @@ impl Engine {
                 .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("request is not valid: {e}")))?
         };
 
-        let was_running = self.running.load(Ordering::Relaxed);
         let mut inner = self.inner.lock().await;
         let cfg = inner.cfg.clone();
+
+        // A benchmark spawns miners itself: it must never run next to an
+        // external miner, and it must never stop a process it does not own.
+        if inner.sup.state.external {
+            return Err(zbus::fdo::Error::Failed(
+                "an external miner is running; stop it before a benchmark".into(),
+            ));
+        }
+        if let Some(pid) = crate::state::find_external_miner(&cfg, inner.sup.state.miner_pid) {
+            return Err(zbus::fdo::Error::Failed(format!(
+                "an external miner is running (PID {pid}); stop it before a benchmark"
+            )));
+        }
+        let was_running = inner.sup.owns_miner();
+        if self.running.load(Ordering::Relaxed) && !was_running {
+            return Err(zbus::fdo::Error::Failed(
+                "the running miner is not owned by this session; refusing to stop it".into(),
+            ));
+        }
+
         let profiles = if request.profiles.is_empty() {
             crate::catalog::miners()
                 .iter()
@@ -251,16 +338,23 @@ impl Engine {
             request.profiles.clone()
         };
 
-        let report = tokio::task::block_in_place(|| {
+        let report = tokio::task::block_in_place(|| -> anyhow::Result<BenchReport> {
             if was_running {
-                let _ = inner.sup.stop(&cfg);
+                inner.sup.stop(&cfg).map_err(|err| {
+                    anyhow::anyhow!("cannot stop the miner for the benchmark: {err}")
+                })?;
             }
             let report = bench::run(&cfg, &profiles, request.seconds);
             if was_running {
-                let _ = inner.sup.start(&cfg);
+                if let Err(err) = inner.sup.start(&cfg) {
+                    crate::supervisor::log_line(&format!(
+                        "benchmark finished but the miner did not restart: {err}"
+                    ));
+                }
             }
-            report
-        });
+            Ok(report)
+        })
+        .map_err(|err| zbus::fdo::Error::Failed(err.to_string()))?;
 
         let _ = bench::save(&report);
         let json = report.to_json();
@@ -268,28 +362,48 @@ impl Engine {
         Ok(json)
     }
 
-    /// Restore the snapshot captured before the current mining session.
+    /// A read-only snapshot of what Start applied and what Restore would do.
     ///
-    /// Refuses while a miner is running: Stop already restores the snapshot,
-    /// and changing power/clocks under a live miner is not a safe shortcut.
-    async fn reset_oc(&self) -> zbus::fdo::Result<()> {
-        let running = {
+    /// Safe to call while mining: it only reads files and nvidia-smi. The GUI
+    /// uses it to show the exact target values before asking for confirmation.
+    async fn oc_report(&self) -> String {
+        let (cfg, running) = {
             let inner = self.inner.lock().await;
-            inner.sup.is_running()
+            (inner.cfg.clone(), inner.sup.is_running())
+        };
+        build_oc_report(&cfg, running, self.oc_busy.load(Ordering::Acquire))
+    }
+
+    /// Restore GPU state. `mode` is `snapshot` (values captured before mining)
+    /// or `defaults` (the driver's default power limit and unlocked clocks).
+    ///
+    /// Returns a JSON report. Refuses while a miner is running.
+    async fn restore_oc(&self, mode: &str) -> zbus::fdo::Result<String> {
+        let _busy = self.busy_guard()?;
+        let mode = RestoreMode::parse(mode.trim()).ok_or_else(|| {
+            zbus::fdo::Error::InvalidArgs("mode must be snapshot|defaults".into())
+        })?;
+        let (running, restore_on_stop) = {
+            let inner = self.inner.lock().await;
+            (
+                inner.sup.is_running(),
+                inner.cfg.behavior.restore_stock_on_stop,
+            )
         };
         if running {
             return Err(zbus::fdo::Error::Failed(
                 "stop mining before restoring the stock profile".into(),
             ));
         }
-        let result = tokio::task::block_in_place(|| {
-            let Some(snapshot) = crate::oc::load_snapshot().or_else(crate::oc::fallback_snapshot)
-            else {
-                return Ok(());
-            };
-            crate::oc::restore_snapshot(&snapshot)
-        });
-        result.map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+        let report = tokio::task::block_in_place(|| restore_oc_blocking(mode, restore_on_stop))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        Ok(report)
+    }
+
+    /// Compatibility wrapper used by older clients: restore the snapshot when
+    /// one exists, otherwise reset to the driver defaults.
+    async fn reset_oc(&self) -> zbus::fdo::Result<()> {
+        self.restore_oc("snapshot").await.map(|_| ())
     }
 
     async fn restore_stock(&self) -> zbus::fdo::Result<()> {
@@ -362,15 +476,52 @@ pub fn events_to_notifications(events: &[Event]) -> Vec<(String, String)> {
             continue;
         };
         let summary = match event {
-            Event::Started(_) => "Trommel: start",
-            Event::Crashed { .. } => "Trommel: restart",
-            Event::Stopped { .. } => "Trommel: miner stopped",
-            Event::Error(_) => "Trommel: error",
-            Event::UserStopped => "Trommel: stop",
+            Event::Started(_) => i18n::tr("Trommel: start", "Trommel: старт"),
+            Event::Crashed { .. } => i18n::tr("Trommel: restart", "Trommel: перезапуск"),
+            Event::Stopped { .. } => {
+                i18n::tr("Trommel: miner stopped", "Trommel: майнер остановлен")
+            }
+            Event::Error(_) => i18n::tr("Trommel: error", "Trommel: ошибка"),
+            Event::Warning(_) => i18n::tr("Trommel: warning", "Trommel: предупреждение"),
+            Event::UserStopped => i18n::tr("Trommel: stop", "Trommel: стоп"),
         };
-        out.push((summary.to_string(), body));
+        out.push((summary, body));
     }
     out
+}
+
+/// Show a desktop notification through the freedesktop notification service.
+///
+/// The daemon is the only long-lived process, so it talks to
+/// `org.freedesktop.Notifications` itself instead of relying on a shell
+/// applet. The call runs in its own task and is bounded by a timeout, so a
+/// missing service (CI, a private test bus) or a hung notification daemon can
+/// never stall the status or supervisor loops; failures are ignored.
+pub fn notify_desktop(connection: &zbus::Connection, summary: &str, body: &str) {
+    let connection = connection.clone();
+    let summary = summary.to_string();
+    let body = body.to_string();
+    tokio::spawn(async move {
+        let hints = std::collections::HashMap::<&str, zbus::Variant>::new();
+        let args = (
+            "Trommel",
+            0u32,
+            crate::APP_ID,
+            summary.as_str(),
+            body.as_str(),
+            &[] as &[&str],
+            &hints,
+            8000i32,
+        );
+        let request = connection.call_method(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.Notifications"),
+            "Notify",
+            &args,
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(2), request).await;
+    });
 }
 
 pub fn poll_interval(cfg: &Config) -> Duration {
@@ -404,6 +555,8 @@ pub trait Miner {
     fn run_benchmark(&self, request: &str) -> zbus::Result<String>;
     fn reset_oc(&self) -> zbus::Result<()>;
     fn restore_stock(&self) -> zbus::Result<()>;
+    fn oc_report(&self) -> zbus::Result<String>;
+    fn restore_oc(&self, mode: &str) -> zbus::Result<String>;
     fn open_app(&self) -> zbus::Result<()>;
     fn quit(&self) -> zbus::Result<()>;
 
@@ -421,6 +574,115 @@ pub trait Miner {
 
     #[zbus(property)]
     fn contract_version(&self) -> zbus::Result<u32>;
+}
+
+fn build_oc_report(cfg: &Config, running: bool, busy: bool) -> String {
+    let snapshot = oc::load_snapshot();
+    let boot_id = oc::current_boot_id();
+    let fresh = snapshot
+        .as_ref()
+        .filter(|snapshot| snapshot.boot_id == boot_id);
+    let stale = snapshot.is_some() && fresh.is_none();
+    let current = crate::nvidia::query_all().unwrap_or_default();
+    let snapshot_targets: Vec<serde_json::Value> = fresh
+        .map(|snapshot| {
+            snapshot
+                .restore_gpus()
+                .into_iter()
+                .map(|gpu| {
+                    serde_json::json!({
+                        "index": gpu.index,
+                        "uuid": gpu.uuid,
+                        "name": gpu.name,
+                        "power_w": gpu.restore_power_w(RestoreMode::Snapshot),
+                        "driver_default_w": gpu.power_default_w.map(|w| w.round() as u32),
+                        "was_tuned": gpu.was_tuned,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let default_targets: Vec<serde_json::Value> = current
+        .iter()
+        .map(|gpu| {
+            serde_json::json!({
+                "index": gpu.index,
+                "uuid": gpu.uuid,
+                "name": gpu.name,
+                "power_w": gpu.power_default_w.or(gpu.power_limit_w).map(|w| w.round() as u32),
+                "driver_default_w": gpu.power_default_w.map(|w| w.round() as u32),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "busy": busy,
+        "running": running,
+        "restore_on_stop": cfg.behavior.restore_stock_on_stop,
+        "snapshot_available": fresh.is_some(),
+        "stale": stale,
+        "applied": fresh.map(|s| s.applied).unwrap_or(false),
+        "needs_restore": fresh
+            .map(|s| s.applied && !running)
+            .unwrap_or(false),
+        "snapshot": snapshot,
+        "current": current,
+        "targets": {
+            "snapshot": snapshot_targets,
+            "defaults": default_targets,
+        },
+    })
+    .to_string()
+}
+
+fn restore_oc_blocking(mode: RestoreMode, restore_on_stop: bool) -> anyhow::Result<String> {
+    let current = oc::current_boot_snapshot();
+    let (snapshot, effective_mode) = match (mode, current) {
+        (RestoreMode::Snapshot, Some(snapshot)) if snapshot.applied => {
+            (snapshot, RestoreMode::Snapshot)
+        }
+        (RestoreMode::Snapshot, _) => (
+            oc::driver_default_snapshot()
+                .ok_or_else(|| anyhow::anyhow!("nvidia-smi is not available; cannot reset"))?,
+            RestoreMode::Defaults,
+        ),
+        (RestoreMode::Defaults, _) => (
+            oc::driver_default_snapshot()
+                .ok_or_else(|| anyhow::anyhow!("nvidia-smi is not available; cannot reset"))?,
+            RestoreMode::Defaults,
+        ),
+    };
+    let count = snapshot.restore_gpus().len();
+    let targets: Vec<serde_json::Value> = snapshot
+        .restore_gpus()
+        .into_iter()
+        .map(|gpu| {
+            serde_json::json!({
+                "index": gpu.index,
+                "uuid": gpu.uuid,
+                "name": gpu.name,
+                "power_w": gpu.restore_power_w(effective_mode),
+                "was_tuned": gpu.was_tuned,
+            })
+        })
+        .collect();
+    let result = oc::restore_snapshot(&snapshot, effective_mode);
+    if let Err(ref err) = result {
+        oc::record_error(&err.to_string());
+    }
+    result?;
+    let target = match effective_mode {
+        RestoreMode::Snapshot => "the pre-mining snapshot",
+        RestoreMode::Defaults => "driver defaults",
+    };
+    Ok(serde_json::json!({
+        "ok": true,
+        "mode": effective_mode.as_str(),
+        "restored": count,
+        "restore_on_stop": restore_on_stop,
+        "targets": targets,
+        "message": format!("Restored {count} GPU(s) to {target}"),
+    })
+    .to_string())
 }
 
 #[cfg(test)]

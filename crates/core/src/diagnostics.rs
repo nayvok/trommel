@@ -18,6 +18,7 @@ pub fn report(cfg: &Config, status: Option<&Status>) -> Value {
         "state_path": paths::state_path(),
         "config": cfg.redacted(),
         "status": status,
+        "oc": crate::oc::load_snapshot(),
         "warnings": cfg.warnings(),
     })
 }

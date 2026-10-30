@@ -13,12 +13,11 @@ fit together, read [architecture.md](architecture.md) first.
 | `trommel` CLI | `crates/cli/src/main.rs` | Rust | Command-line client, daemon activation, JSON output |
 | `trommel` GUI | `crates/cli/src/gui.rs` | Rust (GTK4) | libadwaita application behind `--features gui` |
 | MCP server | `crates/cli/src/mcp.rs` | Rust | stdio Model Context Protocol interface |
-| GNOME extension | `extension/trommel@nayvok.github.io/` | GJS | Panel indicator, popup, Quick Settings toggle |
 | Catalogue | `resources/catalog/*.toml` | TOML | Built-in miners, coins and pools |
 | Root helper | `polkit/trommel-oc` | Bash | Narrow `nvidia-smi` wrapper run through pkexec |
 | Polkit assets | `polkit/` | XML / conf | Action definition and per-user rule template |
 | systemd units | `systemd/` | INI | D-Bus activation, user service, start-at-login |
-| Desktop assets | `data/` | XML / desktop / SVG | Desktop entry, metainfo, icons, GSettings schema |
+| Desktop assets | `data/` | XML / desktop / SVG | Desktop entry, metainfo, icons |
 | Installer | `install.sh`, `uninstall.sh` | Bash | Developer install/removal |
 | Packaging | `packaging/`, `scripts/*deb*` | Bash / spec | Debian package, GitHub release bundle, RPM template |
 | Test harness | `scripts/e2e.sh`, `ui-smoke.sh`, `first-run-smoke.sh`, `test-mcp.sh` | Bash / Python | Automated verification |
@@ -31,8 +30,8 @@ fit together, read [architecture.md](architecture.md) first.
 
 | Constant | Value | Used by |
 | --- | --- | --- |
-| `BUS_NAME` | `io.github.nayvok.Trommel.Daemon` | daemon, clients, extension |
-| `OBJECT_PATH` | `/io/github/nayvok/Trommel` | daemon, clients, extension |
+| `BUS_NAME` | `io.github.nayvok.Trommel.Daemon` | daemon, GUI, CLI |
+| `OBJECT_PATH` | `/io/github/nayvok/Trommel` | daemon, GUI, CLI |
 | `APP_ID` | `io.github.nayvok.Trommel` | GUI, desktop entry, metainfo |
 | `VERSION` | `CARGO_PKG_VERSION` | status, CLI, About |
 
@@ -42,11 +41,11 @@ The largest module and the shape of everything else.
 
 | Item | Contract |
 | --- | --- |
-| `SCHEMA_VERSION` | `2`; `Config::load` migrates v1 configs, including the legacy Pearl Miner path |
+| `SCHEMA_VERSION` | `3`; `Config::load` migrates v1 configs and infers the v2→v3 `custom` flag |
 | `Config` | `active_preset`, `presets`, `gpu_profiles`, `miner_installs`, `custom_miners`/`pools` (reserved), `behavior` |
 | `Preset` | Coin/algo/miner/version/pool/wallet/worker/profile, `miner_options`, fee fields, `extra_args`, `env` |
-| `GpuTuning` | `enabled`, optional `power_limit_w`, `core_clock_mhz`, `memory_clock_mhz`, `fan_pct`, plus global `temp_limit_c`/`temp_resume_c` |
-| `GpuProfile` | `default` tuning plus `per_gpu` overrides keyed by GPU UUID; `tuning_for(uuid)` falls back to the default |
+| `GpuTuning` | `enabled` (participation, not just tuning), optional `power_limit_w`, `core_clock_mhz`, `memory_clock_mhz`, `fan_pct`, global `temp_limit_c`/`temp_resume_c`, and `custom` (per-GPU entries only) |
+| `GpuProfile` | `default` tuning plus `per_gpu` entries keyed by GPU UUID; `tuning_for(uuid)` inherits the default unless the entry is `custom`; a `false` `enabled` excludes the card from the miner and from tuning |
 | `Behavior` | Restart/poll/restore/login/notifications, `language`, `appearance`, `simple_mode` |
 | `MinerInstall` | Global install record: `miner`, `version`, `path`, `source_url`, `verified`, `custom`, `installed_at` |
 | `ApplyMode` | `Live`, `Restart`, `Stop`; `parse("live")`, `parse("restart")`, `parse("stop")` |
@@ -59,7 +58,10 @@ Key functions:
   discarding it.
 - `Config::normalize()` — repairs a dangling `active_preset`, a missing default
   GPU profile or empty preset map, a missing install path (`verified = false`)
-  and stale fee overrides for miners that do not allow them.
+  and stale fee overrides for miners that do not allow them. For a v2 file it
+  also infers `custom` on every per-GPU entry: an entry with no power/clock
+  values inherits the default; an entry with values is custom only when they
+  differ from the default.
 - `Config::preset()` / `preset_mut()` / `ensure_preset()` — active preset access;
   `ensure_preset` clones the default when the map is empty.
 - `Config::gpu_profile()` / `gpu_profile_mut()` — active profile access.
@@ -69,7 +71,8 @@ Key functions:
   registry maintenance. No current UI/CLI calls `remove_install()`; the app only
   adds installs.
 - `Config::warnings()` — user-facing validation: no preset, empty/suspicious
-  wallet, pool address without a port, missing miner install, no enabled GPU.
+  wallet, pool address without a port, missing miner install, no enabled GPU,
+  and “restore on stop is off” when the active profile has tuning.
 - `Config::diff(next) -> ConfigDiff` — `ChangeClass::{None, Live, RestartRequired}`
   plus human-readable reasons; this drives the GUI alert and MCP `config_diff`.
 - `Config::redacted()` — replaces every preset wallet with `<redacted>`; used by
@@ -81,6 +84,10 @@ Key functions:
 
 - Types: `MinerDef`, `MinerVersion`, `MinerOption`, `OptionKind`
   (`int|bool|enum|string`), `OptionScope` (`global|gpu`), `CoinDef`, `PoolDef`.
+- `MinerDef::selects_devices()` is true only when `per_gpu_devices` **and** a
+  non-empty `device_flag` are present; the flag is documented upstream, never
+  guessed. Built-in flags: WildRig `--gpu-list`, SRBMiner `--gpu-id`, OneZero
+  `--devices`.
 - `catalog()` parses `resources/catalog/{miners,coins,pools}.toml` once
   (`OnceLock`), and exposes `miners()`, `miner(id)`, `coins()`, `coin(id)`,
   `pools()`, `pool(id)`, `miner_fee_pct(id)`, `pool_fee_pct(id)`.
@@ -127,41 +134,77 @@ unit tests cannot read or clobber real rig state. The e2e scripts point
 
 - `HELPER_PATH = /usr/libexec/trommel/trommel-oc`; `helper_path()` honours
   `TROMMEL_OC_HELPER` for tests, `helper_installed()` checks the file exists.
-- `OcSnapshot { boot_id, created_at, gpus }` and `GpuSnapshot`; `restore_power_w()`
-  prefers the captured limit and falls back to `power_default_w`.
-- `snapshot()`, `save_snapshot()`, `load_snapshot()`, `clear_snapshot()`,
-  `cleanup_stale_snapshot()`, `current_boot_snapshot()` — all snapshot I/O.
+- `OcSnapshot { boot_id, created_at, applied, applied_gpus, applied_tuning,
+  last_error, gpus }` and `GpuSnapshot` (`was_tuned` records a pre-existing
+  non-default limit). `restore_power_w(mode)` targets the captured limit
+  (`Snapshot`) or the driver default (`Defaults`).
+- `snapshot()`, `driver_default_snapshot()` (`fallback_snapshot` is an alias),
+  `save_snapshot()`, `load_snapshot()`, `clear_snapshot()`, `record_error()`,
+  `cleanup_stale_snapshot()`, `current_boot_snapshot()`, `current_boot_id()`.
 - `validate_uuid()` and `validate_apply_args()`/`validate_reset_args()` — the
   in-process mirror of the helper's checks (`GPU-…`, numeric ranges, at least
-  one tuning parameter).
-- `apply_tuning(gpu, tuning)` — no-op when the profile has no values; validates
-  then runs the helper.
-- `restore_gpu(snapshot)` / `restore_snapshot(snapshot)` — restore each card,
-  clear the snapshot only when every restore succeeded.
+  one tuning parameter, optional `--lease-pid/--lease-start` pair). `--lmc`
+  accepts the real 100–12000 MHz range. A partial or non-numeric lease is
+  rejected.
+- `apply_tuning(gpu, tuning)` — acquires `OcLock`, then performs the no-op check,
+  validation, helper call and power read-back (±1 W). `apply_tuning_locked` is
+  the variant for callers that already hold the lock.
+- `restore_gpu(snapshot, mode)` / `restore_snapshot(snapshot, mode)` — acquire
+  the lock, restore every applied card, verify the power limit, clear the
+  snapshot only when every restore succeeded. `restore_gpu_locked` and
+  `restore_snapshot_locked` do not acquire; `restore_snapshot_with_timeout` and
+  `restore_snapshot_locked_with_timeout` accept a short helper timeout for
+  shutdown/emergency.
+- `OcLock` — advisory `flock` on `state_dir/oc.lock`; `acquire_lock()` uses the
+  15 s standard timeout and a process-global flag rejects nested acquisition
+  instead of deadlocking.
+- `HelperLease`, `load_lease()`, `wait_for_lease(timeout)`, `kill_lease_processes()`,
+  `helper_lease_args()` — the daemon writes the spawned helper/`pkexec` PID and
+  its `/proc` start time; emergency-stop waits, then terminates only processes
+  carrying the exact lease marker. The helper receives the daemon PID/start and
+  aborts before mutating when it no longer matches.
+- `verify_power()`, `runtime_lock_issues()` — synchronous power check and the
+  under-load clock comparison used by the supervisor.
 - `run_helper(args)` invokes `pkexec /usr/libexec/trommel/trommel-oc …` or
-  `$TROMMEL_OC_HELPER`, with a 30 s timeout and actionable errors (cancelled
-  pkexec vs. helper failure).
+  `$TROMMEL_OC_HELPER` (directly when already root), with a 180 s default
+  timeout (`TROMMEL_OC_TIMEOUT_MS` for tests) and actionable errors (cancelled
+  pkexec, auth timeout, helper failure). It appends the caller's lease flags,
+  writes `oc-lease.json` for the spawned helper and clears it on exit.
 
 Helper argument contract (also enforced by `polkit/trommel-oc`):
 
 ```
-trommel-oc apply --gpu GPU-xxxx [--pl W] [--lgc MHz] [--lmc MHz]
-trommel-oc reset --gpu GPU-xxxx [--pl W]
+trommel-oc apply --gpu GPU-xxxx [--pl W] [--lgc MHz] [--lmc MHz] \
+                 [--lease-pid PID --lease-start STARTTIME]
+trommel-oc reset --gpu GPU-xxxx [--pl W] [--lease-pid … --lease-start …]
 trommel-oc status --gpu GPU-xxxx
 ```
 
-Ranges: `--pl` 50–1000 W, `--lgc`/`--lmc` 100–4000 MHz. No paths, no shell.
+Ranges: `--pl` 50–1000 W, `--lgc` 100–4000 MHz, `--lmc` 100–12000 MHz;
+`--lease-pid` 1–4194304 and `--lease-start` a positive `/proc` field-22 value.
+No paths, no shell. The helper verifies the lease before its first `nvidia-smi`
+mutation. `apply` waits for the power limit to read back; `reset` reports
+failing `-rgc`/`-rmc` instead of swallowing them.
 
-### `miners` — argument construction
+### `miners` — argument construction and device selection
 
-`build_args(cfg, preset, log_file) -> Vec<String>` is the only place that knows
-miner CLI shapes. Core flags:
+`build_args(cfg, preset, log_file) -> Vec<String>` is the "all detected cards"
+form; `build_args_with_devices(cfg, preset, log_file, Option<&[u32]>)` adds the
+documented device flag. `device_plan(cfg, preset, gpus)` decides whether an
+explicit list is needed (`None` when every card participates), rejects an empty
+rig, and returns the explicit unsupported-miner error for a partial rig. The
+argument builder is the only place that knows miner CLI shapes. Core flags:
 
 | Driver | Match | Shape |
 | --- | --- | --- |
 | WildRig / generic | any unknown `miner` id | `--algo`, `--url`, `--user`, optional `--worker`, `--api-port`, `--api-worker-id`, `--log-file`, `--no-color`, `--print-time 10`, `--gpu-temp-limit`, `--gpu-temp-resume` |
 | SRBMiner | `"srbminer"` | `--algorithm`, `--pool`, `--wallet wallet.worker`, `--password x`, optional API flags/log |
 | OneZero | `"onezero"` | `-a`, `-o`, `-u`, optional `-w` |
+
+The device flag is emitted before catalogue options and contains the
+comma-separated `nvidia-smi` indices of the participating cards. It is only
+emitted for a catalogue miner with `selects_devices()`; a device flag inside
+`extra_args` is rejected to avoid two contradictory selections.
 
 Catalogue options are appended by `append_options`: bool options emit the flag
 when true, int options emit `flag value` within `min`/`max` (and skip
@@ -172,45 +215,94 @@ arguments — no shell.
 
 ### `supervisor` — miner process lifecycle
 
-- `Event::{Started, Crashed, Stopped, Error, UserStopped}`; `message()` produces
-  localised notification text.
-- `Supervisor::new()` loads and normalises state; a live miner recorded before a
-  daemon restart becomes `orphan`.
+- `Event::{Started, Crashed, Stopped, Error, Warning, UserStopped}`; `message()`
+  produces localised notification text.
+- `Supervisor::new()` is the test/tool constructor; `Supervisor::with_config(cfg)`
+  is the daemon entry point. It backfills `state.miner_path` from the active
+  preset's install before normalising, so an old state file still resolves its
+  binary. A live miner from a previous daemon is marked `orphan` until startup
+  recovery stops it; adoption never resumes mining.
 - `start(cfg)` — the Start algorithm from [architecture.md](architecture.md#start):
-  external-miner guard, preset validation, snapshot, per-GPU apply with rollback,
-  spawn, state update.
-- `stop(cfg)` — terminate child/PID, restore snapshot (unless disabled), clear
-  state; propagates restore errors.
-- `tick(cfg) -> Vec<Event>` — one-second supervisor step: reap, auto-restart,
-  detect adoption loss, emit events.
-- `adopt_external(cfg)` — records a manually started miner without taking
-  ownership of tuning.
+  external-miner guard, preset validation, participation + device-capability
+  check, effective tuning, restoration of a now-excluded card that still had
+  restore-off tuning, snapshot intent, per-GPU apply + power verification with
+  rollback, spawn, state update. It holds the OC lock across the whole block and
+  records the absolute `state.miner_path`. The chosen device list is kept for
+  crash restarts. A profile with no tuning creates no snapshot and calls no
+  helper.
+- `stop(cfg) / shutdown(cfg)` — terminate only our child/PID (path-checked),
+  skip and clear external state, restore the applied snapshot (unless disabled),
+  clear state; propagates restore errors. `shutdown` forces the restore with a
+  20 s helper timeout. Both hold the OC lock.
+- `owns_miner()` — `running && !external` and a live child or path-matching PID;
+  the benchmark uses it before stopping anything.
+- `tick(cfg) -> Vec<Event>` — one-second supervisor step: reap, bounded restart
+  with backoff (with the same device list as the session), detect adoption
+  loss, emit events, and run the one-shot clock check after the GPU reaches
+  load.
+- `handle_unexpected_exit` — the bounded restart policy: up to five consecutive
+  restarts (2/4/8/… s, cap 60), then stop + restore + error; `started_at` resets
+  on every spawn.
 - `terminate_pid`, `log_line` — process helper and daemon log writer.
 
 ### `state` — runtime state file
 
-`State { running, miner_pid, started_at, restarts, last_error, external, orphan,
-preset_id, miner, miner_version, profile }` (the last is a legacy-parse field).
+`State { running, miner_pid, miner_path, started_at, restarts, last_error,
+external, orphan, preset_id, miner, miner_version, profile }` (the last is a
+legacy-parse field; `miner_path` is additive with a serde default).
 
 - `load()`, `save()`, `clear_file()`, `uptime_s()`, `miner_alive()`.
 - `normalize()` — a running flag without a matching process becomes stopped,
   including the phantom `external` state that used to make Start a no-op.
-- `pid_matches_miner(pid)` — `/proc/<pid>/exe` + command-line matching for known
-  miners; shell scripts need a `pearlhash`/`--algo` token so a config file name
-  cannot masquerade as a miner.
-- `find_external_miner()` — `/proc` scan; `TROMMEL_NO_EXTERNAL_SCAN=1` disables
-  it for test isolation.
+- `proc_start_time(pid)` / `pid_alive(pid)` — `/proc/<pid>/stat` field 22 and a
+  liveness check; the start time catches PID reuse.
+- `pid_matches_binary(pid, path)` — `/proc/<pid>/exe` plus the interpreter
+  argument for `#!` scripts. A mismatch is never treated as ours.
+- `pid_matches_miner(pid)` — legacy name heuristic used only for old state files
+  without `miner_path`.
+- `find_external_miner(cfg, exclude_pid)` — `/proc` scan using the catalogue
+  names plus every installed miner's directory/binary basename; skips our own
+  and `exclude_pid`. `TROMMEL_NO_EXTERNAL_SCAN=1` disables it for test isolation.
+
+### `emergency` — idempotent teardown
+
+- `Reason::{ServiceStop, Guard, Startup, Manual}` with `parse()`/`as_str()`.
+- `run(reason)` — take the OC lock, drop a stale-boot snapshot, wait up to 10 s
+  for a helper lease and terminate it if needed, stop **our** miner only
+  (path-checked; external state is left alone), clear state after the stop and
+  restore a current-boot applied snapshot with a 20 s timeout. Restore failure
+  keeps the snapshot + `last_error` and returns an error. `Outcome` records the
+  stopped PID, restored card count and whether an external miner was skipped.
+- `startup_recovery()` — `run(Reason::Startup)`; called by `trommeld` before it
+  owns the bus name. It never resumes mining.
+
+### `guard` — independent supervisor for manual runs
+
+- `spawn_guard()` — start `trommel guard --daemon-pid … --daemon-start …` via
+  `setsid` (skipped with `TROMMEL_NO_GUARD`), terminate a stale guard from a
+  previous session first.
+- `run(daemon_pid, daemon_start)` — write `guard.pid`, poll the daemon's PID and
+  `/proc` start time; a matching `guard.disarm` token exits cleanly, otherwise a
+  disappeared daemon leads to `emergency::run(Reason::Guard)`.
+- `disarm_and_stop()` — write the token for this exact daemon, signal the guard
+  PID (start-time checked) and remove `guard.pid`. Called before the graceful
+  restore so a normal shutdown cannot race a second restore.
 
 ### `status` — the status document
 
-- `CONTRACT_VERSION = 2`.
+- `CONTRACT_VERSION = 3`.
 - `Status` composition and collection are described in
   [architecture.md](architecture.md#status-contract).
 - `Status::collect(cfg, state)` is blocking (nvidia-smi, HTTP pool, log tail) and
-  is always called from a blocking context.
+  is always called from a blocking context. It also builds `participation[]`
+  from the applied profile and the running state, and adds the “excluded from
+  mining” / “miner cannot choose GPUs” warnings.
 - `Status::stopped(cfg)` is the cheap snapshot used when stopping.
-- `lock_warnings()` — memory lock compared always, core lock only when the card
-  is under load; the tolerance absorbs rounding.
+- `OcView` — `applied`, `needs_restore`, `snapshot_available`, `stale`,
+  `restore_on_stop`, `last_error`, snapshot age/boot and a first-card target
+  summary. `needs_restore` drives the dashboard banner.
+- `lock_warnings()` — memory lock compared under load, core lock only when the
+  card is under load; the tolerance absorbs rounding.
 - `read_tail(path, max_bytes)` — log tail reader used by the miner parser.
 - `acceptance_pct()` — accepted/(accepted+rejected) for display.
 
@@ -226,9 +318,17 @@ preset_id, miner, miner_version, profile }` (the last is a legacy-parse field).
 | `GetConfig()` | Applied config JSON (not redacted; local clients only) |
 | `ApplyConfig(json, mode)` | Validate, diff, stop/restart/save with rollback; returns applied/restarted/stopped/changes JSON |
 | `SetConfig(json)` | Compatibility wrapper: `ApplyConfig(json, "restart")` |
-| `RunBenchmark(request)` | `{"profiles": [], "seconds": 180}`; returns a report |
-| `ResetOC()` / `RestoreStock()` | Restore the snapshot; refuses while mining |
+| `RunBenchmark(request)` | `{"profiles": [], "seconds": 180}`; refuses while an external or unowned miner runs; returns a report |
+| `OCReport()` | Read-only JSON: snapshot, current limits, per-card targets for `snapshot` and `defaults` |
+| `RestoreOC(mode)` | Restore `snapshot` or `defaults`; returns a JSON report; refuses while mining |
+| `ResetOC()` / `RestoreStock()` | Compatibility wrapper: `RestoreOC("snapshot")` (falls back to defaults) |
 | `OpenApp()` / `Quit()` | Launch the GUI / terminate the daemon |
+
+`Engine` also holds an `oc_busy` flag: a second OC operation is rejected while
+one is waiting for authorization. The status refresher uses `try_snapshot()` so
+a 180 s auth dialog does not freeze status collection. `Engine::new()` uses
+`Supervisor::with_config`; `Engine::shutdown()` is the bounded graceful stop
+used by the daemon signal/bus handler.
 
 Properties: `Running`, `Version`, `ContractVersion`. Signals:
 `StatusChanged(json)` and `Notification(summary, body)`.
@@ -275,6 +375,9 @@ daemon.
 ### `download` — install and import
 
 - `DownloadRequest { miner, version, url, sha256, archive, binary, source_url }`.
+- `validate_component(value, field)` — non-empty, not `.`/`..`, no `/`, `\` or
+  NUL, exactly one path component. `install`, `import_binary` and
+  `install_from_bytes` call it before the network/write.
 - `install(req, root)` — HTTPS only, 512 MiB cap, optional SHA-256,
   `tar.gz`/`tgz`/`zip`/raw; rejects absolute paths and `..`; requires an
   executable (`ELF` or `#!`), moves atomically into the store, returns a
@@ -308,12 +411,18 @@ daemon.
    `Engine` at `OBJECT_PATH` on `BUS_NAME`.
 2. **Status refresher** — every `poll_interval` (or when a supervisor event
    requests it) collects `Status`, emits `StatusChanged` only when the JSON
-   changed, updates `Engine`, and emits one overheat notification per episode
-   when the first GPU reaches the temperature limit.
+   changed, updates `Engine`, and sends one overheat desktop notification per
+   episode when the hottest card (`Status::hottest_gpu`) reaches the temperature
+   limit; the body names that card.
 3. **Supervisor loop** — a 1 s interval calling `Supervisor::tick`, logging
-   events, mapping them to notifications, requesting a refresh.
-4. **Shutdown** — SIGTERM/SIGINT exit the process and deliberately leave the
-   miner running; the next daemon instance adopts it by PID.
+   events, sending one desktop notification (and the `Notification` signal) per
+   event, requesting a refresh.
+4. **Startup recovery** — before the bus name is served, stop an orphaned miner
+   from the previous daemon, restore an applied snapshot and stay stopped.
+5. **Shutdown** — SIGTERM/SIGINT or a closed session bus disarm the guard,
+   stop only our miner, force a short-timeout restore and exit. systemd's
+   `ExecStopPost` and the guard cover a SIGKILL; both call the same
+   `trommel emergency-stop`.
 
 `trommeld` is single-purpose: do not put policy here that belongs in
 `trommel-core` (it would be untestable without D-Bus).
@@ -334,7 +443,8 @@ daemon.
 | Command | Behaviour |
 | --- | --- |
 | `status [--json]` | Human summary or the Status JSON contract |
-| `start` / `stop` / `toggle` | Supervisor actions; Stop restores stock |
+| `start` / `stop` / `toggle` | Supervisor actions; Stop restores stock unless disabled |
+| `oc report [--json]` / `oc restore --mode snapshot\|defaults` | Inspect or restore GPU state explicitly |
 | `gpus [--json]` | `nvidia-smi` view without the daemon |
 | `bench [--minutes N] [--miners a,b]` | Daemon benchmark, human table |
 | `preset list/show/use/export/import` | Preset management; `use --restart/--stop` |
@@ -388,29 +498,37 @@ executes commands. It never blocks the GTK main loop.
 
 | Function | Surface |
 | --- | --- |
-| `build_ui` | Window, header, single `AdwViewSwitcherBar`, four pages, banner |
-| dashboard block in `build_ui` | Hero card, GPU flow, totals, shares, pool, warnings |
+| `build_ui` | Window, header view switcher, dashboard hero action, four pages, banners, `AdwDialog` host |
+| dashboard block in `build_ui` | Hero card, GPU `AdwWrapBox`, totals, shares, pool, warnings |
 | `build_presets_page` / `refresh_preset_list` | Preset list; rows open the editor |
 | `build_miners_page` / `refresh_miners` | Miner catalogue, install state, benchmark button |
-| `build_settings_page` / `load_settings` / `save_settings` | Behaviour, appearance, GPU defaults, detected GPUs, GNOME integration, actions |
-| `preset_editor_dialog` | Modal preset editor (save/cancel/duplicate/delete/install) |
+| `build_settings_page` / `load_settings` / `save_settings` | Behaviour (incl. the global temperature policy), appearance, actions |
+| `preset_editor_dialog` | Preset editor `AdwDialog` (save/cancel/duplicate/delete/install) |
 | `miner_install_dialog` | The only miner install UI (catalogue, custom version, download, import) |
-| `gpu_tune_dialog` | Per-card tuning, “Now” row, copy to similar/all GPUs |
+| `gpu_tune_dialog` | Per-card tuning `AdwDialog`, “Now” row, copy to similar/all GPUs |
 | `quick_setup_wizard` | Three-step first-run flow (cards → miner → wallet) |
+| `dialog_footer` / `dialog_body` | Shared dialog chrome: header keeps the title, actions go in a footer below the content |
 | `save_and_apply_with` | Diff + restart/stop alert; `on_cancel` restores optimistic changes |
-| `apply_status` | Renders a `Status` into every widget, including empty states |
-| `extension_settings` / `refresh_extension_state` / `enable_extension` | GSettings and Extension Manager integration |
+| `apply_status` | Renders a `Status` into every widget, including empty states and participation; records sparkline samples |
+| `History` / `sparkline` / `update_sparklines` | Per-GPU five-minute ring buffer and the Cairo sparklines drawn on the GPU bubble floor |
 | `copy_diagnostics` | Redacted bundle to the clipboard |
 
 Rules that are easy to break:
 
-- Header **Start** applies the draft first (`Cmd::ApplyStart`), then starts.
-  Starting with the daemon's old config silently ignored GPU edits.
+- The dashboard hero **Start** applies the draft first (`Cmd::ApplyStart`),
+  then starts. Starting with the daemon's old config silently ignored GPU edits;
+  the button lives in the hero card, not in the header, so the header switcher
+  stays single-line at narrower widths.
 - A dirty draft survives `Refresh`; only an explicit apply clears it.
 - Toggling a GPU or editing an appearance/simple-mode switch updates the draft
   immediately, and **Cancel** in the restart/stop alert must undo it.
-- The GPU enable switch and the tuning dialog share one profile; there is no
-  second source of truth in the UI.
+- The GPU participation switch and the tuning dialog share one profile; there is
+  no second source of truth in the UI. The switch edits the draft; the card
+  chip (`mining` / `excluded`) and the Totals row describe the applied session,
+  so a switch change never pretends the miner already restarted.
+- Dialogs never put actions in the header: build them with `dialog_footer()` so
+  the title stays clean, actions never scroll away and the primary button sits
+  on the trailing edge.
 - Every user-visible string goes through `tr(en, ru)` (except the screenshot and
   test hooks).
 
@@ -428,25 +546,21 @@ documented in [development.md](development.md#ui-hooks) when adding one:
 
 ---
 
-## GNOME Shell extension
+## Notifications
 
-`extension/trommel@nayvok.github.io/extension.js` exports one default class:
+`behavior.notifications` gates two consumers of the same event stream:
 
-- D-Bus constants mirror `trommel-core` (`BUS_NAME`, `OBJECT_PATH`, interface
-  `io.github.nayvok.Trommel`).
-- `TrommelToggle` is a `QuickSettings.QuickToggle` bound to Start/Stop.
-- The panel button owns the popup (`_buildPanel`, `_buildMenu`); there is no
-  separate preferences surface.
-- `_connectProxy` subscribes to `StatusChanged`, `Notification` and the bus-name
-  owner, reconnects when the owner changes and shows “service missing” otherwise.
-- `_apply(status)` renders hashrate, temperature, power, shares, pool balance,
-  preset, miner and fee; `_applyPanelMode` and `_applyLiveActivity` read the
-  shared GSettings.
-- Users get Start/Stop/Toggle/OpenApp only; the extension never tunes GPUs.
+- `dbus::notify_desktop(connection, summary, body)` calls
+  `org.freedesktop.Notifications.Notify` (app name `Trommel`, app icon, 8 s
+  timeout) inside a 2 s bound; a missing service or a failure is ignored so the
+  daemon never blocks. The status refresher sends one overheat alert per
+  episode for the hottest card and names it in the body; the supervisor loop
+  sends one per `Event` through `events_to_notifications`.
+- The `Notification(summary, body)` D-Bus signal stays available for external
+  integrations. Both paths use the same `i18n::tr` strings.
 
-Settings schema: `data/schemas/org.gnome.shell.extensions.trommel.gschema.xml`
-(`panel-mode`, `quick-toggle-enabled`, `live-activity-enabled`,
-`notifications-enabled`). See [extension.md](extension.md).
+There is no shell extension and no GSettings schema; the GUI only edits the
+`behavior.notifications` switch.
 
 ---
 
@@ -457,7 +571,6 @@ Settings schema: `data/schemas/org.gnome.shell.extensions.trommel.gschema.xml`
 | `data/io.github.nayvok.Trommel.desktop` | Application menu entry |
 | `data/io.github.nayvok.Trommel.metainfo.xml` | AppStream metadata and release notes |
 | `data/icons/*.svg`, `data/icons/src/trommel.svg` | Installed icons; source artwork |
-| `data/schemas/*.gschema.xml` | Shared extension/app settings |
 | `systemd/trommeld.service` | User service (`Type=dbus`) |
 | `systemd/trommel-autostart.service` | “Start mining at login” one-shot |
 | `systemd/io.github.nayvok.Trommel.Daemon.service` | D-Bus activation file |
@@ -493,11 +606,11 @@ Settings schema: `data/schemas/org.gnome.shell.extensions.trommel.gschema.xml`
 | Add a pool or coin | `resources/catalog/*.toml`; a parser adapter only with a stable API |
 | Change miner arguments | `crates/core/src/miners.rs` (`build_args` / `append_options`) and its tests |
 | Change GPU apply/restore | `crates/core/src/oc.rs`, `polkit/trommel-oc`, `scripts/e2e.sh` |
+| Change per-GPU participation | `crates/core/src/miners.rs` (`device_plan`, `build_args_with_devices`), catalogue `device_flag`, `crates/core/src/supervisor.rs`, `status.rs`, GUI cards/totals, [ADR 0007](adr/0007-per-gpu-participation.md) |
 | Change the config model | `crates/core/src/config.rs`, `docs/schema/*.json`, migration/normalise tests |
 | Add a D-Bus method | `crates/core/src/dbus.rs` (trait + impl), CLI/MCP callers, [architecture.md](architecture.md) |
-| Add a status field | `crates/core/src/status.rs`, GUI rendering, extension rendering |
+| Add a status field | `crates/core/src/status.rs`, GUI rendering, CLI/MCP output |
 | Add a GUI page/dialog | `crates/cli/src/gui.rs`, [design.md](design.md), screenshots, UI smoke |
 | Add a CLI command | `crates/cli/src/main.rs`, [agents.md](agents.md), [user-guide.md](user-guide.md) |
 | Add an MCP tool | `crates/cli/src/mcp.rs`, `scripts/test-mcp.sh`, [agents.md](agents.md) |
-| Change the extension | `extension/…/extension.js`, schema, [extension.md](extension.md) |
 | Change packaging | `packaging/`, `scripts/package-deb.sh`, `.github/workflows/`, [packaging.md](packaging.md) |
