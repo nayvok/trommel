@@ -165,7 +165,7 @@ Every coloured value has a word next to it (“installed”, “not installed”
 | Main window | `AdwApplicationWindow` | app start | Header (view switcher, refresh, menu), three pages, banners |
 | Dashboard | page | view switcher | Hero session, active preset summary, GPU cards, pool and shares, warnings |
 | Presets | page | view switcher | Preset list, miner library entry; rows open the editor |
-| Settings | page | view switcher | Behaviour, tray, appearance, actions |
+| Settings | page | view switcher | Behaviour, Reliability (watchdog), GPU, appearance, actions |
 | Preset editor | `AdwDialog` | preset row / New preset | One preset: coin, algorithm, manual pool, wallet, miner version, fees, options |
 | Miner library | `AdwDialog` | Presets page / preset editor | Catalogue, installed versions with usage, verify/remove, per-preset version switch, benchmark, install entry |
 | Miner install | `AdwDialog` | Miner library row, editor | Version pick, HTTPS download, local import |
@@ -352,7 +352,14 @@ Groups, in order:
    (draft), start mining at login, temperature limit and resume temperature
    (global; one miner process gets one temperature policy), simple mode, poll
    interval, language (restart required), appearance (immediate).
-2. **Actions** — **Save and apply**, **Copy diagnostics**, **Restore stock**.
+2. **Reliability** — **Hashrate watchdog** (off by default; notify-only when
+   enabled), minimum hashrate (% of the preset's expected value), the window in
+   minutes, **When hashrate is low** (Notify only / Restart the miner) and the
+   restart limit. The dependent rows are hidden while the switch is off, and a
+   note explains when the preset has no expected hashrate. The description
+   names the false-positive trade-off; restart never reboots the rig.
+3. **GPU** — global temperature policy and **GPU presets** manager.
+4. **Actions** — **Save and apply**, **Copy diagnostics**, **Restore stock**.
    Buttons stay vertically centred in their rows. **Restore stock** asks first:
    snapshot target, or the driver default when it differs; a pre-existing tuned
    limit and the last restore error are explained. **Restore stock** opens a

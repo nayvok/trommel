@@ -5,6 +5,28 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+### Added — hashrate watchdog (notification by default)
+
+- **A live but degraded miner is no longer invisible.** `trommeld` watches the
+  last status in the supervisor loop and detects sustained low total hashrate,
+  0 H/s, a participating card that disappeared from the per-card data and stale
+  miner/status samples. It only acts on a session Trommel owns; an external
+  miner, a benchmark and an in-flight crash restart are never touched.
+- **Notify by default; restart is an explicit opt-in.** The watchdog is off by
+  default. `behavior.watchdog_action = "notify"` emits the existing
+  `Notification` signal/desktop notification; `"restart"` waits the existing
+  `restart_delay_s` backoff and calls the normal supervisor Stop/Start
+  (snapshot, restore, device plan, external scan). After
+  `watchdog_max_restarts` failed restarts it stops and notifies; it never
+  reboots the rig. See [ADR 0010](docs/adr/0010-hashrate-watchdog.md).
+- **Settings → Reliability.** One calm group: enable, minimum percentage of the
+  preset expected hashrate, window in minutes, Notify only / Restart the miner
+  and the restart limit. Dependent rows are hidden while the watchdog is off,
+  and a note explains when the preset has no expected hashrate.
+- **Schema v4 stays additive.** The new `behavior` keys have defaults and are
+  clamped by `normalize()`; no data migration and no `schema_version` bump. A
+  v4 file without the keys loads with the safe defaults.
+
 ### Added — per-GPU telemetry and honest efficiency (status contract v5)
 
 - **Per-card miner statistics.** The status `miner.gpus[]` now carries the

@@ -20,6 +20,10 @@ green. Status is updated in the same commit as the code.
 | **B4** | Miner version manager: install/update/remove with the affected presets shown, rollback | **Done in 0.7.0** |
 | **B5** | Release hardening after B1–B4: CI/test matrix, packaging install/upgrade/remove, release bundle verification, MSRV and documentation truth | **Done in 0.8.0** |
 | **B6** | Preset-scoped GPU settings, named per-card GPU presets, coins/pools by miner capability, config schema v4, first-run without a wizard | **In progress** |
+| **B7.0** | Dashboard truth and polish: pool balance, hero dedupe, power/temperature sparklines only, grouped preset editor, one GPU-presets entry, apply reasons | **In progress** |
+| **B7.1** | Per-GPU miner telemetry, PCI-bus mapping, honest efficiency units, card hashrate anchor, status contract v5 | **In progress** |
+| **B7.2** | Hashrate watchdog: notify by default, explicit restart opt-in, bounded restarts, ADR 0010 | **In progress** |
+| **B7.3** | Daemon-owned local history, `GetHistory`, 24h average, History dialog and CSV | **Planned** |
 
 B3 is complete in 0.6.0, B4 in 0.7.0 and B5 in 0.8.0. Multi-miner/multi-job
 remains a separate product decision under
@@ -200,8 +204,9 @@ Architecture decisions are recorded as ADRs:
 [one active session](adr/0005-one-active-session.md),
 [failure policy and emergency restore](adr/0006-failure-policy.md),
 [per-GPU participation](adr/0007-per-gpu-participation.md) and
-[desktop tray in the daemon](adr/0008-tray.md) and
-[preset-scoped GPU settings](adr/0009-preset-gpu-settings.md).
+[desktop tray in the daemon](adr/0008-tray.md),
+[preset-scoped GPU settings](adr/0009-preset-gpu-settings.md) and
+[hashrate watchdog](adr/0010-hashrate-watchdog.md).
 
 B1 implements ADR 0005 (single session, one snapshot) and ADR 0006 (daemon
 ownership, bounded restart, GUI crash is a no-op, emergency restore, startup

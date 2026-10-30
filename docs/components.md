@@ -46,7 +46,7 @@ The largest module and the shape of everything else.
 | `Preset` | Coin/algo/miner/version/pool/wallet/worker/profile, `miner_options`, fee fields, `extra_args`, `env` |
 | `GpuTuning` | `enabled` (participation, not just tuning), optional `power_limit_w`, `core_clock_mhz`, `memory_clock_mhz`, `fan_pct`, global `temp_limit_c`/`temp_resume_c`, and `custom` (per-GPU entries only) |
 | `GpuProfile` | `default` tuning plus `per_gpu` entries keyed by GPU UUID; `tuning_for(uuid)` inherits the default unless the entry is `custom`; a `false` `enabled` excludes the card from the miner and from tuning |
-| `Behavior` | Restart/poll/restore/login/notifications, `tray_monochrome`, `language`, `appearance`, `simple_mode` |
+| `Behavior` | Restart/poll/restore/login/notifications, `tray_monochrome`, `language`, `appearance`, `simple_mode`, and the watchdog (`watchdog_enabled`, `watchdog_threshold_pct`, `watchdog_window_s`, `watchdog_action`, `watchdog_max_restarts`) |
 | `MinerInstall` | Global install record: `miner`, `version`, `path`, `source_url`, `verified`, `custom`, `installed_at` |
 | `ApplyMode` | `Live`, `Restart`, `Stop`; `parse("live")`, `parse("restart")`, `parse("stop")` |
 
@@ -256,6 +256,23 @@ arguments — no shell.
   on every spawn.
 - `terminate_pid(pid, binary)`, `log_line` — signal helper (captures the kernel
   start time and re-checks it before SIGTERM/SIGKILL) and daemon log writer.
+
+### `watchdog` — hashrate health state machine
+
+- `WatchdogSample` — running/owned/external/busy flags, uptime, start time,
+  status timestamp, poll interval, expected/total hashrate, source and mapped
+  per-GPU readings. The daemon builds it from the last `Status`; the module
+  never calls nvidia-smi.
+- `Watchdog::observe(cfg, sample) -> Vec<Action>` — warm-up, stale/no-data,
+  low/zero/card-down windows and hysteresis. Notify is the default; restart is
+  an explicit opt-in. A scheduled restart is re-checked before it runs.
+- `Watchdog::restart_finished(cfg, success)` — counts the attempt, stops after
+  the limit and returns the notification actions.
+- `Action::{Notify, Restart, PerformRestart, Stop}` — the daemon executes
+  `PerformRestart` through `Supervisor::stop`/`start` and emits the messages;
+  the module never spawns a process.
+- `CONTRACT` — no status field; the watchdog is observable through the
+  `Notification` signal, the daemon log and the Settings values.
 
 ### `state` — runtime state file
 
@@ -485,9 +502,10 @@ preset except through the two explicit functions at the end.
    sends one overheat desktop notification per episode when the hottest card
    (`Status::hottest_gpu`) reaches the temperature limit; the body names that
    card.
-3. **Supervisor loop** — a 1 s interval calling `Supervisor::tick`, logging
-   events, sending one desktop notification (and the `Notification` signal) per
-   event, requesting a refresh.
+3. **Supervisor loop** — a 1 s interval calling `Supervisor::tick`, then
+   `Engine::watchdog_tick` (unless the watchdog is off), logging events and
+   sending one desktop notification (and the `Notification` signal) per event or
+   watchdog action, requesting a refresh.
 4. **Startup recovery** — before the bus name is served, stop an orphaned miner
    from the previous daemon, restore an applied snapshot and stay stopped.
 5. **Shutdown** — SIGTERM/SIGINT, a closed session bus or the tray's **Quit**

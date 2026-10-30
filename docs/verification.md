@@ -48,6 +48,9 @@ not a claim that CI covers it.
 | Dashboard layout | one GPU, then two GPUs | One card spans the row with a 3×2 bubble grid; two cards split the row evenly; three or more wrap |
 | Dashboard | stopped state | hashrate/balance/shares are `—` unless the miner or pool reported a real zero; configured endpoint named; no fake `0.000` |
 | Dashboard | per-GPU telemetry | Live per-card hashrate above each card, total not divided, `—` for an unmapped or unsupported record; expected/actual and `J/TH` or `J/MH` in the hero line |
+| Settings → Reliability | Watchdog off | One switch and a calm explanation; dependent rows hidden, not a grey wall |
+| Settings → Reliability | Watchdog on, notify | Low hashrate produces one notification/window, no restart and no PID change; recovery clears the episode |
+| Settings → Reliability | Watchdog on, restart | Explicit opt-in restarts through the normal supervisor path; the limit stops mining with a notification; external miner is untouched |
 | First run | Empty dashboard, Create preset, Start prompt, Cancel an unsaved new preset | No preset is invented; the CTA disappears after one exists |
 | First run | Start without a preset | Explains that a preset is required and offers Create preset; tuning is unavailable |
 | Presets | row, chevron, New preset, Use, missing-version **Install…** | Editor opens; chevron is a real button; Use applies the selection; Install… opens the library focused on the preset |

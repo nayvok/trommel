@@ -125,6 +125,7 @@ Runtime/test variables used outside the GUI:
 | `TROMMEL_NO_GUARD` | Do not start the guard (deterministic test daemon lifetimes) |
 | `TROMMEL_NO_TRAY` | Do not create the StatusNotifierItem tray (tests and screenshots) |
 | `TROMMEL_MAX_RESTARTS` | Override the consecutive restart budget (default 5) |
+| `TROMMEL_WATCHDOG_WINDOW_S` | Override the watchdog window for e2e (default from config) |
 | `TROMMEL_GUARD_BIN` | Path to the `trommel` binary the daemon uses for its guard |
 | `TROMMEL_SKIP_BUILD` | Test scripts reuse an existing build |
 | `TROMMEL_VERSION` | Override the version expected by `test-deb.sh` |

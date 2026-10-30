@@ -17,7 +17,7 @@ use gtk::{gdk, gio, glib};
 use trommel_core::catalog::{self, MinerOption, OptionKind};
 use trommel_core::config::{
     Appearance, Behavior, ChangeClass, Config, ConfigDiff, GpuPreset, GpuTuning, MinerInstall,
-    Preset,
+    Preset, WatchdogAction,
 };
 use trommel_core::dbus::MinerProxy;
 use trommel_core::i18n::{self, tr};
@@ -320,6 +320,12 @@ struct SettingsWidgets {
     appearance: adw::ComboRow,
     temp_limit: adw::SpinRow,
     temp_resume: adw::SpinRow,
+    watchdog_enabled: adw::SwitchRow,
+    watchdog_threshold: adw::SpinRow,
+    watchdog_window: adw::SpinRow,
+    watchdog_action: adw::ComboRow,
+    watchdog_limit: adw::SpinRow,
+    watchdog_note: adw::ActionRow,
     diagnostics: gtk::Button,
 }
 
@@ -1285,6 +1291,103 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
     behavior.add(&appearance);
     page.add(&behavior);
 
+    let reliability = adw::PreferencesGroup::builder()
+        .title(tr("Reliability", "Надёжность"))
+        .description(tr(
+            "A hashrate watchdog for the running miner. The safe default only notifies; restarting is an explicit opt-in and never reboots the rig.",
+            "Сторож хешрейта для запущенного майнера. Безопасный режим только уведомляет; перезапуск — явный opt-in, риг никогда не перезагружается.",
+        ))
+        .build();
+    let watchdog_enabled = switch_row(
+        &tr("Hashrate watchdog", "Сторож хешрейта"),
+        &tr(
+            "Watch the miner's own hashrate and act when it stays below the expected value",
+            "Следить за хешрейтом майнера и реагировать на устойчивое падение ниже ожидаемого",
+        ),
+    );
+    let watchdog_threshold = spin_row(
+        &tr("Minimum hashrate", "Минимальный хешрейт"),
+        &tr(
+            "% of the expected hashrate from the preset",
+            "% от ожидаемого хешрейта из пресета",
+        ),
+        80.0,
+        10.0,
+        100.0,
+    );
+    let watchdog_window = spin_row(
+        &tr("For at least", "Не меньше"),
+        &tr(
+            "minutes below the threshold before an action",
+            "минут ниже порога до действия",
+        ),
+        5.0,
+        1.0,
+        30.0,
+    );
+    let watchdog_action = adw::ComboRow::builder()
+        .title(tr("When hashrate is low", "При низком хешрейте"))
+        .subtitle(tr(
+            "Notify is the default; restart uses the same supervisor path",
+            "Уведомление — по умолчанию; перезапуск идёт через тот же supervisor",
+        ))
+        .model(&gtk::StringList::new(&[
+            &tr("Notify only", "Только уведомлять"),
+            &tr("Restart the miner", "Перезапускать майнер"),
+        ]))
+        .build();
+    let watchdog_limit = spin_row(
+        &tr("Restart limit", "Лимит перезапусков"),
+        &tr(
+            "After this many failed restarts, stop and notify; no reboot",
+            "После стольких неудачных перезапусков остановить и уведомить; без перезагрузки",
+        ),
+        3.0,
+        1.0,
+        10.0,
+    );
+    let watchdog_note = adw::ActionRow::builder()
+        .title(tr(
+            "Expected hashrate is not set",
+            "Ожидаемый хешрейт не задан",
+        ))
+        .subtitle(tr(
+            "The watchdog can still react to 0 H/s, a missing card and stale miner data; set an expected hashrate in the preset for the percentage check.",
+            "Сторож всё равно увидит 0 H/s, выпавшую карту и устаревшие данные; для проверки по проценту задайте ожидаемый хешрейт в пресете.",
+        ))
+        .build();
+    watchdog_note.set_visible(false);
+    reliability.add(&watchdog_enabled);
+    reliability.add(&watchdog_threshold);
+    reliability.add(&watchdog_window);
+    reliability.add(&watchdog_action);
+    reliability.add(&watchdog_limit);
+    reliability.add(&watchdog_note);
+    let sync_watchdog_rows = {
+        let enabled = watchdog_enabled.clone();
+        let action = watchdog_action.clone();
+        let threshold = watchdog_threshold.clone();
+        let window = watchdog_window.clone();
+        let limit = watchdog_limit.clone();
+        Rc::new(move || {
+            let on = enabled.is_active();
+            threshold.set_visible(on);
+            window.set_visible(on);
+            action.set_visible(on);
+            limit.set_visible(on && action.selected() == 1);
+        })
+    };
+    sync_watchdog_rows();
+    {
+        let sync = sync_watchdog_rows.clone();
+        watchdog_enabled.connect_notify_local(Some("active"), move |_, _| sync());
+    }
+    {
+        let sync = sync_watchdog_rows.clone();
+        watchdog_action.connect_notify_local(Some("selected"), move |_, _| sync());
+    }
+    page.add(&reliability);
+
     let gpu_group = adw::PreferencesGroup::builder()
         .title(tr("GPU", "GPU"))
         .description(tr(
@@ -1386,6 +1489,12 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             appearance,
             temp_limit,
             temp_resume,
+            watchdog_enabled,
+            watchdog_threshold,
+            watchdog_window,
+            watchdog_action,
+            watchdog_limit,
+            watchdog_note,
             diagnostics,
         },
     )
@@ -1706,8 +1815,64 @@ fn connect_signals(app: &Rc<App>) {
             |behavior| behavior.poll_interval_s,
             |behavior, value| behavior.poll_interval_s = value,
         );
+        let row = app.settings.watchdog_enabled.clone();
+        bind_switch_draft(
+            app,
+            &row,
+            |behavior| behavior.watchdog_enabled,
+            |behavior, value| behavior.watchdog_enabled = value,
+        );
+        let row = app.settings.watchdog_threshold.clone();
+        bind_spin_draft(
+            app,
+            &row,
+            |behavior| behavior.watchdog_threshold_pct as u64,
+            |behavior, value| behavior.watchdog_threshold_pct = value as u32,
+        );
+        let row = app.settings.watchdog_limit.clone();
+        bind_spin_draft(
+            app,
+            &row,
+            |behavior| behavior.watchdog_max_restarts as u64,
+            |behavior, value| behavior.watchdog_max_restarts = value as u32,
+        );
         let row = app.settings.language.clone();
         bind_language_draft(app, &row);
+    }
+    {
+        // Minutes in the UI, seconds in the config.
+        let app = app.clone();
+        let row = app.settings.watchdog_window.clone();
+        row.connect_notify_local(Some("value"), move |row, _| {
+            let seconds = (row.value() as u64) * 60;
+            if app.config.borrow().behavior.watchdog_window_s == seconds {
+                return;
+            }
+            app.config.borrow_mut().behavior.watchdog_window_s = seconds;
+            mark_dirty(&app);
+        });
+    }
+    {
+        let app = app.clone();
+        let row = app.settings.watchdog_action.clone();
+        row.connect_notify_local(Some("selected"), move |row, _| {
+            let action = if row.selected() == 1 {
+                WatchdogAction::Restart
+            } else {
+                WatchdogAction::Notify
+            };
+            if app.config.borrow().behavior.watchdog_action == action {
+                return;
+            }
+            app.config.borrow_mut().behavior.watchdog_action = action;
+            mark_dirty(&app);
+            update_watchdog_note(&app);
+        });
+    }
+    {
+        let app = app.clone();
+        let row = app.settings.watchdog_enabled.clone();
+        row.connect_notify_local(Some("active"), move |_, _| update_watchdog_note(&app));
     }
     {
         // Login autostart is a systemd user-unit property, not part of the
@@ -5812,6 +5977,41 @@ fn load_settings(app: &Rc<App>) {
     app.settings
         .temp_resume
         .set_value(cfg.behavior.temp_resume_c as f64);
+    app.settings
+        .watchdog_enabled
+        .set_active(behavior.watchdog_enabled);
+    app.settings
+        .watchdog_threshold
+        .set_value(behavior.watchdog_threshold_pct as f64);
+    app.settings
+        .watchdog_window
+        .set_value((behavior.watchdog_window_s as f64 / 60.0).max(1.0));
+    app.settings
+        .watchdog_action
+        .set_selected(match behavior.watchdog_action {
+            WatchdogAction::Notify => 0,
+            WatchdogAction::Restart => 1,
+        });
+    app.settings
+        .watchdog_limit
+        .set_value(behavior.watchdog_max_restarts as f64);
+    drop(cfg);
+    update_watchdog_note(app);
+}
+
+/// The percentage check needs a preset-level expected hashrate; without it the
+/// watchdog still catches 0 H/s, a missing card and stale miner data.
+fn update_watchdog_note(app: &Rc<App>) {
+    let expected = app
+        .config
+        .borrow()
+        .preset()
+        .and_then(|preset| preset.expected_hashrate)
+        .filter(|value| *value > 0.0)
+        .is_some();
+    app.settings
+        .watchdog_note
+        .set_visible(app.settings.watchdog_enabled.is_active() && !expected);
 }
 
 fn apply_appearance(appearance: Appearance) {
@@ -5843,6 +6043,17 @@ fn save_settings(app: &Rc<App>) {
     };
     cfg.behavior.temp_limit_c = app.settings.temp_limit.value() as u32;
     cfg.behavior.temp_resume_c = app.settings.temp_resume.value() as u32;
+    cfg.behavior.watchdog_enabled = app.settings.watchdog_enabled.is_active();
+    cfg.behavior.watchdog_threshold_pct = app.settings.watchdog_threshold.value() as u32;
+    cfg.behavior.watchdog_window_s = (app.settings.watchdog_window.value() as u64) * 60;
+    cfg.behavior.watchdog_action = if app.settings.watchdog_action.selected() == 1 {
+        WatchdogAction::Restart
+    } else {
+        WatchdogAction::Notify
+    };
+    cfg.behavior.watchdog_max_restarts = app.settings.watchdog_limit.value() as u32;
+    drop(cfg);
+    update_watchdog_note(app);
     set_mining_autostart_unit(app.settings.start_login.is_active());
     mark_dirty(app);
 }
