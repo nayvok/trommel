@@ -277,7 +277,9 @@ struct App {
     preset_group: adw::PreferencesGroup,
     preset_rows: RefCell<Vec<adw::ActionRow>>,
     settings: SettingsWidgets,
-    miners_group: adw::PreferencesGroup,
+    /// Group inside the miner library dialog while it is open. The library is
+    /// built on demand, so `refresh_miners` updates it only when this is Some.
+    miner_library_group: RefCell<Option<adw::PreferencesGroup>>,
     miner_rows: RefCell<Vec<adw::ActionRow>>,
 }
 
@@ -542,7 +544,7 @@ fn build_ui(app: &adw::Application) {
     stack.set_transition_duration(220);
     toast.set_child(Some(&stack));
 
-    // Top-level navigation lives in the header bar: the four views are the
+    // Top-level navigation lives in the header bar: the three views are the
     // primary destinations, so the switcher is the title widget. It falls back
     // to the app title when the window is too narrow for the labels, and only
     // then the switcher bar reveals itself at the bottom. That is the stock
@@ -786,10 +788,6 @@ fn build_ui(app: &adw::Application) {
     stack.add_titled(&presets_page, Some("presets"), &tr("Presets", "Пресеты"));
     set_page_icon(&stack, &presets_page, "document-open-recent-symbolic");
 
-    let (miners_page, miners_group) = build_miners_page();
-    stack.add_titled(&miners_page, Some("miners"), &tr("Miners", "Майнеры"));
-    set_page_icon(&stack, &miners_page, "applications-engineering-symbolic");
-
     let (settings_page, settings) = build_settings_page();
     stack.add_titled(
         &settings_page,
@@ -833,7 +831,7 @@ fn build_ui(app: &adw::Application) {
         preset_group,
         preset_rows: RefCell::new(Vec::new()),
         settings,
-        miners_group,
+        miner_library_group: RefCell::new(None),
         miner_rows: RefCell::new(Vec::new()),
     });
     APP_SLOT.with(|slot| *slot.borrow_mut() = Some(app_state.clone()));
@@ -841,7 +839,6 @@ fn build_ui(app: &adw::Application) {
     install_actions(app, &app_state);
     connect_signals(&app_state);
     refresh_preset_list(&app_state);
-    refresh_miners(&app_state);
     load_settings(&app_state);
     update_dirty(&app_state);
 
@@ -912,6 +909,13 @@ fn build_ui(app: &adw::Application) {
             glib::ControlFlow::Break
         });
     }
+    if std::env::var_os("TROMMEL_OPEN_LIBRARY").is_some() {
+        let app_state = app_state.clone();
+        glib::timeout_add_seconds_local(3, move || {
+            miner_library_dialog(&app_state, None, None);
+            glib::ControlFlow::Break
+        });
+    }
     if std::env::var_os("TROMMEL_OPEN_INSTALL").is_some() {
         let app_state = app_state.clone();
         glib::timeout_add_seconds_local(4, move || {
@@ -952,8 +956,8 @@ fn build_presets_page() -> (adw::PreferencesPage, adw::PreferencesGroup) {
     let list_group = adw::PreferencesGroup::builder()
         .title(tr("Mining presets", "Пресеты майнинга"))
         .description(tr(
-            "A preset bundles coin, pool, wallet, miner and GPU profile. Open a row to edit it.",
-            "Пресет объединяет монету, пул, кошелёк, майнер и профиль GPU. Откройте строку для правки.",
+            "A preset bundles coin, pool, wallet and the miner version it runs. Open a row to edit it.",
+            "Пресет объединяет монету, пул, кошелёк и версию майнера. Откройте строку для правки.",
         ))
         .build();
     page.add(&list_group);
@@ -970,50 +974,49 @@ fn build_presets_page() -> (adw::PreferencesPage, adw::PreferencesGroup) {
     actions.add(&new_button);
     page.add(&actions);
     NEW_PRESET_BUTTON.with(|slot| *slot.borrow_mut() = Some(new_button));
+
+    // The former Miners page is a dialog now. The row makes the library
+    // reachable from the place that decides which miner a preset runs.
+    let library_group = adw::PreferencesGroup::builder()
+        .title(tr("Miner library", "Библиотека майнеров"))
+        .description(tr(
+            "Installed versions are global: install a build once and every preset that pins it sees it. The preset keeps its own miner and version.",
+            "Установленные версии глобальны: установите сборку один раз, и все пресеты, закреплённые за ней, её увидят. Пресет сохраняет свои майнер и версию.",
+        ))
+        .build();
+    let library_row = adw::ActionRow::builder()
+        .title(tr(
+            "Installed and supported miners",
+            "Установленные и поддерживаемые майнеры",
+        ))
+        .subtitle(tr(
+            "Open the library to install or inspect versions",
+            "Откройте библиотеку, чтобы установить версию или посмотреть установленные",
+        ))
+        .activatable(true)
+        .build();
+    library_row.set_tooltip_text(Some(&tr(
+        "Open the miner library",
+        "Открыть библиотеку майнеров",
+    )));
+    let chevron = gtk::Button::builder()
+        .icon_name("go-next-symbolic")
+        .css_classes(["flat"])
+        .valign(gtk::Align::Center)
+        .tooltip_text(tr("Open the miner library", "Открыть библиотеку майнеров"))
+        .build();
+    library_row.add_suffix(&chevron);
+    library_group.add(&library_row);
+    page.add(&library_group);
+    MINER_LIBRARY_ROW.with(|slot| *slot.borrow_mut() = Some(library_row));
+    MINER_LIBRARY_BUTTON.with(|slot| *slot.borrow_mut() = Some(chevron));
     (page, list_group)
 }
 
 thread_local! {
     static NEW_PRESET_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
-}
-
-fn build_miners_page() -> (adw::PreferencesPage, adw::PreferencesGroup) {
-    let page = adw::PreferencesPage::new();
-    let group = adw::PreferencesGroup::builder()
-        .title(tr("Installed and supported miners", "Установленные и поддерживаемые майнеры"))
-        .description(tr(
-            "Install once and reuse across all presets. Import a binary or open the upstream release page.",
-            "Установите один раз и используйте во всех пресетах. Импортируйте бинарник или откройте страницу релиза.",
-        ))
-        .build();
-    page.add(&group);
-
-    let bench_group = adw::PreferencesGroup::builder()
-        .title(tr("A/B benchmark", "A/B сравнение"))
-        .build();
-    let minutes = spin_row(
-        tr("Minutes per miner", "Минут на майнер").as_str(),
-        "",
-        3.0,
-        1.0,
-        30.0,
-    );
-    let run = gtk::Button::builder()
-        .label(tr("Run benchmark", "Сравнить"))
-        .css_classes(["flat", "pill"])
-        .valign(gtk::Align::Center)
-        .build();
-    minutes.add_suffix(&run);
-    bench_group.add(&minutes);
-    page.add(&bench_group);
-    BENCH_MINUTES.with(|slot| *slot.borrow_mut() = Some(minutes));
-    BENCH_BUTTON.with(|slot| *slot.borrow_mut() = Some(run));
-    (page, group)
-}
-
-thread_local! {
-    static BENCH_MINUTES: RefCell<Option<adw::SpinRow>> = const { RefCell::new(None) };
-    static BENCH_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
+    static MINER_LIBRARY_ROW: RefCell<Option<adw::ActionRow>> = const { RefCell::new(None) };
+    static MINER_LIBRARY_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
 }
 
 fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
@@ -1374,6 +1377,14 @@ fn connect_signals(app: &Rc<App>) {
         let app = app.clone();
         button.connect_clicked(move |_| new_preset(&app));
     }
+    if let Some(row) = MINER_LIBRARY_ROW.with(|slot| slot.borrow().clone()) {
+        let app = app.clone();
+        row.connect_activated(move |_| miner_library_dialog(&app, None, None));
+    }
+    if let Some(button) = MINER_LIBRARY_BUTTON.with(|slot| slot.borrow().clone()) {
+        let app = app.clone();
+        button.connect_clicked(move |_| miner_library_dialog(&app, None, None));
+    }
     if let Some(button) = SAVE_SETTINGS_BUTTON.with(|slot| slot.borrow().clone()) {
         let app = app.clone();
         button.connect_clicked(move |_| {
@@ -1466,15 +1477,6 @@ fn connect_signals(app: &Rc<App>) {
             app.config.borrow_mut().behavior.appearance = appearance;
             apply_appearance(appearance);
             mark_dirty(&app);
-        });
-    }
-    if let Some(button) = BENCH_BUTTON.with(|slot| slot.borrow().clone()) {
-        let tx = app.tx.clone();
-        button.connect_clicked(move |_| {
-            let minutes = BENCH_MINUTES
-                .with(|slot| slot.borrow().as_ref().map(|r| r.value() as u64))
-                .unwrap_or(3);
-            let _ = tx.send(Cmd::Bench { minutes });
         });
     }
 }
@@ -1724,24 +1726,82 @@ fn selected_version(
         .unwrap_or_default()
 }
 
+/// Explain why a preset cannot start: it pins a miner version that is not
+/// installed. `None` means the exact version is present.
+fn preset_install_hint(cfg: &Config, preset: &Preset) -> Option<(String, String)> {
+    match catalog::install_status(cfg, preset) {
+        catalog::InstallStatus::Installed { .. } => None,
+        catalog::InstallStatus::OtherVersion { installed } => Some((
+            format!(
+                "{} {} · {} {}",
+                tr(
+                    "Pinned version not installed:",
+                    "Закреплённая версия не установлена:"
+                ),
+                preset.miner_version,
+                tr("installed:", "установлено:"),
+                installed.join(", ")
+            ),
+            tr(
+                "Install the pinned version in the miner library",
+                "Установите закреплённую версию в библиотеке майнеров",
+            )
+            .to_string(),
+        )),
+        catalog::InstallStatus::NotInstalled => Some((
+            tr(
+                "Miner version not installed.",
+                "Версия майнера не установлена.",
+            )
+            .to_string(),
+            tr(
+                "Install it in the miner library",
+                "Установите её в библиотеке майнеров",
+            )
+            .to_string(),
+        )),
+    }
+}
+
 fn refresh_preset_list(app: &Rc<App>) {
     for row in app.preset_rows.borrow_mut().drain(..) {
         app.preset_group.remove(&row);
     }
     let cfg = app.config.borrow();
     for (id, preset) in &cfg.presets {
+        let install_hint = preset_install_hint(&cfg, preset);
+        let mut subtitle = format!(
+            "{} · {} · {} {}",
+            preset.coin, preset.pool, preset.miner, preset.miner_version
+        );
+        if let Some((hint, _)) = &install_hint {
+            subtitle.push('\n');
+            subtitle.push_str(hint);
+        }
         let row = adw::ActionRow::builder()
             .title(&preset.name)
-            .subtitle(format!(
-                "{} · {} · {} {}",
-                preset.coin, preset.pool, preset.miner, preset.miner_version
-            ))
+            .subtitle(subtitle)
             .build();
+        row.set_subtitle_lines(2);
         row.set_activatable(true);
         row.set_tooltip_text(Some(&tr(
             "Open the preset editor",
             "Открыть редактор пресета",
         )));
+        if let Some((_, tooltip)) = &install_hint {
+            let install = gtk::Button::builder()
+                .label(tr("Install…", "Установить…"))
+                .css_classes(["flat", "pill"])
+                .valign(gtk::Align::Center)
+                .tooltip_text(tooltip)
+                .build();
+            let app_install = app.clone();
+            let target = MinerLibraryTarget::from_preset(preset);
+            install.connect_clicked(move |_| {
+                miner_library_dialog(&app_install, Some(target.clone()), None);
+            });
+            row.add_suffix(&install);
+        }
         if Some(id) == cfg.active_preset.as_ref() {
             let badge = label(&tr("Active", "Активен"), &["caption", "accent"]);
             badge.set_valign(gtk::Align::Center);
@@ -1983,9 +2043,13 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
     install_state.set_valign(gtk::Align::Center);
     info_install.add_suffix(&install_state);
     let install_button = gtk::Button::builder()
-        .label(tr("Install…", "Установить…"))
+        .label(tr("Miner library…", "Библиотека…"))
         .css_classes(["flat", "pill"])
         .valign(gtk::Align::Center)
+        .tooltip_text(tr(
+            "Install or inspect miner versions",
+            "Установить или посмотреть версии майнеров",
+        ))
         .build();
     info_install.add_suffix(&install_button);
     miner_group.add(&info_desc);
@@ -2175,23 +2239,41 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
         let app = app.clone();
         let miner = miner.clone();
         let version = version.clone();
+        let name = name.clone();
+        let pool = pool.clone();
+        let coin = base.coin.clone();
         let refresh_info = refresh_info.clone();
         install_button.connect_clicked(move |_| {
             let Some(def) = catalog::miners().get(miner.selected() as usize) else {
                 return;
             };
-            let miner_id = def.id.clone();
-            let selected = selected_version(&app, &miner, &version);
-            let app_done = app.clone();
-            let miner_done = miner.clone();
-            let version_done = version.clone();
-            let refresh_done = refresh_info.clone();
-            let version_text = selected.clone();
-            let on_done: Rc<dyn Fn()> = Rc::new(move || {
-                preset_editor_versions(&app_done, &miner_done, &version_done, &version_text);
-                refresh_done();
-            });
-            miner_install_dialog(&app, &miner_id, selected, Some(on_done));
+            let version_text = selected_version(&app, &miner, &version);
+            let pool_id = catalog::pools()
+                .get(pool.selected() as usize)
+                .map(|item| item.id.clone())
+                .unwrap_or_default();
+            let mut preset_name = name.text().trim().to_string();
+            if preset_name.is_empty() {
+                preset_name = tr("Preset", "Пресет").to_string();
+            }
+            let target = MinerLibraryTarget {
+                name: preset_name,
+                subtitle: format!("{} · {} · {} {}", coin, pool_id, def.id, version_text),
+                miner: def.id.clone(),
+                version: version_text,
+            };
+            let refresh_editor: Rc<dyn Fn()> = {
+                let app = app.clone();
+                let miner = miner.clone();
+                let version = version.clone();
+                let refresh_info = refresh_info.clone();
+                Rc::new(move || {
+                    let current = selected_version(&app, &miner, &version);
+                    preset_editor_versions(&app, &miner, &version, &current);
+                    refresh_info();
+                })
+            };
+            miner_library_dialog(&app, Some(target), Some(refresh_editor));
         });
     }
     {
@@ -2251,7 +2333,6 @@ fn preset_editor_dialog(app: &Rc<App>, id: &str) {
             }
             mark_dirty(&app);
             refresh_preset_list(&app);
-            refresh_miners(&app);
             dialog.close();
             save_and_apply(&app);
         });
@@ -2451,16 +2532,262 @@ fn build_option(
     }
 }
 
+/// The preset context shown at the top of the miner library. The editor passes
+/// its current draft, so the library installs exactly the miner/version the
+/// user selected, not the last saved one.
+#[derive(Clone)]
+struct MinerLibraryTarget {
+    name: String,
+    subtitle: String,
+    miner: String,
+    version: String,
+}
+
+impl MinerLibraryTarget {
+    fn from_preset(preset: &Preset) -> Self {
+        Self {
+            name: preset.name.clone(),
+            subtitle: format!(
+                "{} · {} · {} {}",
+                preset.coin, preset.pool, preset.miner, preset.miner_version
+            ),
+            miner: preset.miner.clone(),
+            version: preset.miner_version.clone(),
+        }
+    }
+}
+
+/// The former Miners page, now a modal library opened from the presets page
+/// and the preset editor. Catalogue browsing, install state and the A/B
+/// benchmark live here; the install dialog itself stays the only installer.
+fn miner_library_dialog(
+    app: &Rc<App>,
+    target: Option<MinerLibraryTarget>,
+    on_close: Option<Rc<dyn Fn()>>,
+) {
+    let dialog = adw::Dialog::builder()
+        .title(tr("Miner library", "Библиотека майнеров"))
+        .content_width(640)
+        .content_height(720)
+        .build();
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&adw::WindowTitle::new(
+        &tr("Miner library", "Библиотека майнеров"),
+        &tr(
+            "Installed versions are shared by every preset",
+            "Установленные версии общие для всех пресетов",
+        ),
+    )));
+    header.set_show_end_title_buttons(false);
+    let close = gtk::Button::builder()
+        .label(tr("Close", "Закрыть"))
+        .css_classes(["flat", "pill"])
+        .build();
+    let footer = dialog_footer();
+    footer.append(&dialog_footer_spacer());
+    footer.append(&close);
+
+    let page = adw::PreferencesPage::new();
+    page.set_vexpand(true);
+
+    // When opened from a preset, put that preset first: it owns the miner and
+    // version, while the library only stores the build. The direct Install
+    // button avoids making the user pick the same miner from the list again.
+    if let Some(target) = target.clone() {
+        let group = adw::PreferencesGroup::builder()
+            .title(tr("Preset", "Пресет"))
+            .description(tr(
+                "This preset keeps its own miner and version; the library installs the build.",
+                "Пресет хранит свои майнер и версию; библиотека устанавливает сборку.",
+            ))
+            .build();
+        let row = adw::ActionRow::builder()
+            .title(&target.name)
+            .subtitle(&target.subtitle)
+            .build();
+        row.set_subtitle_lines(2);
+        let state = label("", &["caption"]);
+        state.set_valign(gtk::Align::Center);
+        row.add_suffix(&state);
+        let install = gtk::Button::builder()
+            .label(tr("Install…", "Установить…"))
+            .css_classes(["flat", "pill"])
+            .valign(gtk::Align::Center)
+            .tooltip_text(tr(
+                "Install the version this preset pins",
+                "Установить версию, закреплённую за пресетом",
+            ))
+            .build();
+        row.add_suffix(&install);
+        group.add(&row);
+        page.add(&group);
+
+        let update_state: Rc<dyn Fn()> = {
+            let app = app.clone();
+            let target = target.clone();
+            let state = state.clone();
+            Rc::new(move || {
+                let cfg = app.config.borrow();
+                match cfg.install(&target.miner, &target.version) {
+                    Some(install) => {
+                        let mut text = tr("installed", "установлен").to_string();
+                        if install.custom {
+                            text.push_str(" · ");
+                            text.push_str(&tr("custom", "своя сборка"));
+                        }
+                        if !install.verified {
+                            text.push_str(" · ");
+                            text.push_str(&tr("unverified", "без SHA-256"));
+                        }
+                        state.set_text(&text);
+                        state.set_css_classes(&["caption", "success"]);
+                    }
+                    None => {
+                        let installed = catalog::installed_versions(&cfg, &target.miner);
+                        if installed.is_empty() {
+                            state.set_text(&tr("not installed", "не установлен"));
+                        } else {
+                            state.set_text(&format!(
+                                "{} {}",
+                                tr("installed:", "установлено:"),
+                                installed.join(", ")
+                            ));
+                        }
+                        state.set_css_classes(&["caption", "warning"]);
+                    }
+                }
+                state.set_tooltip_text(Some(&tr(
+                    "The exact version the preset references must be installed",
+                    "Должна быть установлена именно та версия, на которую ссылается пресет",
+                )));
+            })
+        };
+        update_state();
+
+        let app_install = app.clone();
+        let update_done = update_state.clone();
+        install.connect_clicked(move |_| {
+            let on_done: Rc<dyn Fn()> = {
+                let app = app_install.clone();
+                let update = update_done.clone();
+                Rc::new(move || {
+                    refresh_preset_list(&app);
+                    refresh_miners(&app);
+                    update();
+                })
+            };
+            miner_install_dialog(
+                &app_install,
+                &target.miner,
+                target.version.clone(),
+                Some(on_done),
+            );
+        });
+    }
+
+    let catalog_group = adw::PreferencesGroup::builder()
+        .title(tr("Installed and supported miners", "Установленные и поддерживаемые майнеры"))
+        .description(tr(
+            "Install a version once and every preset that pins it sees it. Presets are never rewritten when a build is installed.",
+            "Установите версию один раз, и все пресеты, закреплённые за ней, её увидят. Пресеты не переписываются при установке сборки.",
+        ))
+        .build();
+    page.add(&catalog_group);
+    *app.miner_library_group.borrow_mut() = Some(catalog_group);
+    refresh_miners(app);
+
+    let bench_group = adw::PreferencesGroup::builder()
+        .title(tr("A/B benchmark", "A/B сравнение"))
+        .build();
+    let minutes = spin_row(
+        tr("Minutes per miner", "Минут на майнер").as_str(),
+        "",
+        3.0,
+        1.0,
+        30.0,
+    );
+    let run = gtk::Button::builder()
+        .label(tr("Run benchmark", "Сравнить"))
+        .css_classes(["flat", "pill"])
+        .valign(gtk::Align::Center)
+        .build();
+    minutes.add_suffix(&run);
+    bench_group.add(&minutes);
+    page.add(&bench_group);
+    {
+        let tx = app.tx.clone();
+        let minutes = minutes.clone();
+        run.connect_clicked(move |_| {
+            let _ = tx.send(Cmd::Bench {
+                minutes: minutes.value() as u64,
+            });
+        });
+    }
+
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&dialog_body(&page, &footer)));
+    dialog.set_child(Some(&toolbar));
+
+    {
+        let dialog = dialog.clone();
+        close.connect_clicked(move |_| {
+            dialog.close();
+        });
+    }
+    {
+        let app = app.clone();
+        dialog.connect_closed(move |_| {
+            app.miner_library_group.borrow_mut().take();
+            app.miner_rows.borrow_mut().clear();
+            if let Some(callback) = &on_close {
+                callback();
+            }
+        });
+    }
+
+    dialog.present(Some(&app.window));
+    if let Some(path) = std::env::var_os("TROMMEL_LIBRARY_SCREENSHOT") {
+        let path = path.to_string_lossy().into_owned();
+        let capture = app.window.clone();
+        let application = app.window.application();
+        glib::timeout_add_seconds_local(2, move || {
+            if let Some(application) = application.clone() {
+                schedule_screenshot(capture.clone(), path.clone(), application, 0);
+            }
+            glib::ControlFlow::Break
+        });
+    }
+}
+
 fn refresh_miners(app: &Rc<App>) {
+    let Some(group) = app.miner_library_group.borrow().clone() else {
+        return;
+    };
     for row in app.miner_rows.borrow_mut().drain(..) {
-        app.miners_group.remove(&row);
+        group.remove(&row);
     }
     let cfg = app.config.borrow();
     for miner in catalog::miners() {
         let installed = catalog::installed_versions(&cfg, &miner.id);
+        let users: Vec<String> = cfg
+            .presets
+            .values()
+            .filter(|preset| preset.miner == miner.id)
+            .map(|preset| format!("{} {}", preset.name, preset.miner_version))
+            .collect();
+        let mut subtitle = miner.short_description().to_string();
+        if !users.is_empty() {
+            subtitle.push('\n');
+            subtitle.push_str(&format!(
+                "{}: {}",
+                tr("Used by", "Используется"),
+                users.join(", ")
+            ));
+        }
         let row = adw::ActionRow::builder()
             .title(&miner.name)
-            .subtitle(miner.short_description())
+            .subtitle(subtitle)
             .build();
         row.set_activatable(true);
         row.set_subtitle_lines(2);
@@ -2476,7 +2803,14 @@ fn refresh_miners(app: &Rc<App>) {
             )
         };
         row.set_tooltip_text(Some(&hint));
-        if !installed.is_empty() {
+        if installed.is_empty() {
+            let state = label(
+                &tr("not installed", "не установлен"),
+                &["caption", "warning"],
+            );
+            state.set_valign(gtk::Align::Center);
+            row.add_suffix(&state);
+        } else {
             let versions = label(&installed.join(" · "), &["caption", "success"]);
             versions.set_valign(gtk::Align::Center);
             row.add_suffix(&versions);
@@ -2508,7 +2842,7 @@ fn refresh_miners(app: &Rc<App>) {
         row.connect_activated(move |_| {
             miner_install_dialog(&app_row, &miner_id, version.clone(), None);
         });
-        app.miners_group.add(&row);
+        group.add(&row);
         app.miner_rows.borrow_mut().push(row);
     }
 }
@@ -3722,9 +4056,9 @@ fn prefill_miner_source(
     }
 }
 
-/// The one place that installs a miner. The Miners page, the preset editor and
-/// the quick-setup wizard all open this dialog, so version handling, download,
-/// import and the installed state live here exactly once.
+/// The one place that installs a miner. The miner library, the preset editor
+/// and the quick-setup wizard all open this dialog, so version handling,
+/// download, import and the installed state live here exactly once.
 fn miner_install_dialog(
     app: &Rc<App>,
     miner_id: &str,

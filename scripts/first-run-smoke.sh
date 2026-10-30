@@ -3,8 +3,8 @@
 #
 # This is deliberately separate from ui-smoke.sh, which starts from a populated
 # config. It answers the "what does a fresh download look like?" question:
-# dashboard placeholders, Quick setup, Start opening the wizard, Miners showing
-# "not installed" and the single-GPU tune dialog.
+# dashboard placeholders, Quick setup, Start opening the wizard, the miner
+# library showing "not installed" and the single-GPU tune dialog.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$ROOT/.first-run-check"
@@ -89,6 +89,10 @@ if [ ! -S "${AT_SPI_BUS_ADDRESS#unix:path=}" ]; then
     echo "AT-SPI bus not found at $AT_SPI_BUS_ADDRESS" >&2
     echo "run this script inside the graphical session" >&2
     exit 1
+fi
+# See ui-smoke.sh: XWayland exposes the complete AdwDialog tree to AT-SPI.
+if [ -n "${DISPLAY:-}" ] && [ "${TROMMEL_UI_WAYLAND:-0}" != 1 ]; then
+    export GDK_BACKEND=x11
 fi
 pass "pristine XDG dirs and AT-SPI bus are ready"
 

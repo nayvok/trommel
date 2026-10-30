@@ -90,6 +90,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.6.0" date="2026-10-29">
+      <description>
+        <p>Preset-centred navigation: the Miners page is now a miner library dialog opened from the Presets page and the preset editor. The library lists installed versions, the presets that use each miner and the A/B benchmark. A preset that pins an uninstalled version says so and links straight to the library; installed builds stay global and never rewrite a preset.</p>
+        <p xml:lang="ru">Навигация вокруг пресетов: страница «Майнеры» стала диалогом библиотеки майнеров, который открывается со страницы «Пресеты» и из редактора пресета. Библиотека показывает установленные версии, пресеты, использующие каждый майнер, и A/B-бенчмарк. Пресет с неустановленной закреплённой версией сообщает об этом и ведёт прямо в библиотеку; установленные сборки остаются глобальными и никогда не переписывают пресет.</p>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-10-29">
       <description>
         <p>Per-GPU participation: switch a card off to exclude it from the active miner and from tuning, with documented WildRig/SRBMiner/OneZero device flags and an explicit refusal when the miner cannot choose cards. The dashboard labels every card as mining or excluded and Totals counts them.</p>

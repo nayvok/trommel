@@ -39,9 +39,9 @@ not a claim that CI covers it.
 | Dashboard | stopped state | `0 TH/s`, numeric pool balance, configured endpoint named, no lone dashes |
 | Quick setup | Cancel, Next, Back, Apply 80 %, Use auto, Start mining | Three steps, validation, per-card values, start only after confirmation |
 | First run | Start with no wallet/miner | Opens Quick setup; miner marked not installed; single-GPU tune has no “Apply to” |
-| Presets | row, chevron, New preset, Use | Editor opens; chevron is a real button; Use applies the selection |
-| Preset editor | Save, Cancel, Duplicate, Delete…, Install… | Apply, confirmation, shared install dialog |
-| Miners | row, chevron, benchmark, install dialog | Installed state, cancel, sequential benchmark with a winner |
+| Presets | row, chevron, New preset, Use, missing-version **Install…** | Editor opens; chevron is a real button; Use applies the selection; Install… opens the library focused on the preset |
+| Preset editor | Save, Cancel, Duplicate, Delete…, Miner library… | Apply, confirmation, shared library and install dialog |
+| Miner library | Presets page and editor entry, rows, chevron, benchmark, Close | Catalogue and preset usage, installed state, cancel, sequential benchmark with a winner |
 | Settings | switches, temperature limit/resume, Save and apply, Copy diagnostics, Restore stock | Aligned pill buttons, live apply, redaction, restore dialog with snapshot/defaults targets, stop-first guard |
 | GPU tune | Now row, **⋯** menu (Recommended / Profile default), Save, locks on/off, Similar/All GPUs | Value rows hidden while off; Apply-to only with >1 GPU; restart/stop dialog |
 | Alerts | Apply and restart / Apply and stop / Cancel, delete confirmation | Explicit restart/stop; Cancel reverts optimistic changes |

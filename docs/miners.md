@@ -5,9 +5,9 @@ Built-in data lives in `resources/catalog/miners.toml`,
 binaries are bundled; the catalogue links to upstream releases.
 
 The catalogue is parsed once by `trommel_core::catalog` (`OnceLock`) and drives
-the Miners page, the preset editor, the option widgets, the install dialog and
-the fee display. The argument builder is `trommel_core::miners::build_args` /
-`build_args_with_devices`.
+the miner library dialog, the preset editor, the option widgets, the install
+dialog and the fee display. The argument builder is
+`trommel_core::miners::build_args` / `build_args_with_devices`.
 
 ## Miner entry
 
@@ -166,8 +166,8 @@ Rules:
 - `miner_installs` in the config is global and keyed `id@version`.
 - Binaries live in `~/.local/share/trommel/miners/<id>/<version>/`.
 - `catalog::install_status` classifies a preset as `Installed`, `OtherVersion`
-  or `NotInstalled`; the editor and Miners page derive the same state from the
-  shared installs.
+  or `NotInstalled`; the editor, the preset list and the miner library derive the
+  same state from the shared installs.
 - A missing version blocks Start. There is no uninstall flow yet; deleting a
   binary by hand leaves the install record and Start reports the missing binary.
 - Downloads and imports update the running daemon immediately (the CLI applies

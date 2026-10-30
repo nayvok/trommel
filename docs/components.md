@@ -478,8 +478,8 @@ structure when changing it.
 - `applied` — the last config confirmed by the daemon;
 - `dirty` — whether the draft differs and the “unsaved changes” banner shows;
 - `status` — the last `Status` document;
-- widget handles for the header, hero card, GPU flow, settings rows, preset and
-  miner groups;
+- widget handles for the header, hero card, GPU flow, settings rows, the preset
+  group and the optional miner-library group;
 - `tx: UnboundedSender<Cmd>` — the only way to reach D-Bus.
 
 `Cmd::{Refresh, Toggle, Apply{json,mode,quiet}, ApplyStart{json}, ResetOc,
@@ -498,12 +498,12 @@ executes commands. It never blocks the GTK main loop.
 
 | Function | Surface |
 | --- | --- |
-| `build_ui` | Window, header view switcher, dashboard hero action, four pages, banners, `AdwDialog` host |
+| `build_ui` | Window, header view switcher, dashboard hero action, three pages, banners, `AdwDialog` host |
 | dashboard block in `build_ui` | Hero card, GPU `AdwWrapBox`, totals, shares, pool, warnings |
-| `build_presets_page` / `refresh_preset_list` | Preset list; rows open the editor |
-| `build_miners_page` / `refresh_miners` | Miner catalogue, install state, benchmark button |
+| `build_presets_page` / `refresh_preset_list` | Preset list, missing-version hint and Install entry, miner library row; rows open the editor |
+| `miner_library_dialog` / `refresh_miners` | Modal miner library (catalogue, installed versions, preset usage, benchmark) and its refresh while open |
 | `build_settings_page` / `load_settings` / `save_settings` | Behaviour (incl. the global temperature policy), appearance, actions |
-| `preset_editor_dialog` | Preset editor `AdwDialog` (save/cancel/duplicate/delete/install) |
+| `preset_editor_dialog` | Preset editor `AdwDialog` (save/cancel/duplicate/delete, opens the library) |
 | `miner_install_dialog` | The only miner install UI (catalogue, custom version, download, import) |
 | `gpu_tune_dialog` | Per-card tuning `AdwDialog`, “Now” row, copy to similar/all GPUs |
 | `quick_setup_wizard` | Three-step first-run flow (cards → miner → wallet) |
@@ -539,9 +539,10 @@ documented in [development.md](development.md#ui-hooks) when adding one:
 `TROMMEL_COLOR_SCHEME`, `TROMMEL_WINDOW_WIDTH`, `TROMMEL_WINDOW_HEIGHT`,
 `TROMMEL_SCREENSHOT`, `TROMMEL_SCREENSHOT_PAGE`, `TROMMEL_SCREENSHOT_DELAY`,
 `TROMMEL_SCREENSHOT_SCROLL`, `TROMMEL_OPEN_WIZARD`, `TROMMEL_OPEN_PRESET`,
-`TROMMEL_OPEN_INSTALL`, `TROMMEL_OPEN_TUNE`, `TROMMEL_WIZARD_STEP`,
-`TROMMEL_WIZARD_SCREENSHOT`, `TROMMEL_TUNE_SCREENSHOT`,
-`TROMMEL_PRESET_SCREENSHOT`, `TROMMEL_INSTALL_SCREENSHOT`.
+`TROMMEL_OPEN_LIBRARY`, `TROMMEL_OPEN_INSTALL`, `TROMMEL_OPEN_TUNE`,
+`TROMMEL_WIZARD_STEP`, `TROMMEL_WIZARD_SCREENSHOT`, `TROMMEL_TUNE_SCREENSHOT`,
+`TROMMEL_PRESET_SCREENSHOT`, `TROMMEL_LIBRARY_SCREENSHOT`,
+`TROMMEL_INSTALL_SCREENSHOT`.
 `scripts/screenshots.sh` is the canonical driver.
 
 ---

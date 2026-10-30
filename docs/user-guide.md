@@ -113,11 +113,17 @@ A preset bundles coin/algorithm (Pearl/pearlhash in the current catalogue),
 pool, wallet, worker, miner version and miner options. GPU settings are edited
 on each card's **Tune** dialog, not in the preset editor. A preset references a miner **version**,
 not a path. Installing a version once makes every preset that references it see
-the version as installed. If a preset references a missing version, Start is
-blocked until you install it or switch to an installed version. There is no
-uninstall action yet.
+the version as installed. If a preset references a missing version, its row says
+so, Start is blocked, and **Install…** opens the miner library focused on that
+preset. There is no uninstall action yet.
 
 ![Presets](images/presets-en-dark.png)
+
+The **Miner library** row on the Presets page opens the library dialog. It lists
+the catalogue miners, their installed versions, the presets that use each miner,
+and the A/B benchmark:
+
+![Miner library](images/miner-library-en-dark.png)
 
 Presets open in a modal editor with **Cancel**/**Save** in the footer and
 **Duplicate**/**Delete…** at the end of the page. Saving applies immediately: a
@@ -131,9 +137,7 @@ mining with the previously applied preset until another one is applied.
 ## Miner installation
 
 The install dialog is the only place that installs miners, and it is shared by
-the Miners page, the preset editor and the wizard:
-
-![Miners](images/miners-en-dark.png)
+the miner library, the preset editor and the wizard:
 
 ![Miner installation](images/miner-install-en-dark.png)
 
@@ -267,10 +271,11 @@ not need a shell extension. The same events are also emitted as the
 
 ## Benchmarks
 
-**Miners → A/B benchmark** (or `trommel bench --minutes 3`) stops mining, runs
-each selected miner sequentially, records raw and fee-adjusted effective
-hashrate, restarts the previous miner if it was running, and prints the winner.
-Benchmarking moves a real rig: the miner stops for the duration of the test.
+**Presets → Miner library → A/B benchmark** (or `trommel bench --minutes 3`)
+stops mining, runs each selected miner sequentially, records raw and fee-adjusted
+effective hashrate, restarts the previous miner if it was running, and prints the
+winner. Benchmarking moves a real rig: the miner stops for the duration of the
+test.
 
 ## Asking an external agent
 

@@ -139,7 +139,7 @@ Every coloured value has a word next to it (“installed”, “not installed”
    surfaces are modal `AdwDialog`s presented inside the main window, like the
    Nautilus preferences dialog. There are no “Back” buttons inside pages.
 2. **One navigation surface.** An `AdwViewSwitcherTitle` in the header bar:
-   the four pages are the title widget while the window is wide enough to show
+   the three pages are the title widget while the window is wide enough to show
    their icons and labels. When it is not, the title returns and the
    `AdwViewSwitcherBar` reveals itself at the bottom, so the switcher is never
    clipped and never duplicated. The header bar carries navigation and window
@@ -163,13 +163,13 @@ Every coloured value has a word next to it (“installed”, “not installed”
 
 | Surface | Kind | Opened from | Purpose |
 | --- | --- | --- | --- |
-| Main window | `AdwApplicationWindow` | app start | Header (view switcher, refresh, menu), four pages, banners |
+| Main window | `AdwApplicationWindow` | app start | Header (view switcher, refresh, menu), three pages, banners |
 | Dashboard | page | view switcher | Hero hashrate, GPU cards, totals, shares, pool, warnings |
-| Presets | page | view switcher | Preset list; rows open the editor |
-| Miners | page | view switcher | Catalogue, installed versions, install dialog, benchmark |
+| Presets | page | view switcher | Preset list, miner library entry; rows open the editor |
 | Settings | page | view switcher | Behaviour, appearance, actions |
 | Preset editor | `AdwDialog` | preset row / New preset | One preset: miner, version, pool, wallet, fees, options |
-| Miner install | `AdwDialog` | Miners row, editor, wizard | Version pick, HTTPS download, local import |
+| Miner library | `AdwDialog` | Presets page / preset editor | Catalogue, installed versions, benchmark, install entry |
+| Miner install | `AdwDialog` | Miner library row, editor, wizard | Version pick, HTTPS download, local import |
 | GPU tuning | `AdwDialog` | Dashboard card | Per-card power/clocks; copy to similar/all |
 | Quick setup | `AdwDialog` | Quick setup button / Start on a pristine install | Cards → miner → wallet → start |
 | Apply alert | `AdwAlertDialog` | apply while mining | Apply and restart / apply and stop / cancel |
@@ -226,10 +226,14 @@ Every coloured value has a word next to it (“installed”, “not installed”
 
 - Rows are activatable `AdwActionRow`s in a preferences group; the chevron is a
   real button and opens the editor.
-- Row subtitle: coin, pool, miner and version. The active preset gets an
-  “Active” badge; inactive rows get a **Use** button.
+- Row subtitle: coin, pool, miner and version. When the exact pinned version is
+  missing, a second subtitle line says so and an **Install…** button opens the
+  miner library focused on that preset. The active preset gets an “Active”
+  badge; inactive rows get a **Use** button.
 - **New preset** creates a copy of the active preset and opens the editor.
 - **Use** applies the selection (with the restart/stop dialog while mining).
+- The **Miner library** group below the list opens the modal library. Installed
+  miner versions are global; a preset only references `miner` + `miner_version`.
 
 ### Preset editor (modal)
 
@@ -237,10 +241,11 @@ Every coloured value has a word next to it (“installed”, “not installed”
   dismisses). The body scrolls; a footer holds **Cancel** on the left and
   **Save** on the right, and the page ends with the **Duplicate**/**Delete…**
   group.
-- Sections: identity (name), miner/version + **Install…**, pool and address,
-  wallet/worker, fees (miner read-only unless the catalogue allows an override;
-  pool fee editable), miner options, extra arguments. The coin/algorithm and the
-  GPU profile are not exposed here.
+- Sections: identity (name), miner/version + **Miner library…**, pool and
+  address, wallet/worker, fees (miner read-only unless the catalogue allows an
+  override; pool fee editable), miner options, extra arguments. The
+  coin/algorithm and the GPU profile are not exposed here. The library opens
+  with the preset at the top and its pinned version ready to install.
 - Miner options are rebuilt from the selected miner's descriptors. Values whose
   keys the new miner does not define are dropped when the preset is saved.
 - Simple mode hides miner options, extra arguments and the miner fee row but
@@ -249,18 +254,23 @@ Every coloured value has a word next to it (“installed”, “not installed”
   for confirmation, names the preset, and explains that the daemon keeps mining
   with the previously applied preset until another one is applied.
 
-### Miners
+### Miner library (modal)
 
-- Compact rows: name, short description, installed versions and a chevron that
-  opens the install dialog. The upstream source link lives in the dialog.
+- Opened from the Presets page and the preset editor; it replaces the former
+  Miners page. The preset editor shows the preset at the top with its pinned
+  version and an **Install…** action.
+- Compact rows: name, short description, a second line with the presets that
+  reference the miner and their versions, installed versions (or **not
+  installed**) and a chevron that opens the install dialog. The upstream source
+  link lives in the install dialog.
+- The library never rewrites a preset: installing a build only adds a global
+  `miner_installs` entry, and the preset keeps its own `miner_version`.
 - Benchmark controls (minutes + **Run benchmark**) run the sequential A/B test;
-  a toast reports the best effective hashrate.
-- A row with no installed versions shows no version suffix; its hint points to
-  the same install dialog.
+  a toast reports the best effective hashrate. **Close** dismisses the dialog.
 
 ### Miner install (modal, single source)
 
-Owns the whole install flow for the Miners page, the preset editor and the
+Owns the whole install flow for the miner library, the preset editor and the
 wizard. Two groups, in order:
 
 1. **Version** — version list from the catalogue **plus** already-installed
@@ -371,7 +381,7 @@ profile (this prevented a 300 W default from being applied to a 165 W card).
 | Miner running | Live values, uptime, fee breakdown, warnings; Apply requires the alert |
 | GPU excluded | Chip `excluded`, live temperature/power still visible, Totals counts it out; Start refuses when the miner cannot select devices |
 | External miner | “mining (started manually)” pill in warning colour; Start explains that the external process must be stopped |
-| Missing miner install | Install state in warning colour, Start blocked, install dialog offered |
+| Missing miner install | Preset row and library mark the pinned version, Start blocked, miner library offered |
 | Lock not honoured | A warning with requested and actual MHz |
 | Load error | Error text in the row/dialog that caused it; no silent fallback |
 

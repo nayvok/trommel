@@ -35,11 +35,12 @@ arguments are hidden until you turn them on.
   miner without one refuses a partial rig instead of mining on every card.
 - **Presets** — bundle the coin/algorithm (Pearl/pearlhash in the current
   catalogue), pool, wallet, worker, miner version and miner-specific options.
-  GPU settings are edited in Settings, so switching presets does not re-enter
-  everything.
-- **Miner catalogue** — short description, installed versions and a link to the
-  upstream release page. The developer fee is shown as a breakdown
-  (miner + pool = total) in the dashboard and the preset editor.
+  GPU settings are edited on each card's Tune dialog, so switching presets does
+  not re-enter everything.
+- **Miner library dialog** — short description, installed versions, the presets
+  that use each miner and a link to the upstream release page. The developer fee
+  is shown as a breakdown (miner + pool = total) in the dashboard and the preset
+  editor.
 - **Miner-dependent settings** — option descriptors come from the selected
   miner in the catalogue: types, ranges, defaults and CLI flags. Values whose
   keys no longer exist are dropped when the miner changes.
@@ -139,8 +140,8 @@ miner are ready. It opens a three-step wizard for a 1–3 card rig:
    miner gets the usual Apply and restart / Apply and stop dialog instead of a
    silent restart.
 
-Presets open in a modal editor, and the same install dialog serves the Miners
-page, the editor and the wizard.
+Presets open in a modal editor, and the same install dialog serves the miner
+library dialog, the editor and the wizard.
 
 The classic path still works:
 

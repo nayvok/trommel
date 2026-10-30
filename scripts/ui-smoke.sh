@@ -159,6 +159,12 @@ if [ ! -S "${AT_SPI_BUS_ADDRESS#unix:path=}" ]; then
     echo "run this script inside the graphical session" >&2
     exit 1
 fi
+# AdwDialog children are exposed late on the nested Wayland accessibility
+# bridge; XWayland gives AT-SPI a complete tree. The app itself is the same GTK
+# build, and TROMMEL_UI_WAYLAND=1 still runs the suite on native Wayland.
+if [ -n "${DISPLAY:-}" ] && [ "${TROMMEL_UI_WAYLAND:-0}" != 1 ]; then
+    export GDK_BACKEND=x11
+fi
 pass "private rig and AT-SPI bus are ready"
 
 step "Start daemon"
@@ -171,6 +177,7 @@ start_gui() {
     local phase="$1"
     GUI_STARTED=1
     GUI_PID=""
+    rm -f "$WORK/gui.pid"
     (
         unset TROMMEL_OPEN_PRESET TROMMEL_OPEN_WIZARD TROMMEL_OPEN_TUNE TROMMEL_OPEN_INSTALL TROMMEL_SCREENSHOT
         case "$phase" in
@@ -178,21 +185,53 @@ start_gui() {
             tune) export TROMMEL_OPEN_TUNE=1 ;;
             install) export TROMMEL_OPEN_INSTALL=1 ;;
         esac
-        exec setsid "$BIN/trommel"
+        # setsid may fork on some runners, so the child writes its own PID
+        # instead of trusting the shell's `$!`.
+        exec setsid sh -c 'echo $$ > "$1/gui.pid"; exec "$2"' sh "$WORK" "$BIN/trommel"
     ) > "$WORK/gui-$phase.out" 2>&1 < /dev/null &
-    GUI_PID=$!
+    for _ in $(seq 1 50); do
+        [ -s "$WORK/gui.pid" ] && break
+        sleep 0.1
+    done
+    GUI_PID="$(cat "$WORK/gui.pid" 2>/dev/null || true)"
+}
+
+stop_gui() {
+    [ -n "$GUI_PID" ] || return 0
+    kill "$GUI_PID" 2>/dev/null || true
+    # A zombie still satisfies kill -0; read /proc so a dead GUI is not
+    # mistaken for a live one and left to capture the next launch.
+    for _ in $(seq 1 30); do
+        local state
+        state="$(awk '{print $3}' "/proc/$GUI_PID/stat" 2>/dev/null || true)"
+        if [ -z "$state" ] || [ "$state" = Z ] || [ "$state" = X ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    kill -9 "$GUI_PID" 2>/dev/null || true
+    GUI_PID=""
 }
 
 run_phase() {
-    local phase="$1"
-    start_gui "$phase"
-    sleep 1
-    python3 "$ROOT/scripts/ui_smoke.py" --pid "$GUI_PID" --phase "$phase"
-    local rc=$?
+    local phase="$1" attempt rc=1 attempts=2
+    # The main phase changes daemon state (wallet, mining), so it cannot be
+    # replayed against the same rig; the remaining phases are read-mostly.
+    [ "$phase" = main ] && attempts=1
+    # AT-SPI exposes an AdwDialog before its page is mapped; on a loaded VM the
+    # first attempt can see only the header. A fresh GUI makes the phase
+    # deterministic without weakening any of its checks.
+    for attempt in $(seq 1 "$attempts"); do
+        start_gui "$phase"
+        sleep 2
+        python3 "$ROOT/scripts/ui_smoke.py" --pid "$GUI_PID" --phase "$phase"
+        rc=$?
+        stop_gui
+        [ "$rc" -eq 0 ] && break
+        [ "$attempt" -lt "$attempts" ] && echo "  … retrying the $phase phase (AT-SPI timing)"
+        sleep 1
+    done
     if [ "$rc" -eq 0 ]; then pass "$phase phase"; else fail "$phase phase"; fi
-    kill "$GUI_PID" 2>/dev/null || true
-    wait "$GUI_PID" 2>/dev/null || true
-    GUI_PID=""
     sleep 1
 }
 

@@ -15,9 +15,11 @@ sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
 - Rust 1.80+ (edition 2021). GTK 4.22 / libadwaita 1.9 are required by the
   dependencies; Ubuntu 26.04 is the tested distribution.
 - Python 3 is used by the test scripts and by packaging/release helpers.
-- The UI smoke test needs an accessible desktop session (AT-SPI) and a Wayland
-  display; the screenshot test needs a display too. Both fail closed with a
-  clear message rather than silently passing.
+- The UI smoke test needs an accessible desktop session (AT-SPI). It prefers
+  the X11 backend through XWayland because the nested Wayland accessibility
+  bridge exposes AdwDialog children late; set `TROMMEL_UI_WAYLAND=1` to run it
+  on native Wayland. The screenshot test needs a display too. Both fail closed
+  with a clear message rather than silently passing.
 
 ## Build
 
@@ -40,8 +42,8 @@ do not move GTK types into `trommel-core` or the daemon.
 | `cargo fmt --check` | Formatting | Rust only |
 | `./scripts/e2e.sh` | Full CLI lifecycle on a private bus with fake GPU, helper and miner, including per-GPU participation (device arguments, excluded card untouched, restore, refusal), SIGKILL/emergency-stop, startup recovery, helper lease, partial apply, restore retry, custom binary, benchmark external guard, restart budget, guard and lost session bus | Python 3, dbus |
 | `./scripts/test-mcp.sh` | MCP protocol, read-only default, write gating, redaction | Python 3 |
-| `./scripts/ui-smoke.sh` | Critical GUI path through AT-SPI (quick setup, start/stop, settings, editor, tuning, install) | Wayland session, AT-SPI |
-| `./scripts/first-run-smoke.sh` | Pristine install: no config, no wallet, no miner, one fake GPU | Wayland session, AT-SPI |
+| `./scripts/ui-smoke.sh` | Critical GUI path through AT-SPI (quick setup, start/stop, settings, editor, tuning, install) | desktop session, AT-SPI; XWayland preferred |
+| `./scripts/first-run-smoke.sh` | Pristine install: no config, no wallet, no miner, one fake GPU | desktop session, AT-SPI; XWayland preferred |
 | `./scripts/check-no-secrets.sh` | No wallet-like string or secret marker in tracked files | git |
 | `./scripts/check-polkit.sh` | Action id and helper path consistency | none |
 | `./scripts/check-docs.sh` | Relative markdown links resolve; no references to removed docs | none |
@@ -89,9 +91,10 @@ The GUI reads these environment variables for tests and screenshots:
 | `TROMMEL_OPEN_WIZARD` | Open Quick setup on start |
 | `TROMMEL_WIZARD_STEP` | Open a specific wizard step (0–2) |
 | `TROMMEL_OPEN_PRESET` | Open the preset editor on start |
+| `TROMMEL_OPEN_LIBRARY` | Open the miner library dialog on start |
 | `TROMMEL_OPEN_INSTALL` | Open the miner install dialog on start |
 | `TROMMEL_OPEN_TUNE` | Open the GPU tuning dialog on start |
-| `TROMMEL_WIZARD_SCREENSHOT`, `TROMMEL_TUNE_SCREENSHOT`, `TROMMEL_PRESET_SCREENSHOT`, `TROMMEL_INSTALL_SCREENSHOT` | Capture a transient window |
+| `TROMMEL_WIZARD_SCREENSHOT`, `TROMMEL_TUNE_SCREENSHOT`, `TROMMEL_PRESET_SCREENSHOT`, `TROMMEL_LIBRARY_SCREENSHOT`, `TROMMEL_INSTALL_SCREENSHOT` | Capture a transient window |
 
 Runtime/test variables used outside the GUI:
 
