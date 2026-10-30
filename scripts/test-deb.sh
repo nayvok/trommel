@@ -50,14 +50,25 @@ CONTROL="$(dpkg-deb -f "$DEB")"
 grep -qxF 'Package: trommel' <<< "$CONTROL" || fail "control Package is not trommel"
 grep -qxF "Version: $VERSION" <<< "$CONTROL" || fail "control Version is not $VERSION"
 grep -qxF 'Architecture: amd64' <<< "$CONTROL" || fail "control Architecture is not amd64"
-for dep in libgtk-4-1 libadwaita-1-0 libglib2.0-bin 'pkexec | policykit-1' dbus-user-session systemd; do
+for dep in libgtk-4-1 libadwaita-1-0 'pkexec | policykit-1' dbus-user-session systemd; do
     grep -qF "$dep" <<< "$CONTROL" || fail "control Depends lacks $dep"
 done
+# GNOME is not a runtime dependency: the app is GTK4/libadwaita and its
+# postinst has no schema/extension work.
+if grep -qF 'gnome-shell' <<< "$CONTROL"; then
+    fail "control still recommends gnome-shell"
+fi
+if grep -qF 'libglib2.0-bin' <<< "$CONTROL"; then
+    fail "control still depends on libglib2.0-bin"
+fi
 
 dpkg-deb -e "$DEB" "$WORK/control"
 for script in postinst prerm postrm; do
     [ -x "$WORK/control/$script" ] || fail "maintainer script $script is missing or not executable"
 done
+if grep -q 'glib-compile-schemas' "$WORK/control/postinst"; then
+    fail "postinst still recompiles GLib schemas"
+fi
 grep -q '50-trommel.rules.in' "$WORK/control/postinst" || fail "postinst does not install the per-user rule"
 grep -q 'SUDO_USER' "$WORK/control/postinst" || fail "postinst does not key the rule on SUDO_USER"
 

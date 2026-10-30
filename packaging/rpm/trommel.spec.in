@@ -11,7 +11,7 @@ Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  rust cargo gtk4-devel libadwaita-devel pkgconfig
 Requires:       gtk4 libadwaita polkit systemd dbus-daemon
-Recommends:     nvidia-driver gnome-shell
+Recommends:     nvidia-driver
 
 %description
 Trommel is a GTK4/libadwaita control room for NVIDIA mining rigs.
