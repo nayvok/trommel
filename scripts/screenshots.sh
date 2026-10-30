@@ -15,36 +15,27 @@ fi
 rm -rf "$WORK"
 mkdir -p "$WORK/bin" "$WORK/config/trommel" "$WORK/state/trommel" "$WORK/cache"
 
-cat > "$WORK/bin/nvidia-smi" <<'SH'
-#!/bin/bash
-# The values follow a slow sine of wall-clock time instead of constants so the
-# dashboard sparklines have a curve to draw; the numbers stay plausible for a
-# mining rig.
-args="$*"
-case "$args" in
-  *index,uuid*)
-    awk -v t="$(date +%s)" 'BEGIN{
-      p0=301+20*sin(t/6.0)+6*sin(t/2.7);
-      p1=128+10*sin(t/5.0)+4*sin(t/2.1);
-      t0=61+3*sin(t/9.0);
-      t1=55+2.4*sin(t/7.5+1.0);
-      c0=1620+45*sin(t/5.0);
-      c1=1500+35*sin(t/5.5+0.5);
-      m0=810+26*sin(t/7.0+2.0);
-      m1=750+20*sin(t/6.5+2.5);
-      f0=68+5*sin(t/3.5);
-      f1=62+4*sin(t/4.0+1.0);
-      u0=97+3*sin(t/3.0);
-      u1=95+4*sin(t/3.6+0.7);
-      printf "0, GPU-11111111-1111-1111-1111-111111111111, NVIDIA GeForce RTX 3080 Ti, %.0f, %.0f, %.2f, 300.00, 350.00, 100.00, 400.00, %.0f, %.0f, %.0f, 8472\n", t0, f0, p0, c0, m0, u0;
-      printf "1, GPU-22222222-2222-2222-2222-222222222222, NVIDIA GeForce RTX 3060, %.0f, %.0f, %.2f, 130.00, 170.00, 60.00, 200.00, %.0f, %.0f, %.0f, 4096\n", t1, f1, p1, c1, m1, u1
-    }'
-    ;;
-  *power.limit*) echo "300.00" ;;
-  *) exit 0 ;;
-esac
-SH
-chmod +x "$WORK/bin/nvidia-smi"
+# Stateful fake rig shared with the e2e/ui-smoke harness: the daemon must be
+# able to snapshot stock, apply the profile, read the power back and verify the
+# clock locks. A static CSV cannot pass that verification.
+cp "$ROOT/scripts/fixtures/fake-nvidia-smi.py" "$WORK/bin/nvidia-smi"
+cp "$ROOT/scripts/fixtures/fake-oc-helper.sh" "$WORK/bin/oc-helper"
+chmod +x "$WORK/bin/nvidia-smi" "$WORK/bin/oc-helper"
+: > "$WORK/fake-mode"
+cat > "$WORK/gpu-state.json" <<'JSON'
+{
+  "gpus": [
+    {"index": 0, "uuid": "GPU-11111111-1111-1111-1111-111111111111", "name": "NVIDIA GeForce RTX 3080 Ti",
+     "temp": 61, "fan": 68, "draw": 301.4, "power": 350.0, "power_default": 350.0,
+     "power_min": 100.0, "power_max": 400.0, "core": 1770, "core_default": 1770,
+     "mem": 9501, "mem_default": 9501, "util": 100, "vram": 8472},
+    {"index": 1, "uuid": "GPU-22222222-2222-2222-2222-222222222222", "name": "NVIDIA GeForce RTX 3060",
+     "temp": 55, "fan": 62, "draw": 128.2, "power": 170.0, "power_default": 170.0,
+     "power_min": 60.0, "power_max": 200.0, "core": 1500, "core_default": 1500,
+     "mem": 7000, "mem_default": 7000, "util": 99, "vram": 4096}
+  ]
+}
+JSON
 
 cat > "$WORK/wildrig-multi" <<'SH'
 #!/bin/bash
@@ -63,16 +54,14 @@ chmod +x "$DEMO_MINER"
 DEMO_MINER_OLD="/tmp/trommel-screenshot-wildrig-multi-0.51.7"
 cp "$WORK/wildrig-multi" "$DEMO_MINER_OLD"
 chmod +x "$DEMO_MINER_OLD"
-"$WORK/wildrig-multi" --algo pearlhash >/dev/null 2>&1 &
-MINER_PID=$!
 for i in $(seq 1 80); do
   echo "[12:00:$((i%60))] hashrate: 10s: 125.$((i%9)) 60s: 125.0 15m: 124.9 TH/s" >> "$WORK/state/trommel/miner.log"
   echo "[12:00:$((i%60))] Shares: $((500+i)) accepted, 2 rejected" >> "$WORK/state/trommel/miner.log"
 done
-python3 - "$WORK" "$MINER_PID" "$DEMO_MINER" "$DEMO_MINER_OLD" <<'PY'
-import json, pathlib, sys, time
-work = pathlib.Path(sys.argv[1]); pid = int(sys.argv[2]); demo_miner = sys.argv[3]
-demo_miner_old = sys.argv[4]
+python3 - "$WORK" "$DEMO_MINER" "$DEMO_MINER_OLD" <<'PY'
+import json, pathlib, sys
+work = pathlib.Path(sys.argv[1]); demo_miner = sys.argv[2]
+demo_miner_old = sys.argv[3]
 cfg = {
   "schema_version": 2, "active_preset": "pearl-wildrig",
   "presets": {"pearl-wildrig": {
@@ -107,16 +96,13 @@ cfg = {
     "restore_stock_on_stop":True,"start_mining_on_login":False,"notifications":False,"language":"en"}
 }
 (work/"config"/"trommel"/"config.json").write_text(json.dumps(cfg, indent=2))
-state = {"running":True,"miner_pid":pid,"started_at":int(time.time())-3600,"restarts":0,
-         "last_error":None,"external":False,"orphan":True,"preset_id":"pearl-wildrig",
-         "miner":"wildrig","miner_version":"0.51.8","profile":"wildrig"}
-(work/"state"/"trommel"/"state.json").write_text(json.dumps(state, indent=2))
 PY
 
 cleanup() {
+  [ -n "${JITTER_PID:-}" ] && kill "$JITTER_PID" 2>/dev/null || true
   [ -n "${DAEMON_PID:-}" ] && kill "$DAEMON_PID" 2>/dev/null || true
-  [ -n "${MINER_PID:-}" ] && kill "$MINER_PID" 2>/dev/null || true
   [ -n "${BUS_PID:-}" ] && kill "$BUS_PID" 2>/dev/null || true
+  pkill -f "${DEMO_MINER:-/tmp/trommel-screenshot-wildrig-multi}" 2>/dev/null || true
   rm -f "${DEMO_MINER:-/tmp/trommel-screenshot-wildrig-multi}"
   rm -f "${DEMO_MINER_OLD:-/tmp/trommel-screenshot-wildrig-multi-0.51.7}"
 }
@@ -147,10 +133,64 @@ export PATH="$WORK/bin:$PATH"
 export XDG_CONFIG_HOME="$WORK/config"
 export XDG_STATE_HOME="$WORK/state"
 export XDG_CACHE_HOME="$WORK/cache"
+# The demo rig is the only miner: do not adopt a real one from the host, and
+# do not leave a guard behind when the screenshot daemon is killed.
+export TROMMEL_NO_EXTERNAL_SCAN=1
+export TROMMEL_NO_GUARD=1
+export TROMMEL_OC_HELPER="$WORK/bin/oc-helper"
+export TROMMEL_OC_LOG="$WORK/oc.log"
+export TROMMEL_FAKE_GPU_STATE="$WORK/gpu-state.json"
+export TROMMEL_FAKE_MODE="$WORK/fake-mode"
+export TROMMEL_OC_TIMEOUT_MS=1500
+# Verify the clock locks well before the first dashboard capture.
+export TROMMEL_OC_VERIFY_MS=3000
 
 setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
 DAEMON_PID=$!
 sleep 2
+
+# Let the daemon own the demo miner: it spawns the recorded DEMO_MINER path,
+# snapshots stock, applies the profile and reports an owned session. Starting
+# the miner by hand made the daemon classify it as external ("2 of 2 · external
+# miner") and left its GPU state untuned.
+if ! "$BIN/trommel" start > "$WORK/start.out" 2>&1; then
+    echo "could not start the demo miner:" >&2
+    cat "$WORK/start.out" >&2
+    cat "$WORK/state/trommel/daemon.log" >&2 || true
+    exit 1
+fi
+sleep 2
+
+# The fake rig is stateful but static; vary the live measurements so the
+# dashboard sparklines have a curve. Power/clock values stay as applied.
+python3 - "$WORK/gpu-state.json" <<'PY' &
+import json, math, os, sys, time
+path = sys.argv[1]
+start = time.time()
+bases = [{"draw": 301.0, "temp": 61.0, "fan": 68.0, "util": 100.0},
+         {"draw": 128.0, "temp": 55.0, "fan": 62.0, "util": 99.0}]
+while True:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            state = json.load(handle)
+        t = time.time() - start
+        for index, gpu in enumerate(state["gpus"]):
+            if index >= len(bases):
+                break
+            base, phase = bases[index], index * 1.7
+            gpu["draw"] = round(base["draw"] + 6 * math.sin(t / 5 + phase), 2)
+            gpu["temp"] = round(base["temp"] + 2.5 * math.sin(t / 9 + phase))
+            gpu["fan"] = round(base["fan"] + 4 * math.sin(t / 3.5 + phase))
+            gpu["util"] = min(100, round(base["util"] + 2 * math.sin(t / 3 + phase)))
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(state, handle)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+    time.sleep(2)
+PY
+JITTER_PID=$!
 
 # Set ONLY=substring to regenerate just the matching images while iterating;
 # a full run leaves it empty.
