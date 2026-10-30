@@ -57,11 +57,13 @@ Key functions:
   if needed, and returns an error for unparsable JSON rather than silently
   discarding it.
 - `Config::normalize()` — repairs a dangling `active_preset`, a missing default
-  GPU profile or empty preset map, a missing install path (`verified = false`)
-  and stale fee overrides for miners that do not allow them. For a v2 file it
-  also infers `custom` on every per-GPU entry: an entry with no power/clock
-  values inherits the default; an entry with values is custom only when they
-  differ from the default.
+  GPU profile or empty preset map and stale fee overrides for miners that do not
+  allow them. It never rewrites `MinerInstall::verified`: that is the
+  install-time digest fact, while a missing binary is reported by
+  `versions::verify` and `Config::warnings`. For a v2 file it also infers
+  `custom` on every per-GPU entry: an entry with no power/clock values inherits
+  the default; an entry with values is custom only when they differ from the
+  default.
 - `Config::preset()` / `preset_mut()` / `ensure_preset()` — active preset access;
   `ensure_preset` clones the default when the map is empty.
 - `Config::gpu_profile()` / `gpu_profile_mut()` — active profile access.
@@ -82,7 +84,10 @@ Key functions:
 - `Config::redacted()` — replaces every preset wallet with `<redacted>`; used by
   `diagnose` and the MCP tools, never by the daemon's own state.
 - `Config::from_v1(ConfigV1)` — one-time migration of the former flat config;
-  builds a `pearl-imported` preset and an `imported` profile.
+  builds a `pearl-imported` preset and an `imported` profile. Missing v1 GPU
+  fields stay `None` (no invented power limit or clock lock); an explicit
+  `stock_power_limit` is not carried, because stock is captured per boot before
+  tuning, never restored from an old config.
 
 ### `catalog` — TOML catalogue and install status
 

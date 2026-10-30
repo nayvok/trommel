@@ -408,11 +408,10 @@ impl Config {
         if !active_ok {
             self.active_preset = self.presets.keys().next().cloned();
         }
-        for install in self.miner_installs.values_mut() {
-            if !install.path.is_empty() && !Path::new(&install.path).exists() {
-                install.verified = false;
-            }
-        }
+        // `verified` is a historical fact: "the digest was checked when this
+        // build was installed". A missing file is a liveness problem, reported
+        // by `versions::verify`; normalizing it to `verified = false` silently
+        // rewrote the record and made the text deny a check that did happen.
         for preset in self.presets.values_mut() {
             if let Some(def) = crate::catalog::miner(&preset.miner) {
                 preset.miner_fee_pct = def.fee_pct;
@@ -792,7 +791,6 @@ pub struct MinerCfgV1 {
 #[serde(default)]
 pub struct GpuCfgV1 {
     pub power_limit: Option<u32>,
-    pub stock_power_limit: u32,
     pub core_clock: Option<u32>,
     pub memory_clock: Option<u32>,
     pub fan_speed: Option<u32>,
@@ -803,10 +801,12 @@ pub struct GpuCfgV1 {
 impl Default for GpuCfgV1 {
     fn default() -> Self {
         Self {
-            power_limit: Some(300),
-            stock_power_limit: 350,
-            core_clock: Some(1620),
-            memory_clock: Some(810),
+            // A v1 file without GPU fields never recorded tuning. Inventing
+            // 300 W / 1620 / 810 and a 350 W stock limit applied clocks the
+            // user never chose; missing means "auto" (no lock, no limit).
+            power_limit: None,
+            core_clock: None,
+            memory_clock: None,
             fan_speed: None,
             temp_limit: 90,
             temp_resume: 65,
@@ -874,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_migration_keeps_wallet_and_gpu() {
+    fn v1_migration_keeps_wallet_without_inventing_gpu_tuning() {
         let old = ConfigV1 {
             wallet: "prl1testwallet".into(),
             worker: "rig42".into(),
@@ -894,16 +894,34 @@ mod tests {
         let preset = cfg.preset().unwrap();
         assert_eq!(preset.wallet, "prl1testwallet");
         assert_eq!(preset.worker, "rig42");
-        assert_eq!(cfg.gpu_profile().unwrap().default.power_limit_w, Some(300));
-        assert_eq!(
-            cfg.gpu_profile().unwrap().default.core_clock_mhz,
-            Some(1620)
-        );
-        assert_eq!(
-            cfg.gpu_profile().unwrap().default.memory_clock_mhz,
-            Some(810)
-        );
+        // A v1 file without a `gpu` block must not acquire tuning by default.
+        let tuning = &cfg.gpu_profile().unwrap().default;
+        assert_eq!(tuning.power_limit_w, None);
+        assert_eq!(tuning.core_clock_mhz, None);
+        assert_eq!(tuning.memory_clock_mhz, None);
+        assert_eq!(tuning.fan_pct, None);
         assert_eq!(preset.total_fee_pct(), 1.0);
+    }
+
+    #[test]
+    fn v1_migration_keeps_explicit_gpu_values() {
+        let old: ConfigV1 = serde_json::from_value(serde_json::json!({
+            "wallet": "prl1testwallet",
+            "gpu": {
+                "power_limit": 250,
+                "core_clock": 1500,
+                "memory_clock": 750,
+                "fan_speed": 65,
+                "stock_power_limit": 350
+            }
+        }))
+        .unwrap();
+        let cfg = Config::from_v1(old);
+        let tuning = &cfg.gpu_profile().unwrap().default;
+        assert_eq!(tuning.power_limit_w, Some(250));
+        assert_eq!(tuning.core_clock_mhz, Some(1500));
+        assert_eq!(tuning.memory_clock_mhz, Some(750));
+        assert_eq!(tuning.fan_pct, Some(65));
     }
 
     #[test]
@@ -1024,6 +1042,32 @@ mod tests {
         };
         let text = serde_json::to_string(&custom).unwrap();
         assert!(text.contains("\"custom\":true"), "{text}");
+    }
+
+    #[test]
+    fn normalize_keeps_verified_for_a_missing_binary() {
+        let mut cfg = Config::default();
+        cfg.add_install(MinerInstall {
+            miner: "wildrig".into(),
+            version: "0.51.8".into(),
+            // Deliberately absent: normalization must not rewrite history.
+            path: format!("/tmp/trommel-missing-{}/wildrig-multi", std::process::id()),
+            sha256: "a".repeat(64),
+            verified: true,
+            ..Default::default()
+        });
+        let normalized = cfg.normalize();
+        let install = normalized
+            .miner_installs
+            .get(&install_key("wildrig", "0.51.8"))
+            .expect("install record");
+        assert!(
+            install.verified,
+            "normalize must keep the install-time verification fact"
+        );
+        // Liveness belongs to the verify report, not to the saved record.
+        let report = crate::versions::verify(&normalized, "wildrig", "0.51.8");
+        assert!(!report.status.is_ok(), "{report:?}");
     }
 
     #[test]
