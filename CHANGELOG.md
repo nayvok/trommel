@@ -5,6 +5,42 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-30
+
+### Fixed
+
+- **A scheduled restart no longer races a manual miner.** If an external miner
+  appears during the crash backoff, Trommel restores stock, cancels the restart
+  and names the PID instead of spawning a second miner.
+- **A legacy state file without `miner_path` is never killed by name.** The
+  stale record is cleared with a warning. Stop, emergency-stop and startup
+  recovery only signal a PID whose `/proc/<pid>/exe` (or script argument) still
+  matches the recorded binary, and every signal re-checks the kernel start time,
+  so a recycled PID is left alone. An unreadable `/proc` is no longer treated as
+  “dead”, and an in-flight helper is re-proved against its lease before each
+  signal.
+- **The guard restore survives a SIGKILL during shutdown.** The daemon restores
+  stock first and disarms the guard second. The guard starts only from
+  `TROMMEL_GUARD_BIN` or the `trommel` sibling (never `$PATH`), is skipped under
+  systemd, and is reported as started only after its ready marker names this
+  daemon.
+- **Removing a miner version uses one config snapshot.** Plan, deletion and
+  `save()` describe the same record; a failed save is an error toast and never a
+  success.
+- **`verified` is no longer rewritten when the binary disappears.**
+  `normalize()` keeps the install-time fact; the verify report still says the
+  binary is missing.
+- **A v1 config without GPU fields does not acquire 300 W / 1620 / 810 tuning.**
+  Missing values stay auto and the old stock power limit is not carried.
+- **The Debian package no longer depends on GNOME.** `gnome-shell` is not
+  recommended, `libglib2.0-bin` is not required and the postinst does not
+  recompile GLib schemas.
+- **Metainfo links point at the repository** (`homepage`, `vcs-browser`) and its
+  issue tracker.
+- **Documentation screenshots show an owned mining session.** The demo daemon
+  starts the recorded miner itself on the shared stateful fake rig, so the
+  dashboard and README hero no longer show “external miner”.
+
 ## [0.8.0] - 2026-10-30
 
 ### Added

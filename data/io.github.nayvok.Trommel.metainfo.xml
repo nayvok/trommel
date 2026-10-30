@@ -90,6 +90,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.8.1" date="2026-10-30">
+      <description>
+        <p>Safety release for the miner lifecycle: a scheduled restart is cancelled when a manual miner appears during the backoff; a legacy state without the recorded binary path is never signalled by name; every SIGTERM/SIGKILL re-checks the kernel start time and the helper lease; the guard restores stock before it is disarmed and is reported only after its ready marker; removing a miner version uses one config snapshot and surfaces save errors; install-time verification facts and v1 profiles without GPU fields are no longer rewritten; the Debian package no longer pulls GNOME Shell or libglib2.0-bin.</p>
+        <p xml:lang="ru">Релиз безопасности жизненного цикла майнера: запланированный перезапуск отменяется, если во время backoff появился майнер, запущенный вручную; legacy-состояние без записанного пути бинарника никогда не сигналится по имени; каждый SIGTERM/SIGKILL повторно сверяет время старта процесса и lease хелпера; guard возвращает сток до дизарма и сообщает о готовности только после ready-маркера; удаление версии майнера использует один снимок конфига и показывает ошибки save(); факт проверки при установке и v1-профили без GPU-полей больше не переписываются; Debian-пакет больше не тянет GNOME Shell и libglib2.0-bin.</p>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-10-30">
       <description>
         <p>Release hardening: CI builds the CLI-only target, runs the GUI unit tests, checks the declared Rust 1.92 MSRV, validates the Debian package layout and install/upgrade/remove on every pull request, and runs both UI smoke suites headlessly under Xvfb. The release workflow verifies the tag and version, checks every asset and SHA-256 sum (including the installer), and publishes only after the UI and MSRV checks pass. No user-facing feature or schema change.</p>
