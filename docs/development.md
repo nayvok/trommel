@@ -233,34 +233,19 @@ is the unit of review and release:
 7. **Package and tag.** Bump the workspace version, run
    `./scripts/check-version.sh`, `./scripts/package-deb.sh`,
    `./scripts/test-deb.sh` and `./scripts/test-deb-install.sh`, then follow the
-   release checklist below. Tag `vX.Y.Z` only after the whole matrix is green.
+   [release checklist](packaging.md#release-checklist). Tag `vX.Y.Z` only after
+   the whole matrix is green.
 
 If the session runs out of time, stop after the last green sub-block, record the
 unfinished part in the roadmap and do not start the next block.
 
 ## Release checklist
 
-1. `cargo fmt --check`, `cargo clippy … -D warnings`, `cargo test --workspace`,
-   `cargo test -p trommel --features gui`, `cargo build -p trommel`.
-2. `./scripts/e2e.sh`, `./scripts/test-mcp.sh`, `./scripts/test-oc-helper.sh`,
-   `./scripts/check-polkit.sh`, `./scripts/check-no-secrets.sh`,
-   `./scripts/check-docs.sh`.
-3. `./scripts/ui-smoke.sh` and `./scripts/first-run-smoke.sh` (headless with
-   `xvfb-run -a ./scripts/ui-smoke.sh` is accepted; run them on a real desktop
-   session for a release); regenerate screenshots if the UI changed.
-4. Bump `version` in the workspace `Cargo.toml`; add a `CHANGELOG.md` entry and
-   a metainfo `<release>` entry, then run `./scripts/check-version.sh`.
-5. `./scripts/package-deb.sh`, `./scripts/test-deb.sh`,
-   `./scripts/test-deb-install.sh` (root in a disposable container), optional
-   Docker install on Ubuntu 26.04.
-6. `./scripts/release-bundle.sh` builds and verifies `dist/release`; commit,
-   tag the last commit with `vX.Y.Z`, and push the branch and the tag. The
-   release workflow re-runs the matrix (including the UI smokes and the MSRV),
-   verifies the tag/version and the bundle, and publishes the versioned and
-   stable `.deb` aliases, sidecars, `trommel-install.sh` and `SHA256SUMS`.
-7. Verify the published assets (`./scripts/verify-release-bundle.sh` on a
-   downloaded copy), the `releases/latest/download` URLs and `sha256sum -c
-   SHA256SUMS`; install once from a clean machine.
+The canonical checklist lives in [packaging.md](packaging.md#release-checklist):
+it covers the matrix, the package and bundle checks, the annotated tag and the
+post-publish verification. Run both UI smoke suites on a real desktop session
+for a release (headless Xvfb is the CI gate) and regenerate screenshots only if
+the UI changed. Tag `vX.Y.Z` only after the whole matrix is green.
 
 There is no apt repository and no PPA. Do not publish RPM/AppImage/Flatpak
 artifacts without a tested integration story ([packaging.md](packaging.md)).
