@@ -293,20 +293,30 @@ CLI help on purpose: it is an operator/automation command, not a normal Stop.
 
 ### Shutdown, lost session bus and guard
 
-On SIGTERM/SIGINT the daemon disarms the guard, calls
-`Supervisor::shutdown(&cfg)` (force restore, 20 s helper timeout) and exits.
+On SIGTERM/SIGINT the daemon calls `Supervisor::shutdown(&cfg)` (force restore,
+20 s helper timeout), disarms the guard and exits. Restore comes first and the
+guard stays armed during the shutdown window: if the daemon is SIGKILLed
+mid-restore, the guard runs the same idempotent emergency-stop and the OC flock
+serializes the two. Disarming first would leave a killed daemon with applied
+clocks and no one to put them back.
 `systemd` runs `ExecStopPost` afterwards, so a failed restore is retried outside
-the process; `KillMode=control-group` also removes the guard. The daemon selects
+the process; `KillMode=control-group` also removes the guard. Under systemd
+(`INVOCATION_ID` or `JOURNAL_STREAM` set) the daemon does not spawn a guard at
+all: `ExecStopPost` is the net. The daemon selects
 on `connection.closed()`: losing the session bus is a shutdown reason, not a
 reason to keep mining unattended.
 
 For manual runs the daemon spawns `trommel guard` in its own session (`setsid`).
-The guard watches the daemon PID **and** its `/proc` start time. If the daemon
-disappears without writing the matching `guard.disarm` token, the guard runs
-`emergency-stop --reason=guard` and exits. A graceful shutdown disarms the guard
-before the potentially long restore, so a normal stop cannot trigger a second
-restore. A new daemon terminates a stale guard left by the previous session
-after startup recovery.
+The binary is only `TROMMEL_GUARD_BIN` or the `trommel` sibling of
+`current_exe`; the old `$PATH` fallback could start an unrelated build. The
+guard writes `guard.pid` before it starts watching; the daemon waits up to two
+seconds for that ready marker and reports `guard started` only when the file
+names this daemon and the guard PID is alive. The guard watches the daemon PID
+**and** its `/proc` start time. If the daemon disappears without writing the
+matching `guard.disarm` token, the guard runs
+`emergency-stop --reason=guard` and exits. A graceful shutdown restores stock,
+then disarms, so a normal stop cannot trigger a second restore. A new daemon
+terminates a stale guard left by the previous session after startup recovery.
 
 ### OC serialization and helper lease
 

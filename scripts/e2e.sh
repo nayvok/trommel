@@ -1325,7 +1325,9 @@ step "The guard restores after a SIGKILLed daemon"
 kill -9 "$DAEMON_PID" 2>/dev/null || true
 sleep 1
 rm -f "$WORK/state/trommel/guard.pid"
-start_daemon env -u TROMMEL_NO_GUARD "$BIN/trommeld"
+# Unset the systemd markers too: a daemon started from a terminal must spawn
+# the guard, while e2e may itself run under a systemd-supervised session.
+start_daemon env -u TROMMEL_NO_GUARD -u INVOCATION_ID -u JOURNAL_STREAM "$BIN/trommeld"
 sleep 3
 "$BIN/trommel" start >/dev/null 2>&1
 sleep 2

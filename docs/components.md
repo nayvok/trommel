@@ -296,13 +296,17 @@ legacy-parse field; `miner_path` is additive with a serde default).
 
 - `spawn_guard()` — start `trommel guard --daemon-pid … --daemon-start …` via
   `setsid` (skipped with `TROMMEL_NO_GUARD`), terminate a stale guard from a
-  previous session first.
+  previous session first. Returns a `GuardOutcome`: the binary is only
+  `TROMMEL_GUARD_BIN` or the `trommel` sibling (never `$PATH`), systemd
+  supervision skips the spawn, and `Started` is reported only after the
+  `guard.pid` ready marker names this daemon and the guard PID is alive.
 - `run(daemon_pid, daemon_start)` — write `guard.pid`, poll the daemon's PID and
   `/proc` start time; a matching `guard.disarm` token exits cleanly, otherwise a
   disappeared daemon leads to `emergency::run(Reason::Guard)`.
 - `disarm_and_stop()` — write the token for this exact daemon, signal the guard
-  PID (start-time checked) and remove `guard.pid`. Called before the graceful
-  restore so a normal shutdown cannot race a second restore.
+  PID (start-time checked) and remove `guard.pid`. Called after the graceful
+  restore, so a crash inside the shutdown window still reaches the guard and the
+  restore stays idempotent.
 
 ### `status` — the status document
 

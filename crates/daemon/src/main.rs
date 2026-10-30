@@ -40,11 +40,24 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Independent supervisor for manual runs: it survives our SIGKILL and
-    // runs emergency-stop if we disappear without disarming it.
-    let guard_pid = trommel_core::guard::spawn_guard();
-    match guard_pid {
-        Some(pid) => log_line(&format!("guard started pid={pid}")),
-        None => log_line("guard not started (TROMMEL_NO_GUARD set or trommel not found)"),
+    // runs emergency-stop if we disappear without disarming it. A guard is
+    // only reported when its ready marker proves it is watching this daemon.
+    match trommel_core::guard::spawn_guard() {
+        trommel_core::guard::GuardOutcome::Started(pid) => {
+            log_line(&format!("guard started pid={pid}"))
+        }
+        trommel_core::guard::GuardOutcome::Disabled => {
+            log_line("guard not started (TROMMEL_NO_GUARD set)")
+        }
+        trommel_core::guard::GuardOutcome::Supervised => {
+            log_line("guard not started (systemd supervises the daemon)")
+        }
+        trommel_core::guard::GuardOutcome::Unavailable => {
+            log_line("guard warning: no usable trommel binary; a SIGKILL will not restore stock")
+        }
+        trommel_core::guard::GuardOutcome::NotReady => {
+            log_line("guard warning: the child did not become ready; not treated as started")
+        }
     }
 
     log_line("сервис запущен");
@@ -199,9 +212,11 @@ async fn main() -> anyhow::Result<()> {
     if bus_closed {
         log_line("сессионная шина закрыта; останавливаю майнер и возвращаю сток");
     }
-    // Disarm before the potentially long restore so a normal shutdown cannot
-    // race the guard into a second restore.
-    trommel_core::guard::disarm_and_stop();
+    // Restore first, disarm after. The guard stays armed during the shutdown
+    // window on purpose: if this process is SIGKILLed mid-restore, the guard
+    // runs the same idempotent emergency-stop and the OC flock serializes the
+    // two. Disarming first would leave a killed daemon with applied clocks and
+    // no one to put them back.
     match engine.shutdown().await {
         Ok(()) => log_line("shutdown: miner stopped and stock restore attempted"),
         Err(err) => {
@@ -215,6 +230,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+    trommel_core::guard::disarm_and_stop();
     log_line("сервис остановлен");
     Ok(())
 }
