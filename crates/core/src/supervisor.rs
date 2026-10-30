@@ -454,17 +454,35 @@ impl Supervisor {
 
         if let Some(mut child) = self.child.take() {
             let child_pid = child.id();
-            terminate(&mut child);
+            let binary = self.state.miner_path.clone();
+            terminate(&mut child, binary.as_deref().map(Path::new));
             let _ = child.wait();
             log_line(&format!("miner stopped pid={child_pid}"));
         } else if let Some(pid) = self.state.miner_pid {
-            if miner_is_ours(&self.state, pid) {
-                terminate_pid(pid);
-                log_line(&format!("orphan miner stopped pid={pid}"));
-            } else {
-                log_line(&format!(
-                    "state PID {pid} does not match the saved binary; not signalling it"
-                ));
+            match self
+                .state
+                .miner_path
+                .as_deref()
+                .filter(|path| !path.is_empty())
+            {
+                Some(path) if miner_is_ours(&self.state, pid) => {
+                    terminate_pid(pid, Path::new(path));
+                    log_line(&format!("orphan miner stopped pid={pid}"));
+                }
+                Some(_) => {
+                    log_line(&format!(
+                        "state PID {pid} does not match the saved binary; not signalling it"
+                    ));
+                }
+                // A legacy state has no path; a PID alone (or a matching
+                // miner name) is not proof of ownership, so it is not
+                // signalled. The state is cleared below and the user stops
+                // that process explicitly.
+                None => {
+                    log_line(&format!(
+                        "legacy state has no miner_path for PID {pid}; not signalling it"
+                    ));
+                }
             }
         }
 
@@ -630,29 +648,37 @@ impl Supervisor {
         if let Some(at) = self.restart_at {
             if Instant::now() >= at && self.child.is_none() {
                 self.restart_at = None;
-                let devices = self.device_indices.clone();
-                match self.spawn(cfg, devices.as_deref()) {
-                    Ok(()) => {
-                        self.schedule_verify();
-                        events.push(Event::Started(self.state.miner_pid.unwrap_or(0)));
-                        let _ = self.state.save();
-                    }
-                    Err(err) => {
-                        self.state.running = false;
-                        self.state.last_error = Some(format!(
-                            "{} {err}",
-                            tr(
-                                "Unable to restart miner:",
-                                "Не удалось перезапустить майнер:"
-                            )
-                        ));
-                        if let Err(reset) = restore_stock(cfg) {
-                            events.push(Event::Error(reset.to_string()));
+                // The backoff can last up to a minute. If the user started a
+                // miner by hand in that window, spawning ours now would leave
+                // two miners on one rig. The external process wins; it is
+                // never killed here.
+                if let Some(external_pid) = state::find_external_miner(cfg, None) {
+                    events.extend(self.cancel_restart_for_external(cfg, external_pid));
+                } else {
+                    let devices = self.device_indices.clone();
+                    match self.spawn(cfg, devices.as_deref()) {
+                        Ok(()) => {
+                            self.schedule_verify();
+                            events.push(Event::Started(self.state.miner_pid.unwrap_or(0)));
+                            let _ = self.state.save();
                         }
-                        let _ = self.state.save();
-                        events.push(Event::Error(
-                            self.state.last_error.clone().unwrap_or_default(),
-                        ));
+                        Err(err) => {
+                            self.state.running = false;
+                            self.state.last_error = Some(format!(
+                                "{} {err}",
+                                tr(
+                                    "Unable to restart miner:",
+                                    "Не удалось перезапустить майнер:"
+                                )
+                            ));
+                            if let Err(reset) = restore_stock(cfg) {
+                                events.push(Event::Error(reset.to_string()));
+                            }
+                            let _ = self.state.save();
+                            events.push(Event::Error(
+                                self.state.last_error.clone().unwrap_or_default(),
+                            ));
+                        }
                     }
                 }
             }
@@ -660,6 +686,43 @@ impl Supervisor {
 
         events.extend(self.check_applied_locks(cfg));
         events
+    }
+
+    /// Abort a scheduled restart because an external miner appeared during the
+    /// backoff.
+    ///
+    /// The stock snapshot is restored (the crash may have happened after the
+    /// OC apply), the state is cleared so the next tick can report the external
+    /// process, and an error names its PID. The external process is never
+    /// signalled: stopping it is the user's call.
+    fn cancel_restart_for_external(&mut self, cfg: &Config, external_pid: u32) -> Vec<Event> {
+        self.restart_at = None;
+        self.device_indices = None;
+        self.verify_at = None;
+        self.verify_until = None;
+        self.verified = true;
+        let restore = restore_stock(cfg);
+        let mut message = format!(
+            "{} {external_pid} — {}",
+            tr(
+                "An external miner is already running (PID",
+                "Внешний майнер уже работает (PID"
+            ),
+            tr(
+                "the automatic restart was cancelled; stop that process, then press Start",
+                "автоматический перезапуск отменён — остановите его и нажмите «Запустить»"
+            )
+        );
+        if let Err(err) = restore {
+            message = format!("{message}; {err}");
+        }
+        self.state = State::default();
+        self.state.last_error = Some(message.clone());
+        let _ = self.state.save();
+        log_line(&format!(
+            "restart cancelled: external miner pid={external_pid}; not spawning a second miner"
+        ));
+        vec![Event::Error(message)]
     }
 
     /// One-shot runtime check: a clock lock that the driver ignored must not
@@ -943,12 +1006,14 @@ fn restore_stock(cfg: &Config) -> anyhow::Result<()> {
     result
 }
 
-/// Is `pid` the miner recorded in `state`? The saved absolute path is
-/// authoritative; old state files without it fall back to the name heuristic.
+/// Is `pid` the miner recorded in `state`? Ownership is proven by the saved
+/// absolute path (`/proc/<pid>/exe` or the script argument in `cmdline`). A
+/// legacy state without a path can never prove ownership: PIDs are reused and
+/// a miner name is not an identity.
 fn miner_is_ours(state: &State, pid: u32) -> bool {
-    match state.miner_path.as_deref() {
+    match state.miner_path.as_deref().filter(|path| !path.is_empty()) {
         Some(path) => state::pid_matches_binary(pid, Path::new(path)),
-        None => state::pid_matches_miner(pid),
+        None => false,
     }
 }
 
@@ -957,8 +1022,21 @@ fn text_of(state: &State) -> String {
 }
 
 /// SIGTERM, then SIGKILL after a grace period.
-fn terminate(child: &mut Child) {
-    terminate_pid(child.id());
+///
+/// `binary` is the path recorded in the state when the child was spawned. It
+/// is re-checked before every signal; `None` only happens for a child handle
+/// we still own (the PID cannot be reused while unreaped), where a direct
+/// kill of that handle is safe.
+fn terminate(child: &mut Child, binary: Option<&Path>) {
+    match binary {
+        Some(path) => terminate_pid(child.id(), path),
+        None => {
+            let _ = Command::new("kill")
+                .arg("-TERM")
+                .arg(child.id().to_string())
+                .status();
+        }
+    }
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         match child.try_wait() {
@@ -970,26 +1048,48 @@ fn terminate(child: &mut Child) {
     let _ = child.kill();
 }
 
-/// Send SIGTERM (then SIGKILL) to a PID.
+/// Send SIGTERM (then SIGKILL) to a PID, but only while it is still the
+/// process `binary` describes.
 ///
-/// Liveness is checked with `/proc`, not with the miner-name heuristic: a
-/// custom binary must be stoppable by the same path-aware code that decided it
-/// belongs to us.
-pub fn terminate_pid(pid: u32) {
+/// The identity (kernel start time + `/proc/<pid>/exe`) is captured before the
+/// first signal and re-checked before the SIGKILL. A PID reused between the
+/// two is never killed: leaving a stale state entry is cheaper than stopping
+/// an unrelated process.
+pub fn terminate_pid(pid: u32, binary: &Path) {
+    let Some(identity) = state::ProcIdentity::capture(pid, binary) else {
+        return;
+    };
+    if !identity.still_matches() {
+        log_line(&format!(
+            "refusing to signal PID {pid}: it is not the recorded miner"
+        ));
+        return;
+    }
+    if state::pid_settled(pid) {
+        return;
+    }
     let _ = Command::new("kill")
         .arg("-TERM")
         .arg(pid.to_string())
         .status();
     for _ in 0..50 {
-        if !state::pid_alive(pid) {
+        if state::pid_settled(pid) {
+            return;
+        }
+        // Only the kernel start time is required here: a dying process may
+        // stop exposing `/proc/<pid>/exe` while its start time still proves
+        // that the PID was not recycled.
+        if !identity.same_process() {
             return;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let _ = Command::new("kill")
-        .arg("-KILL")
-        .arg(pid.to_string())
-        .status();
+    if identity.same_process() && !state::pid_settled(pid) {
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg(pid.to_string())
+            .status();
+    }
 }
 
 /// Append a line to the daemon log (journald captures stdout as well).
@@ -1092,5 +1192,67 @@ mod tests {
         // A real miner PID is not needed: the child/state check fires first.
         let cfg = Config::default();
         assert!(supervisor.start(&cfg).is_err());
+    }
+
+    #[test]
+    fn external_miner_cancels_a_scheduled_restart() {
+        let mut supervisor = Supervisor::new();
+        supervisor.state = State {
+            running: true,
+            miner_pid: Some(4_000_000),
+            started_at: Some(1),
+            restarts: 1,
+            ..Default::default()
+        };
+        supervisor.restart_at = Some(Instant::now());
+        let mut cfg = Config::default();
+        cfg.behavior.restore_stock_on_stop = false;
+
+        let events = supervisor.cancel_restart_for_external(&cfg, 4321);
+
+        assert!(supervisor.restart_at.is_none(), "restart must be cancelled");
+        assert!(!supervisor.state.running);
+        assert_eq!(supervisor.state.miner_pid, None);
+        let message = match events.as_slice() {
+            [Event::Error(message)] => message,
+            other => panic!("expected one Event::Error, got {other:?}"),
+        };
+        assert!(message.contains("4321"), "{message}");
+        assert!(
+            message.contains("Start") || message.contains("Запустить"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn terminate_pid_refuses_a_different_binary() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        // `sleep` is not the recorded miner: the identity check must refuse
+        // before any signal, even though the PID is alive.
+        terminate_pid(child.id(), Path::new("/usr/bin/not-our-miner"));
+        assert!(state::pid_alive(child.id()), "unrelated process was killed");
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn terminate_pid_matches_the_exe_path() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        // `spawn` returns before the child execs; wait for /proc/<pid>/exe to
+        // settle on the real binary before capturing its identity.
+        std::thread::sleep(Duration::from_millis(100));
+        let exe = std::fs::read_link(format!("/proc/{}/exe", child.id())).expect("exe link");
+        terminate_pid(child.id(), &exe);
+        assert!(
+            state::pid_settled(child.id()),
+            "the matching process was not stopped"
+        );
+        let _ = child.wait();
     }
 }

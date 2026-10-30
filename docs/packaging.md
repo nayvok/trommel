@@ -72,9 +72,11 @@ bash trommel-install.sh
 /usr/share/icons/hicolor/{scalable,symbolic}/apps/io.github.nayvok.Trommel*.svg
 ```
 
-Dependencies: GTK4, libadwaita, glib, `libglib2.0-bin`, pkexec/polkit, user
-D-Bus and systemd; NVIDIA and GNOME Shell are recommendations. The package is
-built and tested on Ubuntu 26.04.
+Dependencies: GTK4, libadwaita, glib, pkexec/polkit, user D-Bus and systemd;
+the NVIDIA driver is recommended. GNOME Shell is **not** required or
+recommended: Trommel is a plain GTK4/libadwaita application and its postinst
+does not compile schemas or touch GNOME extensions. The package is built and
+tested on Ubuntu 26.04.
 
 `scripts/test-deb.sh` asserts this layout (every path, the helper mode, the
 maintainer scripts and the polkit annotation) and rejects a package whose
@@ -84,11 +86,11 @@ run in CI.
 
 Maintainer scripts:
 
-- `postinst` recompiles the system schema cache (which drops a schema left by an
-  older package), refreshes the desktop/icon caches and writes
+- `postinst` refreshes the desktop/icon caches and writes
   `/etc/polkit-1/rules.d/50-trommel.rules` for `SUDO_USER`, so GPU tuning does
-  not prompt from the user service. The shipped `/usr/share` rule is only a
-  local fallback.
+  not prompt from the user service. It does not compile GLib schemas: Trommel
+  ships no `gschema`, so `libglib2.0-bin` is not a dependency. The shipped
+  `/usr/share` rule is only a local fallback.
 - `prerm` intentionally does not stop the miner.
 - `postrm` removes the generated per-user rule on remove/purge.
 

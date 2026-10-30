@@ -3234,7 +3234,11 @@ fn verify_miner_version(app: &Rc<App>, miner: &str, version: &str) {
 /// Remove an unused version only after an explicit confirmation; a version any
 /// preset still pins is refused with the list of presets.
 fn remove_miner_version_dialog(app: &Rc<App>, miner: &str, version: &str) {
-    let plan = versions::remove_plan(&app.config.borrow(), miner, version);
+    // Plan, delete and persist from the same snapshot. The draft (`config`) and
+    // the applied config can differ; mixing them produced a plan that did not
+    // describe the record actually deleted.
+    let snapshot = app.applied.borrow().clone();
+    let plan = versions::remove_plan(&snapshot, miner, version);
     let name = catalog::miner(miner)
         .map(|def| def.name.clone())
         .unwrap_or_else(|| miner.to_string());
@@ -3308,18 +3312,20 @@ fn remove_miner_version_dialog(app: &Rc<App>, miner: &str, version: &str) {
         if response != "remove" {
             return;
         }
-        let mut applied = app.applied.borrow().clone();
-        match versions::delete_install(
-            &mut applied,
+        // One snapshot for the check, the filesystem removal and the saved
+        // config. A failed `save()` is reported before any success toast and
+        // leaves both the GUI copies and the file untouched.
+        match versions::remove_and_persist(
+            &snapshot,
             &miner,
             &version,
             &trommel_core::download::miner_root(),
+            |cfg| cfg.save(),
         ) {
-            Ok(report) => {
-                let _ = applied.save();
-                *app.applied.borrow_mut() = applied.clone();
+            Ok((next, report)) => {
+                *app.applied.borrow_mut() = next.clone();
                 app.config.borrow_mut().remove_install(&miner, &version);
-                if let Ok(json) = serde_json::to_string(&applied) {
+                if let Ok(json) = serde_json::to_string(&next) {
                     let _ = app.tx.send(Cmd::Apply {
                         json,
                         mode: "live".into(),
@@ -3349,7 +3355,10 @@ fn remove_miner_version_dialog(app: &Rc<App>, miner: &str, version: &str) {
                 };
                 app.toast.add_toast(adw::Toast::new(&message));
             }
-            Err(err) => show_error_toast(&app, &err.to_string()),
+            Err(err) => {
+                show_error_toast(&app, &err.to_string());
+                refresh_miners(&app);
+            }
         }
     });
 }

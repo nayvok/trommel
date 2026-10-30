@@ -190,7 +190,11 @@ Start never mines with a silently unapplied power limit.
 ### Stop
 
 Terminate the child (or a PID after a daemon restart) only after confirming
-that `/proc/<pid>/exe`/`cmdline` matches `state.miner_path`. An external state
+that `/proc/<pid>/exe`/`cmdline` matches `state.miner_path`, and re-check the
+kernel start time immediately before each signal so a recycled PID is never
+killed. A legacy state without `miner_path` cannot prove ownership: its PID is
+not signalled at all, the stale record is dropped with a warning and the user
+stops that process explicitly. An external state
 (`state.external`) is left untouched, and the state entry is cleared without a
 restore because its tuning was never ours. If
 `behavior.restore_stock_on_stop` is set and a snapshot was applied, restore the
@@ -224,7 +228,10 @@ so. With `auto_restart` off the first crash stops and restores immediately.
 Every spawn resets `started_at`, so `uptime_s` is the uptime of the current
 process, not of the whole crash streak. Restart reuses the same config and does
 not re-capture the stock snapshot; the restart counter resets only on an
-explicit Start.
+explicit Start. Before the scheduled spawn, the supervisor rescans `/proc` for
+an external miner: if the user started one during the backoff, the restart is
+cancelled, the snapshot is restored and an `Error` names the PID instead of
+leaving two miners on the rig.
 
 ### Apply while mining
 
@@ -256,8 +263,11 @@ it spawns the miner. `State::miner_alive()` and `pid_matches_binary(pid, path)`
 compare `/proc/<pid>/exe` (and the interpreter argument for a `#!` script). A
 PID whose executable does not match the saved path is **not** signalled: PID
 reuse and custom binary names make the old “known miner name” check unsafe. Old
-state files without `miner_path` fall back to the legacy name heuristic for one
-migration window.
+state files without `miner_path` are never signalled by name either: the name
+heuristic only feeds liveness/external detection, so the stale record is
+cleared with a warning and the process is left to the user. `proc_liveness`
+keeps “gone” (the kernel returned `ENOENT`) apart from “unknown” (`/proc` could
+not be read): an unknown answer is treated as possibly alive, never as dead.
 
 ### Startup recovery and emergency-stop
 
@@ -268,7 +278,8 @@ systemd, the guard, startup recovery and manual runs:
 2. wait up to 10 s for an in-flight helper, then terminate helpers carrying the
    dead daemon's lease before touching the cards;
 3. stop only the miner recorded in state when its PID still matches
-   `miner_path`; an external miner is left alive and unclaimed;
+   `miner_path`; a legacy record without a path is cleared without a signal,
+   and an external miner is left alive and unclaimed;
 4. clear state only after the miner is gone; restore a current-boot snapshot
    with `applied = true` through `RestoreMode::Snapshot` with a 20 s helper
    timeout; clear the snapshot only after every card restored.
@@ -282,20 +293,30 @@ CLI help on purpose: it is an operator/automation command, not a normal Stop.
 
 ### Shutdown, lost session bus and guard
 
-On SIGTERM/SIGINT the daemon disarms the guard, calls
-`Supervisor::shutdown(&cfg)` (force restore, 20 s helper timeout) and exits.
+On SIGTERM/SIGINT the daemon calls `Supervisor::shutdown(&cfg)` (force restore,
+20 s helper timeout), disarms the guard and exits. Restore comes first and the
+guard stays armed during the shutdown window: if the daemon is SIGKILLed
+mid-restore, the guard runs the same idempotent emergency-stop and the OC flock
+serializes the two. Disarming first would leave a killed daemon with applied
+clocks and no one to put them back.
 `systemd` runs `ExecStopPost` afterwards, so a failed restore is retried outside
-the process; `KillMode=control-group` also removes the guard. The daemon selects
+the process; `KillMode=control-group` also removes the guard. Under systemd
+(`INVOCATION_ID` or `JOURNAL_STREAM` set) the daemon does not spawn a guard at
+all: `ExecStopPost` is the net. The daemon selects
 on `connection.closed()`: losing the session bus is a shutdown reason, not a
 reason to keep mining unattended.
 
 For manual runs the daemon spawns `trommel guard` in its own session (`setsid`).
-The guard watches the daemon PID **and** its `/proc` start time. If the daemon
-disappears without writing the matching `guard.disarm` token, the guard runs
-`emergency-stop --reason=guard` and exits. A graceful shutdown disarms the guard
-before the potentially long restore, so a normal stop cannot trigger a second
-restore. A new daemon terminates a stale guard left by the previous session
-after startup recovery.
+The binary is only `TROMMEL_GUARD_BIN` or the `trommel` sibling of
+`current_exe`; the old `$PATH` fallback could start an unrelated build. The
+guard writes `guard.pid` before it starts watching; the daemon waits up to two
+seconds for that ready marker and reports `guard started` only when the file
+names this daemon and the guard PID is alive. The guard watches the daemon PID
+**and** its `/proc` start time. If the daemon disappears without writing the
+matching `guard.disarm` token, the guard runs
+`emergency-stop --reason=guard` and exits. A graceful shutdown restores stock,
+then disarms, so a normal stop cannot trigger a second restore. A new daemon
+terminates a stale guard left by the previous session after startup recovery.
 
 ### OC serialization and helper lease
 

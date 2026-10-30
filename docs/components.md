@@ -57,11 +57,13 @@ Key functions:
   if needed, and returns an error for unparsable JSON rather than silently
   discarding it.
 - `Config::normalize()` — repairs a dangling `active_preset`, a missing default
-  GPU profile or empty preset map, a missing install path (`verified = false`)
-  and stale fee overrides for miners that do not allow them. For a v2 file it
-  also infers `custom` on every per-GPU entry: an entry with no power/clock
-  values inherits the default; an entry with values is custom only when they
-  differ from the default.
+  GPU profile or empty preset map and stale fee overrides for miners that do not
+  allow them. It never rewrites `MinerInstall::verified`: that is the
+  install-time digest fact, while a missing binary is reported by
+  `versions::verify` and `Config::warnings`. For a v2 file it also infers
+  `custom` on every per-GPU entry: an entry with no power/clock values inherits
+  the default; an entry with values is custom only when they differ from the
+  default.
 - `Config::preset()` / `preset_mut()` / `ensure_preset()` — active preset access;
   `ensure_preset` clones the default when the map is empty.
 - `Config::gpu_profile()` / `gpu_profile_mut()` — active profile access.
@@ -82,7 +84,10 @@ Key functions:
 - `Config::redacted()` — replaces every preset wallet with `<redacted>`; used by
   `diagnose` and the MCP tools, never by the daemon's own state.
 - `Config::from_v1(ConfigV1)` — one-time migration of the former flat config;
-  builds a `pearl-imported` preset and an `imported` profile.
+  builds a `pearl-imported` preset and an `imported` profile. Missing v1 GPU
+  fields stay `None` (no invented power limit or clock lock); an explicit
+  `stock_power_limit` is not carried, because stock is captured per boot before
+  tuning, never restored from an old config.
 
 ### `catalog` — TOML catalogue and install status
 
@@ -234,20 +239,23 @@ arguments — no shell.
   records the absolute `state.miner_path`. The chosen device list is kept for
   crash restarts. A profile with no tuning creates no snapshot and calls no
   helper.
-- `stop(cfg) / shutdown(cfg)` — terminate only our child/PID (path-checked),
-  skip and clear external state, restore the applied snapshot (unless disabled),
-  clear state; propagates restore errors. `shutdown` forces the restore with a
-  20 s helper timeout. Both hold the OC lock.
+- `stop(cfg) / shutdown(cfg)` — terminate only our child/PID (path-checked and
+  start-time re-checked; a legacy state without a path is never signalled by
+  name), skip and clear external state, restore the applied snapshot (unless
+  disabled), clear state; propagates restore errors. `shutdown` forces the
+  restore with a 20 s helper timeout. Both hold the OC lock.
 - `owns_miner()` — `running && !external` and a live child or path-matching PID;
   the benchmark uses it before stopping anything.
 - `tick(cfg) -> Vec<Event>` — one-second supervisor step: reap, bounded restart
-  with backoff (with the same device list as the session), detect adoption
-  loss, emit events, and run the one-shot clock check after the GPU reaches
-  load.
+  with backoff (with the same device list as the session), rescans for an
+  external miner before the delayed spawn and cancels the restart instead of
+  spawning a second one, detect adoption loss, emit events, and run the one-shot
+  clock check after the GPU reaches load.
 - `handle_unexpected_exit` — the bounded restart policy: up to five consecutive
   restarts (2/4/8/… s, cap 60), then stop + restore + error; `started_at` resets
   on every spawn.
-- `terminate_pid`, `log_line` — process helper and daemon log writer.
+- `terminate_pid(pid, binary)`, `log_line` — signal helper (captures the kernel
+  start time and re-checks it before SIGTERM/SIGKILL) and daemon log writer.
 
 ### `state` — runtime state file
 
@@ -258,12 +266,15 @@ legacy-parse field; `miner_path` is additive with a serde default).
 - `load()`, `save()`, `clear_file()`, `uptime_s()`, `miner_alive()`.
 - `normalize()` — a running flag without a matching process becomes stopped,
   including the phantom `external` state that used to make Start a no-op.
-- `proc_start_time(pid)` / `pid_alive(pid)` — `/proc/<pid>/stat` field 22 and a
-  liveness check; the start time catches PID reuse.
+- `proc_start_time(pid)` / `pid_alive(pid)` / `pid_maybe_alive(pid)` /
+  `pid_settled(pid)` — `/proc/<pid>/stat` field 22 and liveness classifiers.
+  `proc_liveness` keeps `Gone` (`ENOENT`) apart from `Unknown` (unreadable
+  `/proc`); teardown treats `Unknown` as possibly alive. The start time catches
+  PID reuse, and `ProcIdentity::still_matches` re-checks it before every signal.
 - `pid_matches_binary(pid, path)` — `/proc/<pid>/exe` plus the interpreter
   argument for `#!` scripts. A mismatch is never treated as ours.
-- `pid_matches_miner(pid)` — legacy name heuristic used only for old state files
-  without `miner_path`.
+- `pid_matches_miner(pid)` — legacy name heuristic used only for liveness and
+  external detection; it is never an ownership proof.
 - `find_external_miner(cfg, exclude_pid)` — `/proc` scan using the catalogue
   names plus every installed miner's directory/binary basename; skips our own
   and `exclude_pid`. `TROMMEL_NO_EXTERNAL_SCAN=1` disables it for test isolation.
@@ -273,10 +284,11 @@ legacy-parse field; `miner_path` is additive with a serde default).
 - `Reason::{ServiceStop, Guard, Startup, Manual}` with `parse()`/`as_str()`.
 - `run(reason)` — take the OC lock, drop a stale-boot snapshot, wait up to 10 s
   for a helper lease and terminate it if needed, stop **our** miner only
-  (path-checked; external state is left alone), clear state after the stop and
-  restore a current-boot applied snapshot with a 20 s timeout. Restore failure
-  keeps the snapshot + `last_error` and returns an error. `Outcome` records the
-  stopped PID, restored card count and whether an external miner was skipped.
+  (path-checked; a legacy state without a path and external state are left
+  alone), clear state after the stop and restore a current-boot applied
+  snapshot with a 20 s timeout. Restore failure keeps the snapshot +
+  `last_error` and returns an error. `Outcome` records the stopped PID, restored
+  card count and whether an external miner was skipped.
 - `startup_recovery()` — `run(Reason::Startup)`; called by `trommeld` before it
   owns the bus name. It never resumes mining.
 
@@ -284,13 +296,17 @@ legacy-parse field; `miner_path` is additive with a serde default).
 
 - `spawn_guard()` — start `trommel guard --daemon-pid … --daemon-start …` via
   `setsid` (skipped with `TROMMEL_NO_GUARD`), terminate a stale guard from a
-  previous session first.
+  previous session first. Returns a `GuardOutcome`: the binary is only
+  `TROMMEL_GUARD_BIN` or the `trommel` sibling (never `$PATH`), systemd
+  supervision skips the spawn, and `Started` is reported only after the
+  `guard.pid` ready marker names this daemon and the guard PID is alive.
 - `run(daemon_pid, daemon_start)` — write `guard.pid`, poll the daemon's PID and
   `/proc` start time; a matching `guard.disarm` token exits cleanly, otherwise a
   disappeared daemon leads to `emergency::run(Reason::Guard)`.
 - `disarm_and_stop()` — write the token for this exact daemon, signal the guard
-  PID (start-time checked) and remove `guard.pid`. Called before the graceful
-  restore so a normal shutdown cannot race a second restore.
+  PID (start-time checked) and remove `guard.pid`. Called after the graceful
+  restore, so a crash inside the shutdown window still reaches the guard and the
+  restore stays idempotent.
 
 ### `status` — the status document
 
@@ -418,7 +434,10 @@ preset except through the two explicit functions at the end.
 - `remove_plan(cfg, miner, version)` / `remove_plan_in(..., root)` — `allowed`,
   `used_by`, `delete_dir` (only managed-store directories). `delete_install()`
   refuses a used version, validates path components, deletes only a directory
-  the record owns and keeps a binary outside the store.
+  the record owns and keeps a binary outside the store. `remove_and_persist()`
+  runs the removal on one config snapshot and calls the caller's `save`; the
+  updated config is returned only after the save succeeds, so the GUI never
+  shows a success toast for a record that is still on disk.
 - `pin_preset(cfg, preset_id, version)` — moves exactly one preset, requires an
   installed executable and returns the change (`None` when already pinned).
   `pin_presets(cfg, ids, miner, version)` does the same for an explicit list and

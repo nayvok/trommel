@@ -135,12 +135,15 @@ Runtime/test variables used outside the GUI:
 ./scripts/screenshots.sh
 ```
 
-Builds debug binaries, creates a fake two-GPU rig with a running fake miner,
-starts a private daemon and renders every surface into `docs/images/`. The
-script uses the hooks above, so a UI change should be visible there without
-manual work. Regenerate screenshots whenever the user guide references a changed
-surface; never commit screenshots from another machine or a different font
-stack.
+Builds debug binaries, creates a stateful fake two-GPU rig, starts a private
+daemon and lets **the daemon start the recorded demo miner itself** (`trommel
+start`), so the captures show an owned mining session rather than an adopted
+external process; the fake OC helper is the same one the e2e harness uses and
+the dashboard measurements are animated from the fake rig state. Every surface
+is rendered into `docs/images/`. The script uses the hooks above, so a UI change
+should be visible there without manual work. Regenerate screenshots whenever the
+user guide references a changed surface; never commit screenshots from another
+machine or a different font stack.
 
 ## Debugging
 

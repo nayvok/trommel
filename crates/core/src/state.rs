@@ -65,9 +65,12 @@ impl State {
         let Some(pid) = self.miner_pid else {
             return false;
         };
-        match self.miner_path.as_deref() {
+        match self.miner_path.as_deref().filter(|path| !path.is_empty()) {
             Some(path) => pid_matches_binary(pid, Path::new(path)),
-            // Old state files have no path; keep the conservative name check.
+            // Old/external state files have no path. The name check is only a
+            // liveness hint for the UI and for noticing that an adopted
+            // process is gone; it is never proof of ownership and must never
+            // decide whether a PID may be signalled.
             None => pid_matches_miner(pid),
         }
     }
@@ -129,23 +132,98 @@ pub fn proc_start_time(pid: u32) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
-/// `true` while the PID is a live process.
+/// What `/proc/<pid>` reports right now.
 ///
-/// A zombie still has a `/proc/<pid>` entry but cannot run or be signalled; in
-/// a container whose PID 1 does not reap orphans, a killed miner stays a
-/// zombie. Treating it as alive used to make emergency-stop keep the state and
-/// fail forever.
+/// `Unknown` is deliberately distinct from `Gone`: an unreadable proc entry
+/// (`EACCES`, a kernel race while the process exits) must not be reported as
+/// "the process is dead". A Stop that trusted that would clear the state while
+/// the miner still runs, and the next restart could then spawn a second one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcLiveness {
+    Alive,
+    Zombie,
+    Gone,
+    Unknown,
+}
+
+/// Classify a PID without inventing an answer when `/proc` cannot be read.
+pub fn proc_liveness(pid: u32) -> ProcLiveness {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(text) => match text.rsplit_once(')').map(|(_, rest)| rest) {
+            Some(rest) => match rest.split_whitespace().next() {
+                // A zombie still has a `/proc/<pid>` entry but cannot run or be
+                // signalled; in a container whose PID 1 does not reap orphans,
+                // a killed miner stays a zombie. Treating it as alive used to
+                // make emergency-stop keep the state and fail forever.
+                Some("Z") | Some("X") | Some("x") => ProcLiveness::Zombie,
+                Some(_) => ProcLiveness::Alive,
+                None => ProcLiveness::Unknown,
+            },
+            None => ProcLiveness::Unknown,
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => ProcLiveness::Gone,
+        Err(_) => ProcLiveness::Unknown,
+    }
+}
+
+/// `true` only while the PID is a live process (not a zombie, not unknown).
 pub fn pid_alive(pid: u32) -> bool {
-    let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    let Some(rest) = text.rsplit_once(')').map(|(_, rest)| rest) else {
-        return false;
-    };
-    match rest.split_whitespace().next() {
-        Some("Z") | Some("X") | Some("x") => false,
-        Some(_) => true,
-        None => false,
+    proc_liveness(pid) == ProcLiveness::Alive
+}
+
+/// Conservative teardown liveness: `true` when the process may still run.
+///
+/// `Unknown` counts as alive so a caller that cannot read `/proc` keeps the
+/// state and retries instead of pretending the miner is gone.
+pub fn pid_maybe_alive(pid: u32) -> bool {
+    matches!(
+        proc_liveness(pid),
+        ProcLiveness::Alive | ProcLiveness::Unknown
+    )
+}
+
+/// `true` when the kernel positively reports the PID as gone or a zombie.
+pub fn pid_settled(pid: u32) -> bool {
+    matches!(
+        proc_liveness(pid),
+        ProcLiveness::Gone | ProcLiveness::Zombie
+    )
+}
+
+/// A process identity captured at one point in time.
+///
+/// Re-checking `start` before every signal closes the reuse window between the
+/// decision to stop and the actual `SIGKILL`: a PID recycled for an unrelated
+/// process no longer matches the recorded kernel start time.
+#[derive(Debug, Clone)]
+pub struct ProcIdentity {
+    pub pid: u32,
+    pub start: u64,
+    pub binary: PathBuf,
+}
+
+impl ProcIdentity {
+    /// Capture the identity, or `None` when the PID is already gone.
+    pub fn capture(pid: u32, binary: &Path) -> Option<Self> {
+        Some(Self {
+            pid,
+            start: proc_start_time(pid)?,
+            binary: binary.to_path_buf(),
+        })
+    }
+
+    /// `true` while the kernel start time is unchanged: the PID has not been
+    /// recycled. This is the reuse-proof part of the identity and stays valid
+    /// while a dying process no longer exposes `/proc/<pid>/exe`.
+    pub fn same_process(&self) -> bool {
+        proc_start_time(self.pid) == Some(self.start)
+    }
+
+    /// `true` while the same process (same kernel start time and binary) still
+    /// answers. Used before the first signal: a missing or mismatching binary
+    /// never matches, ownership must be proven.
+    pub fn still_matches(&self) -> bool {
+        self.same_process() && pid_matches_binary(self.pid, &self.binary)
     }
 }
 
@@ -377,7 +455,40 @@ mod tests {
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(!pid_alive(child.id()), "an unreaped child is a zombie");
+        assert_eq!(proc_liveness(child.id()), ProcLiveness::Zombie);
+        assert!(pid_settled(child.id()));
+        // A zombie is settled for teardown, but it is not "maybe alive".
+        assert!(!pid_maybe_alive(child.id()));
         let _ = child.wait();
+    }
+
+    #[test]
+    fn a_missing_pid_is_gone_not_unknown() {
+        assert_eq!(proc_liveness(4_000_000), ProcLiveness::Gone);
+        assert!(pid_settled(4_000_000));
+        assert!(!pid_maybe_alive(4_000_000));
+    }
+
+    #[test]
+    fn identity_does_not_survive_a_reused_pid() {
+        let exe = std::fs::read_link("/proc/self/exe").unwrap();
+        let start = proc_start_time(std::process::id()).unwrap();
+        let identity = ProcIdentity::capture(std::process::id(), &exe).unwrap();
+        assert!(identity.still_matches());
+        // A different kernel start time is what a recycled PID looks like: the
+        // binary path is not enough on its own.
+        let stale = ProcIdentity {
+            pid: identity.pid,
+            start: start + 1,
+            binary: exe.clone(),
+        };
+        assert!(!stale.still_matches());
+        let wrong_binary = ProcIdentity {
+            pid: identity.pid,
+            start,
+            binary: PathBuf::from("/usr/bin/not-our-binary"),
+        };
+        assert!(!wrong_binary.still_matches());
     }
 
     #[test]

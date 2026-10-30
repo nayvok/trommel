@@ -54,8 +54,8 @@ Section: utils
 Priority: optional
 Architecture: $ARCH
 Maintainer: nayvok <yanyushkov@gmail.com>
-Depends: libgtk-4-1, libadwaita-1-0, libglib2.0-0t64, libglib2.0-bin, pkexec | policykit-1, dbus-user-session, systemd
-Recommends: nvidia-driver | nvidia-utils, gnome-shell
+Depends: libgtk-4-1, libadwaita-1-0, libglib2.0-0t64, pkexec | policykit-1, dbus-user-session, systemd
+Recommends: nvidia-driver | nvidia-utils
 Description: NVIDIA mining rig manager with presets and miner catalogue
  Trommel is a GTK4/libadwaita control room for NVIDIA mining rigs. It shows
  live hashrate, temperature and power for every card, keeps reusable presets

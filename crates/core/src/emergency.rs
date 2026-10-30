@@ -126,18 +126,32 @@ pub fn run(reason: Reason) -> anyhow::Result<Outcome> {
     let mut miner_still_alive = false;
     if state.running && !state.external {
         if let Some(pid) = state.miner_pid {
-            if miner_is_ours(&state, pid) {
-                terminate_pid(pid);
-                if state::pid_alive(pid) {
-                    miner_still_alive = true;
-                    errors.push(format!("miner pid {pid} did not terminate"));
-                } else {
-                    outcome.stopped_pid = Some(pid);
+            match state.miner_path.as_deref().filter(|path| !path.is_empty()) {
+                Some(path) if miner_is_ours(&state, pid) => {
+                    terminate_pid(pid, Path::new(path));
+                    // `pid_maybe_alive` treats an unreadable `/proc` as
+                    // "still there": clearing the state on a read race would
+                    // forget a miner that is still running.
+                    if state::pid_maybe_alive(pid) {
+                        miner_still_alive = true;
+                        errors.push(format!("miner pid {pid} did not terminate"));
+                    } else {
+                        outcome.stopped_pid = Some(pid);
+                    }
                 }
-            } else {
-                log_line(&format!(
-                    "emergency-stop: state PID {pid} does not match the saved binary; not signalling it"
-                ));
+                Some(_) => {
+                    log_line(&format!(
+                        "emergency-stop: state PID {pid} does not match the saved binary; not signalling it"
+                    ));
+                }
+                // A legacy state without `miner_path` cannot prove that the
+                // PID is ours. Never signal by name: drop the stale record
+                // with a warning instead of killing a user's process.
+                None => {
+                    log_line(&format!(
+                        "emergency-stop: legacy state has no miner_path for PID {pid}; not signalling it (ownership is unproven)"
+                    ));
+                }
             }
         }
     }
@@ -169,15 +183,22 @@ pub fn run(reason: Reason) -> anyhow::Result<Outcome> {
 }
 
 fn miner_is_ours(state: &State, pid: u32) -> bool {
-    match state.miner_path.as_deref() {
+    match state.miner_path.as_deref().filter(|path| !path.is_empty()) {
         Some(path) => state::pid_matches_binary(pid, Path::new(path)),
-        None => state::pid_matches_miner(pid),
+        // No path means no proof. See `State::miner_alive`: the name
+        // heuristic is a display hint, never an ownership proof.
+        None => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Both tests here write the single test state file, so they must not
+    /// overlap; the production path is exercised end-to-end by `e2e.sh`.
+    static STATE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn reasons_parse() {
@@ -203,6 +224,7 @@ mod tests {
 
     #[test]
     fn emergency_stop_on_empty_state_is_idempotent() {
+        let _guard = STATE_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         // The unit-test XDG root is isolated by `paths`; no daemon, no state.
         State::clear_file();
         oc::clear_snapshot();
@@ -210,5 +232,50 @@ mod tests {
         assert!(first.is_ok(), "{first:?}");
         let second = run(Reason::Manual);
         assert!(second.is_ok(), "{second:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_state_without_path_is_never_signalled_by_name() {
+        use std::io::Write as _;
+        let _guard = STATE_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let root =
+            std::env::temp_dir().join(format!("trommel-emergency-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("wildrig-legacy.sh");
+        let mut file = std::fs::File::create(&script).unwrap();
+        writeln!(file, "#!/bin/sh\nsleep 30").unwrap();
+        drop(file);
+        let mut child = std::process::Command::new("sh")
+            .arg(&script)
+            .arg("--algo")
+            .arg("pearlhash")
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        // The process looks exactly like a known miner by name, but the state
+        // has no path: ownership is unproven, so no SIGTERM may be sent.
+        let legacy = State {
+            running: true,
+            miner_pid: Some(child.id()),
+            miner_path: None,
+            external: false,
+            ..Default::default()
+        };
+        legacy.save().unwrap();
+        let outcome = run(Reason::Startup).expect("emergency-stop");
+        assert!(
+            state::pid_alive(child.id()),
+            "a legacy state killed a process by name"
+        );
+        assert_eq!(outcome.stopped_pid, None);
+        assert!(
+            !crate::paths::state_path().exists(),
+            "the stale legacy state must be cleared"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

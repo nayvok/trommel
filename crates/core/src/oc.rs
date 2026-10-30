@@ -242,22 +242,40 @@ fn pid_has_lease(pid: u32, daemon_pid: u32, daemon_start: u64) -> bool {
     lease_pid == Some(daemon_pid) && lease_start == Some(daemon_start)
 }
 
-fn terminate_helper_pid(pid: u32) {
+/// Terminate one helper, re-proving its lease before **each** signal.
+///
+/// The victim was selected by `pid_has_lease`, but a PID can be recycled
+/// between the scan and the kill. The captured start time plus the lease
+/// command line must still match before SIGTERM and again before SIGKILL.
+fn terminate_helper_pid(pid: u32, start: u64, daemon_pid: u32, daemon_start: u64) {
+    let still_the_helper = |pid: u32| {
+        crate::state::proc_start_time(pid) == Some(start)
+            && pid_has_lease(pid, daemon_pid, daemon_start)
+    };
+    if !still_the_helper(pid) {
+        return;
+    }
     let _ = Command::new("kill")
         .arg("-TERM")
         .arg(pid.to_string())
         .status();
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        if crate::state::proc_start_time(pid).is_none() {
+        if crate::state::pid_settled(pid) {
+            return;
+        }
+        if !still_the_helper(pid) {
+            // Gone or recycled: the second signal must not follow the PID.
             return;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let _ = Command::new("kill")
-        .arg("-KILL")
-        .arg(pid.to_string())
-        .status();
+    if still_the_helper(pid) && !crate::state::pid_settled(pid) {
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg(pid.to_string())
+            .status();
+    }
 }
 
 /// Terminate a helper that outlived its daemon. Only processes carrying the
@@ -267,26 +285,35 @@ pub fn kill_lease_processes() -> usize {
     let Some(lease) = load_lease() else {
         return 0;
     };
-    let mut victims: Vec<u32> = Vec::new();
+    // Capture the identity of every victim before the first signal; a lease
+    // file alone is not enough after a PID reuse.
+    let mut victims: Vec<(u32, u64)> = Vec::new();
+    let mut push = |pid: u32| {
+        if let Some(start) = crate::state::proc_start_time(pid) {
+            if !victims.iter().any(|(known, _)| *known == pid) {
+                victims.push((pid, start));
+            }
+        }
+    };
     if lease_process_alive(&lease) {
-        victims.push(lease.helper_pid);
+        push(lease.helper_pid);
     }
     if let Ok(entries) = std::fs::read_dir("/proc") {
         for entry in entries.flatten() {
             let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
                 continue;
             };
-            if pid == std::process::id() || victims.contains(&pid) {
+            if pid == std::process::id() {
                 continue;
             }
             if pid_has_lease(pid, lease.daemon_pid, lease.daemon_start) {
-                victims.push(pid);
+                push(pid);
             }
         }
     }
     let count = victims.len();
-    for pid in victims {
-        terminate_helper_pid(pid);
+    for (pid, start) in victims {
+        terminate_helper_pid(pid, start, lease.daemon_pid, lease.daemon_start);
     }
     clear_lease();
     count
