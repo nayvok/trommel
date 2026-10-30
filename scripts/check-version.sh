@@ -1,12 +1,22 @@
 #!/bin/bash
 # Verify that the workspace version is consistent across the release files and,
-# when a tag is supplied (or GITHUB_REF_NAME is set), that the tag names it.
+# when a tag is supplied (or the build runs from a tag ref), that the annotated
+# tag names it and points at HEAD.
 #
 # Usage: ./scripts/check-version.sh [vX.Y.Z]
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-TAG="${1:-${GITHUB_REF_NAME:-}}"
+TAG="${1:-}"
+# GITHUB_REF_NAME is the branch name on a push and "123/merge" on a pull
+# request; only a tag build may be checked against a tag.
+if [ -z "$TAG" ] && [ -n "${GITHUB_REF:-}" ]; then
+    case "$GITHUB_REF" in
+        refs/tags/*)
+            TAG="${GITHUB_REF_NAME:?GITHUB_REF_NAME is required on a tag build}"
+            ;;
+    esac
+fi
 VERSION="$(cargo metadata --no-deps --format-version 1 --locked | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
 FAILS=0
 fail() { echo "error: $*" >&2; FAILS=$((FAILS + 1)); }
@@ -52,6 +62,10 @@ PY
 if [ -n "$TAG" ]; then
     [ "$TAG" = "v$VERSION" ] || fail "tag '$TAG' does not name v$VERSION"
     if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+        # A lightweight tag has no release notes and no tagger; the release
+        # checklist requires an annotated tag.
+        [ "$(git cat-file -t "refs/tags/$TAG")" = "tag" ] \
+            || fail "tag $TAG is not annotated (use git tag -a)"
         [ "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)" ] \
             || fail "tag $TAG is not on the current HEAD"
     else

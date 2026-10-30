@@ -128,17 +128,20 @@ refuses to remove the helper while a miner is still running.
 
 One version for the whole workspace (`Cargo.toml` `[workspace.package]
 version`). `./scripts/check-version.sh [vX.Y.Z]` checks it against
-`Cargo.lock`, `CHANGELOG.md`, the metainfo `<release>` and, when given, the tag
-and `HEAD`; the release workflow runs it before building. Also update the
-`CHANGELOG.md` and metainfo entries. The full checklist is below.
+`Cargo.lock`, `CHANGELOG.md`, the metainfo `<release>` and, when a tag is given
+(or `GITHUB_REF` is a tag ref), that the tag is annotated and points at `HEAD`.
+CI runs it on every push and pull request; the release workflow runs it before
+building. Also update the `CHANGELOG.md` and metainfo entries. The full checklist
+is below.
 
 ## Release checklist
 
 Run from the repository root with a clean working tree.
 
 1. **Version.** Bump `version` in `Cargo.toml`; add a dated `CHANGELOG.md`
-   entry and a metainfo `<release>` entry. Build once so `Cargo.lock` picks up
-   the workspace version, then `./scripts/check-version.sh` must pass.
+   entry and a metainfo `<release>` entry; bump `Version:` in the RPM template
+   (`packaging/rpm/trommel.spec.in`). Build once so `Cargo.lock` picks up the
+   workspace version, then `./scripts/check-version.sh` must pass.
 2. **Matrix.** `cargo fmt --all -- --check`, `cargo clippy --workspace
    --all-targets --features trommel/gui -- -D warnings`, `cargo test
    --workspace`, `cargo test -p trommel --features gui`, `cargo build -p
@@ -149,6 +152,8 @@ Run from the repository root with a clean working tree.
    `./scripts/check-no-secrets.sh`, `./scripts/check-polkit.sh`,
    `desktop-file-validate data/io.github.nayvok.Trommel.desktop` and
    `appstreamcli validate --explain data/io.github.nayvok.Trommel.metainfo.xml`.
+   Run the UI smoke suites on a real desktop session for a release; the headless
+   Xvfb job is the automated gate. Regenerate screenshots only if the UI changed.
 3. **Package.** `./scripts/package-deb.sh`, `./scripts/test-deb.sh` and
    `./scripts/test-deb-install.sh` (root in a disposable container).
 4. **Bundle.** `./scripts/release-bundle.sh` builds `dist/release` and verifies
