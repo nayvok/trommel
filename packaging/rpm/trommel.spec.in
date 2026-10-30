@@ -2,7 +2,7 @@
 # Fedora before publishing. Keep the version in sync with
 # Cargo.toml [workspace.package].
 Name:           trommel
-Version:        0.4.3
+Version:        0.8.2
 Release:        1%{?dist}
 Summary:        NVIDIA mining rig manager with presets and miner catalogue
 License:        LicenseRef-proprietary
@@ -40,5 +40,8 @@ install -Dm644 data/io.github.nayvok.Trommel.metainfo.xml %{buildroot}%{_datadir
 %{_datadir}/metainfo/io.github.nayvok.Trommel.metainfo.xml
 
 %changelog
+* Fri Oct 30 2026 nayvok <yanyushkov@gmail.com> - 0.8.2-1
+- Template refreshed for 0.8.2; still not built for Fedora.
+
 * Wed Oct 28 2026 nayvok <yanyushkov@gmail.com> - 0.2.0-1
 - Initial template.
