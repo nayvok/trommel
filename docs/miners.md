@@ -24,10 +24,10 @@ supported_algos = ["pearlhash", "kawpow", "nexapow"]
 fee_pct = 0.0
 fee_configurable = false
 fee_flag = ""
-per_gpu_stats = false
+per_gpu_stats = true
 per_gpu_devices = true
 device_flag = "--gpu-list"
-driver = "generic"
+driver = "wildrig"
 api_default_port = 4028
 api_port_flag = "--api-port"
 api_worker_flag = "--api-worker-id"
@@ -50,10 +50,10 @@ pct = 0.0
 | `fees` | Per-algorithm `{ algo, pct, configurable, flag }` table |
 | `fee_configurable` | Only `true` when the miner really accepts a fee flag |
 | `fee_flag` | Flag used when a fee override is applied (e.g. `--fee`) |
-| `per_gpu_stats` | The miner reports per-GPU statistics; parsed, not used for device selection |
+| `per_gpu_stats` | The miner documents per-GPU statistics. WildRig, SRBMiner and OneZero are parsed; `false` means the dashboard shows `—` per card and never splits the total |
 | `per_gpu_devices` | The miner can be told which cards to use. Must be paired with `device_flag` |
 | `device_flag` | The documented flag that selects devices (for example `--gpu-id`); empty when the miner cannot choose |
-| `driver` | Core argument shape: `generic` (WildRig), `srbminer`, `onezero` |
+| `driver` | Core argument shape and API parser: `wildrig`, `generic` (custom builds), `srbminer`, `onezero` |
 | `api_default_port`, `api_port_flag`, `api_enable_flag`, `api_worker_flag` | Documented local API shape; no Rust branch needed |
 | `algorithm_probe_arg` | Optional `--list-algorithms` / `--help` used by **Check capabilities** |
 | `default_options` | Defaults the editor and new preset start from; each descriptor's `default` is the fallback |
@@ -124,7 +124,7 @@ below) is added for every branch:
 
 | Driver | Selected by | Core flags |
 | --- | --- | --- |
-| Generic/WildRig | `driver = "generic"` | `--algo`, `--url`, `--user`, optional `--worker`, `--log-file`, `--no-color`, `--print-time 10`, `--gpu-temp-limit`, `--gpu-temp-resume`, optional `--gpu-list` |
+| WildRig / generic | `driver = "wildrig"` or `"generic"` | `--algo`, `--url`, `--user`, optional `--worker`, `--log-file`, `--no-color`, `--print-time 10`, `--gpu-temp-limit`, `--gpu-temp-resume`, optional `--gpu-list` |
 | SRBMiner | `driver = "srbminer"` | `--algorithm`, `--pool`, `--wallet wallet.worker`, `--password x`, `--log-file`, optional `--gpu-id` |
 | OneZero | `driver = "onezero"` | `-a`, `-o`, `-u`, optional `-w`, optional `--devices` |
 

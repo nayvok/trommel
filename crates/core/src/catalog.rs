@@ -20,7 +20,10 @@ use crate::i18n::is_ru;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MinerDriver {
-    /// WildRig and custom/imported builds: `--algo/--url/--user/...`.
+    /// WildRig Multi: the generic argument shape plus a documented per-GPU
+    /// HTTP API.
+    Wildrig,
+    /// Custom/imported builds: `--algo/--url/--user/...`.
     #[default]
     Generic,
     /// SRBMiner-MULTI: `--algorithm/--pool/--wallet wallet.worker/...`.
@@ -551,7 +554,7 @@ mod tests {
     #[test]
     fn drivers_and_api_are_catalogue_data() {
         let wildrig = miner("wildrig").unwrap();
-        assert_eq!(wildrig.driver, MinerDriver::Generic);
+        assert_eq!(wildrig.driver, MinerDriver::Wildrig);
         assert_eq!(wildrig.api_default_port, 4028);
         assert_eq!(wildrig.api_port_flag, "--api-port");
         let srb = miner("srbminer").unwrap();

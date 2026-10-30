@@ -20,9 +20,13 @@ pub struct GpuStats {
     pub mem_mhz: Option<u32>,
     pub util_pct: Option<u32>,
     pub vram_used_mb: Option<u64>,
+    /// PCI bus id from `nvidia-smi` (`00000000:01:00.0`). Together with the
+    /// miners' numeric bus id it maps per-card miner data to a physical card.
+    #[serde(default)]
+    pub pci_bus_id: Option<String>,
 }
 
-const QUERY: &str = "index,uuid,name,temperature.gpu,fan.speed,power.draw,power.limit,power.default_limit,power.min_limit,power.max_limit,clocks.sm,clocks.mem,utilization.gpu,memory.used";
+const QUERY: &str = "index,uuid,name,temperature.gpu,fan.speed,power.draw,power.limit,power.default_limit,power.min_limit,power.max_limit,clocks.sm,clocks.mem,utilization.gpu,memory.used,pci.bus_id";
 
 /// Read metrics of every GPU. Returns the `nvidia-smi` error text when the
 /// driver is not reachable (missing permissions, no NVIDIA card, sandbox).
@@ -80,6 +84,7 @@ pub fn parse_line(line: &str) -> anyhow::Result<GpuStats> {
         mem_mhz: parse_u32(fields[11]),
         util_pct: parse_u32(fields[12]),
         vram_used_mb: parse_u64(fields[13]),
+        pci_bus_id: fields.get(14).map(|field| field.trim().to_string()),
     })
 }
 
@@ -107,6 +112,19 @@ fn parse_f64(field: &str) -> Option<f64> {
         return None;
     }
     field.parse::<f64>().ok()
+}
+
+/// Decimal PCI bus number of an `nvidia-smi` `pci.bus_id`
+/// (`00000000:01:00.0` → 1). Miners report this number for their devices.
+pub fn pci_bus_number(bus_id: &str) -> Option<u32> {
+    let parts: Vec<&str> = bus_id.trim().split(':').collect();
+    let bus = match parts.as_slice() {
+        [_, bus, _, ..] => *bus,
+        [bus, _] => *bus,
+        [bus] => *bus,
+        _ => return None,
+    };
+    u32::from_str_radix(bus, 16).ok()
 }
 
 fn first_line(text: &str) -> String {
@@ -141,6 +159,20 @@ mod tests {
         assert_eq!(stats.mem_mhz, Some(810));
         assert_eq!(stats.util_pct, Some(100));
         assert_eq!(stats.vram_used_mb, Some(5120));
+        assert_eq!(stats.pci_bus_id, None);
+    }
+
+    #[test]
+    fn parses_the_pci_bus_id_and_converts_it_to_decimal() {
+        let stats = parse_line(
+            "0, GPU-12345678-1234-1234-1234-123456789abc, NVIDIA GeForce RTX 3080 Ti, 67, 54, 295.34, 300.00, 350.00, 100.00, 400.00, 1620, 810, 100, 5120, 00000000:01:00.0",
+        )
+        .unwrap();
+        assert_eq!(stats.pci_bus_id.as_deref(), Some("00000000:01:00.0"));
+        assert_eq!(pci_bus_number("00000000:01:00.0"), Some(1));
+        assert_eq!(pci_bus_number("00000000:0a:00.0"), Some(10));
+        assert_eq!(pci_bus_number("01:00.0"), Some(1));
+        assert_eq!(pci_bus_number("not-a-bus"), None);
     }
 
     #[test]

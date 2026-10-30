@@ -206,7 +206,7 @@ argument builder is the only place that knows miner CLI shapes. Core flags:
 
 | Driver | Match | Shape |
 | --- | --- | --- |
-| WildRig / generic | any unknown `miner` id | `--algo`, `--url`, `--user`, optional `--worker`, `--api-port`, `--api-worker-id`, `--log-file`, `--no-color`, `--print-time 10`, `--gpu-temp-limit`, `--gpu-temp-resume` |
+| WildRig (`driver = "wildrig"`) / generic (custom build) | `wildrig` or an unknown `miner` id | `--algo`, `--url`, `--user`, optional `--worker`, `--api-port`, `--api-worker-id`, `--log-file`, `--no-color`, `--print-time 10`, `--gpu-temp-limit`, `--gpu-temp-resume` |
 | SRBMiner | `"srbminer"` | `--algorithm`, `--pool`, `--wallet wallet.worker`, `--password x`, optional API flags/log |
 | OneZero | `"onezero"` | `-a`, `-o`, `-u`, optional `-w` |
 
@@ -310,13 +310,16 @@ legacy-parse field; `miner_path` is additive with a serde default).
 
 ### `status` — the status document
 
-- `CONTRACT_VERSION = 3`.
+- `CONTRACT_VERSION = 5`.
 - `Status` composition and collection are described in
   [architecture.md](architecture.md#status-contract).
 - `Status::collect(cfg, state)` is blocking (nvidia-smi, HTTP pool, log tail) and
-  is always called from a blocking context. It also builds `participation[]`
-  from the applied profile and the running state, and adds the “excluded from
-  mining” / “miner cannot choose GPUs” warnings.
+  is always called from a blocking context. It builds `participation[]` from
+  the applied profile and the running state, asks the driver-aware miner parser,
+  maps per-card records to GPU UUIDs by unique PCI bus id, and adds the
+  “excluded from mining”, “miner cannot choose GPUs” and unmatched-mapping
+  warnings. `total.power_w` is whole-rig power; `mining_power_w` and
+  `efficiency` use participating cards only, with the coin's display unit.
 - `Status::stopped(cfg)` is the cheap snapshot used when stopping.
 - `OcView` — `applied`, `needs_restore`, `snapshot_available`, `stale`,
   `restore_on_stop`, `last_error`, snapshot age/boot and a first-card target
@@ -375,12 +378,20 @@ daemon.
 
 ### `minerapi` — hashrate and share parsing
 
-- `MinerStats { hashrate_10s, hashrate_60s, hashrate_15m, accepted, rejected, stale, source }`.
-- `query_api(port)` — `http://127.0.0.1:<port>/` with a 1.2 s timeout.
-- `parse_json(value)` — walks numbers, matches key names, prefers top-level
-  summaries; tolerant by design because miners disagree on JSON shape.
+- `MinerStats { hashrate_10s, hashrate_60s, hashrate_15m, accepted, rejected, stale, gpus, source }`.
+- `GpuMinerStats { index, uuid, device, bus_id, hashrate_10s/60s/15m, accepted, rejected }`.
+- `query_api(port)` — generic `http://127.0.0.1:<port>/` with a 1.2 s timeout;
+  `query_api_for(port, driver)` selects the documented driver shape.
+- `parse_json(value)` — tolerant generic walk, used for custom miners; prefers
+  top-level summaries over per-GPU entries.
+- `parse_json_for(value, driver)` — WildRig (`hashrate.total[]`,
+  `hashrate.threads[][]`, `hwmon.busID[]`, per-thread shares), SRBMiner
+  (`algorithms[].hashrate.gpu.gpuN`, `gpu_devices[].bus_id`) and OneZero
+  (`devices[].bus_id`, parallel `algos[].hashrates[]`/share arrays).
+- `map_to_gpus(stats, gpus, participating_uuids)` — unique bus-id mapping,
+  collision/missing reporting; no proportional split.
 - `parse_log(text)` — fallback parser for miner output, including ANSI stripping
-  and localised decimal separators.
+  and localised decimal separators; it produces totals only.
 - `primary()` picks 10 s → 60 s → 15 m; `is_empty()` drives the “no data” state.
 
 ### `bench` — A/B benchmark

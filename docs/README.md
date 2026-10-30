@@ -14,7 +14,7 @@ the code.
 | --- | --- |
 | A new user | [README](../README.md) → [User guide](user-guide.md) |
 | A contributor | [CONTRIBUTING](../CONTRIBUTING.md) → [Development](development.md) → [Architecture](architecture.md) → [Components](components.md) |
-| Building an integration or an agent | [Agents](agents.md) → [Architecture § Status contract](architecture.md#status-contract) → [Config schemas](schema/config.schema.json) |
+| Building an integration or an agent | [Agents](agents.md) → [Architecture § Status contract](architecture.md#status-contract) → [Config schemas](schema/config.schema.json) and the [status contract schema](schema/status.schema.json) |
 | Reviewing UI or visual work | [Design](design.md) → [User guide](user-guide.md) |
 | Packaging or releasing | [Packaging](packaging.md) → [Verification](verification.md) |
 | Reviewing security | [Security](security.md) → [ADR 0003](adr/0003-packaging.md) |

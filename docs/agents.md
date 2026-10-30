@@ -84,7 +84,7 @@ trommel config apply /tmp/trommel-proposed.json --restart
 ## CLI JSON
 
 ```bash
-trommel status --json        # full Status document, contract_version = 4
+trommel status --json        # full Status document, contract_version = 5
 trommel gpus --json          # nvidia-smi view, works without the daemon
 trommel diagnose --json      # app/version, paths, redacted config, status, GPUs, warnings
 trommel preset list          # human table with total fees
@@ -121,7 +121,7 @@ human text. `status` and `start/stop/toggle` connect through D-Bus and start
 
 | Field | Meaning |
 | --- | --- |
-| `contract_version` | Contract revision (4); compare this, not `version` |
+| `contract_version` | Contract revision (5); compare this, not `version` |
 | `state.running` | A miner is running (including `external`) |
 | `state.external` | The process was started outside Trommel and is never ours to kill |
 | `state.last_error` | Last supervisor/config error, including a failed restore |
@@ -129,8 +129,8 @@ human text. `status` and `start/stop/toggle` connect through D-Bus and start
 | `miner_info` | Miner id/name/version, install/verified flags, fee breakdown |
 | `gpus[]` | Per-card live values and static limits |
 | `participation[]` | One entry per detected card: `uuid`, `index`, `name`, `enabled` (applied profile switch) and `mining` (part of the running session Trommel owns). The dashboard chip is this list |
-| `total` | Aggregate hashrate/power/efficiency/temperature; power sums every detected card, temperature is the hottest card; `gpus_enabled` counts participating cards and `gpus_total` counts detected cards |
-| `miner` | Hashrate windows, accepted/rejected/stale, `source` (`api`/`log`) |
+| `total` | Aggregate hashrate/temperature; `power_w` sums every detected card, `mining_power_w` only participating cards. `efficiency` + `efficiency_unit` use participating power and the coin's display unit (`J/TH`, `J/MH`, …); `efficiency_j_per_th` is deprecated and null outside TH/s. `gpus_enabled` counts participating cards and `gpus_total` counts detected cards |
+| `miner` | Hashrate windows, accepted/rejected/stale, `source` (`api`/`log`) and `gpus[]`: mapped per-card records with `index`/`uuid` (null when the bus mapping is ambiguous), `device`, `bus_id` and the windows that the miner's API documents |
 | `pool` | Cached pool statistics when mining |
 | `coin` | Applied coin id/symbol/name/algo/wallet prefix/hashrate unit |
 | `pool_view` | Applied pool name/URL/fee and whether a documented account API is available |

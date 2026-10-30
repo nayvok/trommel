@@ -61,15 +61,20 @@ If restore fails, the snapshot is kept and the error is shown.
 - The hero card shows total hashrate, the state pill (`mining`, `external`, `stopped`,
   `offline`), and the coin, pool and fee breakdown. The preset name lives once,
   in the **Active preset** row.
-- Every GPU is a card with live power, temperature, core/memory clocks, fan and
-  utilisation in value bubbles, plus a switch that includes the card in the
-  mining session. A single-GPU rig uses one full-width card; with two or more
+- Every GPU is a card with its own hashrate anchor (the miner's per-card value
+  and a five-minute sparkline, or `—` when the miner does not report it), live
+  power, temperature, core/memory clocks, fan and utilisation in value bubbles,
+  plus a switch that includes the card in the mining session. A single-GPU rig uses one full-width card; with two or more
   cards each keeps the compact tile. Only the power and temperature bubbles
   have a sparkline of the last five minutes (hover it for the observed minimum
   and maximum); core, memory, fan and load are values, not trends. Click
   **Tune** to edit its power limit and clock locks. A card chip says **mining**
   or **excluded**; the Active preset row shows the miner/version, card count,
   stock/tuned state and the rig power and temperature.
+- The hero metadata line compares the expected hashrate from the preset with
+  the actual value and shows efficiency in the coin's unit (`J/TH` for Pearl,
+  `J/MH` for Ravencoin/Zilliqa). Efficiency uses only the participating cards;
+  the rig power in the Active preset row still covers every detected card.
 - The **Pool and shares** group shows the pool name, endpoint, fee and API
   status, accepted/rejected/stale shares with the acceptance percentage, and the
   pending/paid/immature balance. Without a pool API, or before the first answer,

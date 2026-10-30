@@ -143,8 +143,8 @@ pub fn build_args_with_devices(
             }
             args
         }
-        // WildRig and the generic custom driver.
-        MinerDriver::Generic => {
+        // WildRig and the generic custom driver share the argument shape.
+        MinerDriver::Wildrig | MinerDriver::Generic => {
             let mut args: Vec<String> = vec![
                 "--algo".into(),
                 preset.algo.clone(),

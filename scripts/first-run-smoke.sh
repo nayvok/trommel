@@ -40,7 +40,7 @@ mkdir -p "$WORK/bin" "$WORK/config" "$WORK/state" "$WORK/data" "$WORK/cache"
 cat > "$WORK/gpu-state.json" <<'JSON'
 {
   "gpus": [
-    {"index": 0, "uuid": "GPU-33333333-3333-3333-3333-333333333333", "name": "NVIDIA GeForce RTX 3080 Ti",
+    {"index": 0, "uuid": "GPU-33333333-3333-3333-3333-333333333333", "pci_bus_id": "00000000:01:00.0", "name": "NVIDIA GeForce RTX 3080 Ti",
      "temp": 46, "fan": 30, "draw": 49.0, "power": 350.0, "power_default": 350.0,
      "power_min": 100.0, "power_max": 400.0, "core": 210, "core_default": 1770,
      "mem": 405, "mem_default": 9501, "util": 0, "vram": 512}

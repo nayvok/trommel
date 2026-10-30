@@ -12,7 +12,7 @@ use crate::pool::{self, PoolStats};
 use crate::state::State;
 use crate::util;
 
-pub const CONTRACT_VERSION: u32 = 4;
+pub const CONTRACT_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct StateView {
@@ -64,7 +64,18 @@ pub struct PoolView {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TotalView {
     pub hashrate: Option<f64>,
+    /// Whole-rig `power.draw`: every detected card, including excluded ones.
     pub power_w: Option<f64>,
+    /// Power of the participating cards only. Efficiency uses this number.
+    #[serde(default)]
+    pub mining_power_w: Option<f64>,
+    /// Power per hashrate in the coin's display unit (`J/TH`, `J/MH`, ...).
+    #[serde(default)]
+    pub efficiency: Option<f64>,
+    #[serde(default)]
+    pub efficiency_unit: String,
+    /// Deprecated compatibility field: filled only when the unit really is
+    /// J/TH. New clients should read `efficiency` + `efficiency_unit`.
     pub efficiency_j_per_th: Option<f64>,
     pub temp_max_c: Option<u32>,
     pub gpus_enabled: u32,
@@ -290,6 +301,114 @@ fn total_power(gpus: &[GpuStats]) -> Option<f64> {
         .reduce(|a, b| a + b)
 }
 
+/// Power of the cards that participate in the session. Efficiency must not be
+/// charged for an excluded idle card; the whole-rig number stays in
+/// [`TotalView::power_w`].
+fn participating_power(cfg: &Config, gpus: &[GpuStats]) -> Option<f64> {
+    let profile = cfg.gpu_profile()?;
+    gpus.iter()
+        .filter(|gpu| profile.tuning_for(&gpu.uuid).enabled)
+        .filter_map(|gpu| gpu.power_w)
+        .reduce(|a, b| a + b)
+}
+
+/// Unit and scale used for hashrate display. Efficiency is expressed per this
+/// unit, so a MH/s coin reports J/MH instead of the old hardcoded J/TH.
+fn display_unit(hs: f64, preferred: &str) -> (&'static str, f64) {
+    const UNITS: [(&str, f64); 6] = [
+        ("H/s", 1.0),
+        ("kH/s", 1e3),
+        ("MH/s", 1e6),
+        ("GH/s", 1e9),
+        ("TH/s", 1e12),
+        ("PH/s", 1e15),
+    ];
+    let preferred = preferred.trim();
+    if !preferred.is_empty() && !preferred.eq_ignore_ascii_case("auto") {
+        if let Some((unit, scale)) = UNITS.iter().find(|(unit, _)| *unit == preferred) {
+            let value = hs / scale;
+            if (0.01..1000.0).contains(&value) {
+                return (unit, *scale);
+            }
+        }
+    }
+    let mut selected = UNITS[0];
+    for (unit, scale) in UNITS {
+        if hs >= scale {
+            selected = (unit, scale);
+        }
+    }
+    selected
+}
+
+fn efficiency_unit_name(unit: &str) -> String {
+    let suffix = unit.trim_end_matches("/s");
+    format!("J/{suffix}")
+}
+
+fn efficiency_view(
+    cfg: &Config,
+    gpus: &[GpuStats],
+    hashrate: Option<f64>,
+    preferred_unit: &str,
+    external: bool,
+) -> (Option<f64>, Option<f64>, String) {
+    if external {
+        return (None, None, String::new());
+    }
+    let (Some(power), Some(hashrate)) = (
+        participating_power(cfg, gpus),
+        hashrate.filter(|value| *value > 0.0),
+    ) else {
+        return (None, None, String::new());
+    };
+    if power <= 0.0 {
+        return (None, None, String::new());
+    }
+    let (unit, scale) = display_unit(hashrate, preferred_unit);
+    let efficiency = power / (hashrate / scale);
+    let unit_name = efficiency_unit_name(unit);
+    let legacy = (unit == "TH/s").then_some(efficiency);
+    (Some(efficiency), legacy, unit_name)
+}
+
+/// One calm status warning for per-card data the mapping could not prove.
+fn mapping_warning(report: &crate::minerapi::GpuMappingReport) -> Option<String> {
+    if !report.unmapped_devices.is_empty() || !report.ambiguous_buses.is_empty() {
+        let devices = if report.unmapped_devices.is_empty() {
+            report
+                .ambiguous_buses
+                .iter()
+                .map(|bus| format!("bus {bus}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else {
+            report.unmapped_devices.join(", ")
+        };
+        return Some(tr(
+            &format!(
+                "Per-card miner data could not be matched to a GPU ({devices}); those cards show —"
+            ),
+            &format!(
+                "Данные майнера по картам не удалось сопоставить с GPU ({devices}); на этих картах —"
+            ),
+        ));
+    }
+    if !report.missing_cards.is_empty() {
+        let cards = report
+            .missing_cards
+            .iter()
+            .map(|index| format!("GPU #{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(tr(
+            &format!("The miner reports no per-card hashrate for {cards}"),
+            &format!("Майнер не сообщает хешрейт для {cards}"),
+        ));
+    }
+    None
+}
+
 /// Hottest readable card, ties resolved to the lowest index.
 ///
 /// Every multi-card consumer (the `total` document, the overheat alert and the
@@ -333,17 +452,20 @@ impl Status {
         };
         let gpu = gpus.first().cloned();
 
-        let miner = if state.running {
-            minerapi::query_api(preset.map(|p| p.effective_api_port()).unwrap_or(0)).unwrap_or_else(
-                |_| {
+        let driver = preset
+            .and_then(|preset| catalog::miner(&preset.miner))
+            .map(|miner| miner.driver)
+            .unwrap_or_default();
+        let mut miner = if state.running {
+            minerapi::query_api_for(preset.map(|p| p.effective_api_port()).unwrap_or(0), driver)
+                .unwrap_or_else(|_| {
                     let tail = read_tail(&crate::paths::log_path(), 96 * 1024);
                     let mut stats = minerapi::parse_log(&tail);
                     if stats.is_empty() {
                         stats.source = "no data".to_string();
                     }
                     stats
-                },
-            )
+                })
         } else {
             MinerStats::default()
         };
@@ -364,15 +486,25 @@ impl Status {
             None => Vec::new(),
         };
         let gpus_enabled = participation.iter().filter(|card| card.enabled).count() as u32;
+        let participating_uuids: Vec<String> = participation
+            .iter()
+            .filter(|card| card.enabled)
+            .map(|card| card.uuid.clone())
+            .collect();
+        let mapping = minerapi::map_to_gpus(&mut miner, &gpus, &participating_uuids);
         let power = total_power(&gpus);
+        let mining_power = if state.external {
+            None
+        } else {
+            participating_power(cfg, &gpus)
+        };
         let temp_max = hottest_gpu(&gpus).and_then(|gpu| gpu.temp_c);
         let hashrate = miner.primary();
-        let efficiency = match (power, hashrate) {
-            (Some(power), Some(hashrate)) if power > 0.0 && hashrate > 0.0 => {
-                Some(power / (hashrate / 1e12))
-            }
-            _ => None,
-        };
+        let preferred_unit = preset
+            .map(|preset| preset.hashrate_unit())
+            .unwrap_or("auto");
+        let (efficiency, efficiency_j_per_th, efficiency_unit) =
+            efficiency_view(cfg, &gpus, hashrate, preferred_unit, state.external);
 
         let (miner_info, total_fee_pct, expected_hashrate) = match preset {
             Some(preset) => {
@@ -465,6 +597,11 @@ impl Status {
             }
         }
         warnings.extend(participation_warnings(cfg, &gpus));
+        if running_ours {
+            if let Some(warning) = mapping_warning(&mapping) {
+                warnings.push(warning);
+            }
+        }
         warnings.extend(lock_warnings(cfg, &gpus, running_ours, state.uptime_s()));
         if let Some(warning) = temp_warning(&gpus, temp_limit) {
             warnings.push(warning);
@@ -511,7 +648,10 @@ impl Status {
             total: TotalView {
                 hashrate,
                 power_w: power,
-                efficiency_j_per_th: efficiency,
+                mining_power_w: mining_power,
+                efficiency,
+                efficiency_unit,
+                efficiency_j_per_th,
                 temp_max_c: temp_max,
                 gpus_enabled,
                 gpus_total,
@@ -631,9 +771,24 @@ mod tests {
             "\"contract_version\"",
             "\"ts_iso\"",
             "\"total_fee_pct\"",
+            "\"efficiency_unit\"",
+            "\"mining_power_w\"",
         ] {
             assert!(json.contains(key), "missing key {key} in {json}");
         }
+    }
+
+    #[test]
+    fn status_schema_documents_the_current_contract() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../docs/schema/status.schema.json")).unwrap();
+        assert_eq!(schema["properties"]["contract_version"]["const"], 5);
+        assert_eq!(CONTRACT_VERSION, 5);
+        let miner = &schema["$defs"]["minerStats"]["properties"];
+        assert!(miner["gpus"].is_object(), "schema missing miner.gpus");
+        let total = &schema["$defs"]["totalView"]["properties"];
+        assert!(total["efficiency"].is_object(), "schema missing efficiency");
+        assert!(total["efficiency_unit"].is_object(), "schema missing unit");
     }
 
     #[test]
@@ -816,6 +971,79 @@ mod tests {
             },
         );
         cfg
+    }
+
+    #[test]
+    fn efficiency_uses_participating_power_and_the_coin_unit() {
+        let uuid = "GPU-test";
+        let cfg = tuned_config(uuid);
+        let gpus = [
+            card(0, Some(70), Some(300.0)),
+            card(1, Some(60), Some(130.0)),
+        ];
+        let (efficiency, legacy, unit) =
+            efficiency_view(&cfg, &gpus, Some(125.0e12), "TH/s", false);
+        assert_eq!(unit, "J/TH");
+        assert!((efficiency.unwrap() - 3.44).abs() < 1e-9);
+        assert_eq!(legacy, efficiency);
+
+        let mut excluded = cfg.clone();
+        excluded.preset_mut().unwrap().gpu.per_gpu.insert(
+            "GPU-1".into(),
+            crate::config::GpuTuning {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        let (efficiency, _, unit) =
+            efficiency_view(&excluded, &gpus, Some(125.0e12), "TH/s", false);
+        assert_eq!(unit, "J/TH");
+        assert!((efficiency.unwrap() - 2.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn efficiency_unit_follows_mh_coins_and_the_legacy_field_is_null() {
+        let cfg = tuned_config("GPU-test");
+        let gpus = [card(0, Some(70), Some(300.0))];
+        let (efficiency, legacy, unit) = efficiency_view(&cfg, &gpus, Some(100.0e6), "MH/s", false);
+        assert_eq!(unit, "J/MH");
+        assert!((efficiency.unwrap() - 3.0).abs() < 1e-9);
+        assert_eq!(legacy, None);
+        assert_eq!(display_unit(100.0e6, "auto"), ("MH/s", 1e6));
+        assert_eq!(display_unit(125.0e12, "auto"), ("TH/s", 1e12));
+    }
+
+    #[test]
+    fn external_miner_has_no_efficiency() {
+        let cfg = tuned_config("GPU-test");
+        let gpus = [card(0, Some(70), Some(300.0))];
+        let (efficiency, legacy, unit) = efficiency_view(&cfg, &gpus, Some(125.0e12), "TH/s", true);
+        assert_eq!(efficiency, None);
+        assert_eq!(legacy, None);
+        assert!(unit.is_empty());
+        assert_eq!(participating_power(&cfg, &gpus), Some(300.0));
+    }
+
+    #[test]
+    fn mapping_warnings_name_the_unmatched_cards_once() {
+        let report = crate::minerapi::GpuMappingReport {
+            mapped: 1,
+            unmapped_devices: vec!["gpu1".into()],
+            ambiguous_buses: Vec::new(),
+            missing_cards: Vec::new(),
+        };
+        let warning = mapping_warning(&report).expect("warning");
+        assert!(warning.contains("gpu1"), "{warning}");
+        assert!(warning.contains('—'), "{warning}");
+        let missing = crate::minerapi::GpuMappingReport {
+            mapped: 1,
+            unmapped_devices: Vec::new(),
+            ambiguous_buses: Vec::new(),
+            missing_cards: vec![1],
+        };
+        let warning = mapping_warning(&missing).expect("warning");
+        assert!(warning.contains("GPU #1"), "{warning}");
+        assert!(mapping_warning(&crate::minerapi::GpuMappingReport::default()).is_none());
     }
 
     #[test]
