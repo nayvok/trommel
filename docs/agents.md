@@ -100,7 +100,8 @@ trommel oc restore --mode snapshot|defaults
 ```
 
 `miner verify --json` returns one object per install: `miner`, `version`, `path`,
-`status` (`ok`, `missing`, `not_a_file`, `not_executable` or `not_recorded`),
+`status` (`ok`, `missing`, `not_a_file`, `not_executable`, `not_readable` or
+`not_recorded`),
 `exists`, `is_file`, `executable`, `readable`, `recorded_sha256`,
 `sha256_verified` and a localized `message`. `recorded_sha256` is the digest
 stored at install time or `null`; the verifier never hashes a file to invent one.
