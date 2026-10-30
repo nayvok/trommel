@@ -24,8 +24,27 @@ mkdir -p "$STAGE/DEBIAN" \
 # Panic locations and debug strings otherwise embed the builder's absolute
 # checkout and Cargo home. Remap both so a locally built package does not leak
 # /home/<builder> and the CI and local builds carry the same neutral paths.
+#
+# The paths can contain spaces, and Cargo splits the plain RUSTFLAGS variable on
+# whitespace, so the flags go through CARGO_ENCODED_RUSTFLAGS (unit-separated).
+# Cargo ignores RUSTFLAGS once the encoded variable is set, so carry over
+# whatever flags the caller already provided instead of dropping them.
 CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
-export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$ROOT=/build/trommel --remap-path-prefix=$CARGO_HOME_DIR=/build/cargo"
+inherited_flags=()
+if [ -n "${CARGO_ENCODED_RUSTFLAGS:-}" ]; then
+    IFS=$'\x1f' read -r -a inherited_flags <<<"$CARGO_ENCODED_RUSTFLAGS"
+elif [ -n "${RUSTFLAGS:-}" ]; then
+    # Same whitespace split Cargo applies to the plain variable.
+    read -r -a inherited_flags <<<"$RUSTFLAGS"
+fi
+encoded_flags=("${inherited_flags[@]}"
+    "--remap-path-prefix=$ROOT=/build/trommel"
+    "--remap-path-prefix=$CARGO_HOME_DIR=/build/cargo")
+CARGO_ENCODED_RUSTFLAGS=""
+for flag in "${encoded_flags[@]}"; do
+    CARGO_ENCODED_RUSTFLAGS+="${CARGO_ENCODED_RUSTFLAGS:+$'\x1f'}$flag"
+done
+export CARGO_ENCODED_RUSTFLAGS
 
 cargo build --release --locked -p trommeld
 cargo build --release --locked -p trommel --features gui
