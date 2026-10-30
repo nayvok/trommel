@@ -19,7 +19,7 @@ needs a real rig. Run the commands from the repository root; see
 | `./scripts/ui-smoke.sh` | AT-SPI click-through with a fake two-GPU rig: quick setup, start/stop, GPU participation switch (excluded chip and Totals), settings, preset editor, GPU tuning, miner install, version manager (installed row, verify chip, blocked removal alert, preset version switches), alerts, and SIGKILLing the GUI while mining continues. CI runs it headlessly with `xvfb-run` and a private AT-SPI bus |
 | `./scripts/first-run-smoke.sh` | Pristine install: empty XDG dirs, no config, no wallet, no installed miner, one fake GPU; dashboard placeholders, wizard, single-GPU tuning. Also headless in CI |
 | `./scripts/check-polkit.sh` | Polkit action id and helper path match the code |
-| `./scripts/check-no-secrets.sh` | No wallet-like strings, secret markers or personal home paths in tracked files (`/home/user` is the only placeholder) |
+| `./scripts/check-no-secrets.sh` | No wallet-like strings or personal home paths in tracked files; secret markers in tracked code and scripts (`/home/user` is the only placeholder) |
 | `./scripts/check-docs.sh` | Relative markdown links resolve; removed docs are not referenced; docs are reachable from the index |
 | `./scripts/package-deb.sh` + `./scripts/test-deb.sh` | Package builds; every path documented in [packaging.md](packaging.md) exists with the right mode, the maintainer scripts and polkit annotation are present, and the binaries contain no builder home path |
 | `./scripts/test-deb-install.sh` | Install/upgrade/remove in a disposable root container: `postinst` writes the per-user rule, an upgrade keeps it, remove/purge deletes it, and the user config survives all three |

@@ -184,8 +184,8 @@ trommel config apply proposed.json --restart
 trommel mcp                  # read-only MCP server over stdio
 ```
 
-The daemon is the single source of truth. The GUI can be closed; the panel
-indicator and miner keep working.
+The daemon is the single source of truth. The GUI can be closed; the miner
+keeps working.
 
 ## Fees and miner info
 

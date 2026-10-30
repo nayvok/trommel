@@ -176,7 +176,7 @@ external tools. They are descriptive, not enforced by the daemon; `Preset`
    quietly mining on every card. Record the absolute `state.miner_path`, write
    state, schedule a one-shot clock check and clear the pool cache.
 
-The snapshot records only the cards the session touches: `applied_gpus` holds
+The snapshot captures every detected card, but `applied_gpus` holds
 the participating, tuned UUIDs, so Stop, shutdown and emergency-stop never
 restore a card that was not tuned. A card excluded now but still carrying
 tuning from an earlier restore-off session on this boot is restored to its

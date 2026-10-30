@@ -36,14 +36,14 @@ Evidence for the freeze:
   never enables the `gui` feature, so GUI unit tests cannot run; the release
   workflow skipped `./scripts/test-mcp.sh`; packaging was built only by the
   manual `package.yml` or at tag time.
-- `scripts/test-deb.sh` asserted 9 of the 17 paths documented in
+- `scripts/test-deb.sh` asserted 9 of the 13 paths documented in
   [packaging.md](packaging.md) and never installed the package;
   `scripts/release-bundle.sh` wrote `SHA256SUMS` from `*.deb` only while the
   docs promised all assets, so `trommel-install.sh` had no checksum entry; a
   local build embedded `/home/<builder>` paths in the binaries; nothing checked
   the tag against the workspace version or the bundle before publishing.
-- The e2e failure annotation showed 5 artifacts while the harness writes about
-  25 `.out` files plus `state/trommel/daemon.log` and `miner.log`;
+- The e2e failure annotation showed 5 artifacts while the harness writes 19
+  `.out` files plus `state/trommel/daemon.log` and `miner.log`;
   `scripts/atspi-bus.sh` returned success when the registry binary was missing;
   `check-no-secrets.sh` did not look for personal paths;
   `TROMMEL_LIBRARY_SCREENSHOT` was missing from the `NON_UNIQUE` list in
