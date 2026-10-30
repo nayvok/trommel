@@ -91,7 +91,12 @@ do not expose the bus name on the system bus or through a socket.
 - The config file contains the wallet in clear text (mode determined by the
   user's umask). Do not commit it or paste it into an issue; use diagnostics.
 - Test fixtures may only use `prl1test…`; `scripts/check-no-secrets.sh` enforces
-  this for tracked files.
+  this for tracked files and also rejects personal home paths (`/home/user` is
+  the only allowed placeholder).
+- Release packages are built with `--remap-path-prefix`, so panic locations and
+  debug strings do not embed the builder's checkout or Cargo home.
+  `scripts/test-deb.sh` rejects a package whose binaries still contain
+  `/home/`.
 - Never ask for a seed phrase or private key. Trommel has no wallet and cannot
   use one.
 
@@ -145,6 +150,9 @@ do not expose the bus name on the system bus or through a socket.
 
 - The `.deb` installs the helper root-owned (0755) and does not enable the user
   service; D-Bus activation and the first launch handle that.
+- `scripts/test-deb-install.sh` exercises `postinst`, `prerm` and `postrm` in a
+  disposable root container: the generated per-user rule is written, kept on
+  upgrade, removed on remove/purge, and the user config is never touched.
 - Flatpak is not shipped: the sandbox blocks the host `nvidia-smi`, the polkit
   helper, the systemd user unit and runtime binary downloads. See
   [ADR 0003](adr/0003-packaging.md).

@@ -5,7 +5,7 @@ profile) rather than in a public issue. Include reproduction steps, the affected
 version, and whether the polkit helper, a miner binary or the D-Bus service is
 involved.
 
-Supported version: the current `0.4.x` line. The project does not distribute
+Supported version: the current `0.8.x` line. The project does not distribute
 miner binaries; report vulnerabilities in those binaries to their upstream
 authors.
 

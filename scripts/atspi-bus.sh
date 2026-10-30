@@ -3,12 +3,19 @@
 #
 # The desktop accessibility bus is preferred, but a socket file is not proof
 # that it answers: a launcher that crashed leaves the socket behind and every
-# client then fails with "AT-SPI: Unable to open bus connection while the
+# client then fails with "AT-SPI: Unable to open bus connection" while the
 # script-level file test still passes. `ensure_atspi_bus` verifies the bus with a
 # real D-Bus call and, when it does not answer, starts a private accessibility
 # bus plus the registry inside the harness work directory. The caller exports
 # AT_SPI_BUS_ADDRESS, which libatspi reads for both the app and ui_smoke.py, and
 # cleans up ATSPI_BUS_PID/ATSPI_REGISTRY_PID in its trap.
+#
+# The private fallback needs `dbus-daemon` and the AT-SPI registry from
+# `at-spi2-core`. It fails with a named error instead of returning success with
+# a bus nobody is listening to, so a clean machine reports the missing package
+# rather than a later "no applications" AT-SPI error.
+
+ATSPI_REGISTRY="${ATSPI_REGISTRY:-/usr/libexec/at-spi2-registryd}"
 
 atspi_bus_answers() {
     local address="$1" path
@@ -20,13 +27,41 @@ atspi_bus_answers() {
     path="${address#unix:path=}"
     path="${path%%,*}"
     [ -S "$path" ] || return 1
-    dbus-send --address="$address" --type=method_call --print-reply \
-        --reply-timeout=2000 --dest=org.freedesktop.DBus \
-        /org/freedesktop/DBus org.freedesktop.DBus.Peer.Ping >/dev/null 2>&1
+    # `dbus-send --address` opens a peer connection without sending Hello, so
+    # the bus rejects the Ping. Going through the session variable makes
+    # dbus-send register first, which is what a real client does.
+    DBUS_SESSION_BUS_ADDRESS="$address" dbus-send --session \
+        --type=method_call --print-reply --reply-timeout=2000 \
+        --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+        org.freedesktop.DBus.Peer.Ping >/dev/null 2>&1
+}
+
+# True while a process is neither gone nor a zombie. `kill -0` succeeds for a
+# zombie, which would make a crashed registry look healthy.
+atspi_process_alive() {
+    local pid="${1:-}" stat
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/stat" ] || return 1
+    stat=$(<"/proc/$pid/stat")
+    [ -n "$stat" ] || return 1
+    stat=${stat##*) }
+    case "${stat%% *}" in
+        Z|X|x) return 1 ;;
+    esac
+    return 0
 }
 
 start_private_atspi_bus() {
     local root="$1" out
+    if ! command -v dbus-daemon >/dev/null 2>&1; then
+        echo "  · dbus-daemon is not installed; cannot start a private accessibility bus" >&2
+        return 1
+    fi
+    if [ ! -x "$ATSPI_REGISTRY" ]; then
+        echo "  · the AT-SPI registry is missing at $ATSPI_REGISTRY" >&2
+        echo "    install at-spi2-core (and gir1.2-atspi-2.0 for the client)" >&2
+        return 1
+    fi
     mkdir -p "$root"
     cat > "$root/bus.conf" <<XML
 <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
@@ -50,9 +85,18 @@ XML
     # The registry owns the accessible tree a client enumerates. Without it
     # GTK can register but pyatspi sees no applications.
     AT_SPI_BUS_ADDRESS="$AT_SPI_BUS_ADDRESS" \
-        /usr/libexec/at-spi2-registryd >>"$root/registry.log" 2>&1 &
+        "$ATSPI_REGISTRY" >>"$root/registry.log" 2>&1 &
     ATSPI_REGISTRY_PID=$!
     sleep 0.5
+    if ! atspi_process_alive "$ATSPI_REGISTRY_PID"; then
+        echo "  · the AT-SPI registry did not stay up; see $root/registry.log" >&2
+        tail -5 "$root/registry.log" >&2 || true
+        return 1
+    fi
+    if ! atspi_bus_answers "$AT_SPI_BUS_ADDRESS"; then
+        echo "  · the private accessibility bus does not answer" >&2
+        return 1
+    fi
 }
 
 ensure_atspi_bus() {

@@ -5,6 +5,49 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-30
+
+### Added
+
+- **Headless UI coverage in CI.** `ui-smoke.sh` and `first-run-smoke.sh` run
+  under Xvfb with a private AT-SPI bus on pull requests and on the release tag,
+  so the AT-SPI click path is no longer a manual-only gate.
+- **MSRV job.** The workspace declares Rust 1.92, the real requirement of the
+  locked GUI dependencies, and CI checks it with `cargo check --all-targets
+  --features trommel/gui`.
+- **Packaging checks on every pull request.** `test-deb.sh` now asserts every
+  documented path, file mode, maintainer script and the polkit annotation, and
+  the new `test-deb-install.sh` installs, upgrades and removes the package in a
+  disposable root container.
+- **Release verification.** `check-version.sh` and `verify-release-bundle.sh`
+  check the version/tag, the asset set and every checksum before publishing;
+  the release workflow gates the upload on the UI and MSRV jobs.
+- **`SHA256SUMS` covers `trommel-install.sh`** as well as both `.deb` files.
+
+### Changed
+
+- CI and the release workflow build the CLI-only `trommel` target and run the
+  GUI-feature unit tests; the release workflow also runs the MCP smoke test.
+- The package build remaps the checkout and Cargo home, so release binaries no
+  longer contain a builder home path.
+- A failed e2e run prints one report with every harness artifact, `daemon.log`,
+  `miner.log` and the `✗` lines, and uploads the logs as an artifact.
+- `check-no-secrets.sh` also rejects personal home paths (`/home/user` is the
+  only allowed placeholder).
+- Documentation no longer claims the 0.6.x tree, the 0.5 roadmap, a Rust 1.80
+  MSRV or that CI skips markdown links.
+
+### Fixed
+
+- `TROMMEL_LIBRARY_SCREENSHOT` now runs as a private instance, so the miner
+  library capture cannot attach to a normal running window; a GUI-feature test
+  keeps every screenshot hook paired with the private-instance list.
+- `scripts/atspi-bus.sh` verifies a bus with a registered client (the old
+  `dbus-send --address` call never sent `Hello`), and fails with a named error
+  when `at-spi2-core` or the registry is missing.
+
+No user-facing feature, config/schema change or screenshot change.
+
 ## [0.7.0] - 2026-10-29
 
 ### Added

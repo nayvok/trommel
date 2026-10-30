@@ -168,7 +168,7 @@ export GTK_A11Y=atspi
 # shellcheck source=scripts/atspi-bus.sh
 . "$ROOT/scripts/atspi-bus.sh"
 ensure_atspi_bus "$WORK" || {
-    echo "cannot provide an AT-SPI bus; run this inside a graphical session" >&2
+    echo "cannot provide an AT-SPI bus; install at-spi2-core or run this inside a graphical session" >&2
     exit 1
 }
 # AdwDialog children are exposed late on the nested Wayland accessibility

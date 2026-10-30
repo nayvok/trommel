@@ -15,14 +15,18 @@ pick the matching guide:
 
 ## Setup
 
+Rust 1.92+ is required (the declared MSRV, checked in CI with the `gui`
+feature).
+
 ```bash
 sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
   gettext librsvg2-bin desktop-file-utils appstream \
-  gir1.2-atspi-2.0 dbus xdg-utils
+  gir1.2-atspi-2.0 dbus xdg-utils at-spi2-core xvfb x11-utils
 cargo build -p trommel --features gui
 cargo build -p trommel          # CLI-only build must keep working
 cargo build -p trommeld
 cargo test --workspace
+cargo test -p trommel --features gui
 ```
 
 If the global Cargo cache is read-only, use a project-local one:
@@ -44,6 +48,7 @@ For UI work, use the isolated harnesses instead of a real rig:
 ```bash
 ./scripts/e2e.sh              # CLI lifecycle, fake GPU/helper/miner
 ./scripts/ui-smoke.sh         # AT-SPI click-through (desktop session)
+xvfb-run -a ./scripts/ui-smoke.sh  # same, headless (what CI runs)
 ./scripts/first-run-smoke.sh  # pristine-install path
 ./scripts/screenshots.sh      # deterministic docs screenshots
 ```
@@ -96,6 +101,8 @@ Before pushing:
 cargo fmt --check
 cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings
 cargo test --workspace
+cargo test -p trommel --features gui
+cargo build -p trommel
 ./scripts/check-no-secrets.sh
 ./scripts/check-docs.sh
 ```

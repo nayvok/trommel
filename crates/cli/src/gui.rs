@@ -474,14 +474,30 @@ fn set_page_icon(stack: &adw::ViewStack, child: &impl IsA<gtk::Widget>, icon: &s
 
 // ------------------------------------------------------------------- run
 
+/// Every environment variable that switches the app into a private screenshot
+/// instance. A new capture hook must be added here too: otherwise that capture
+/// runs as the single-instance app and can present a normal running window
+/// instead of rendering its own one. The `screenshot_hooks_cover_every_capture`
+/// test enforces the pairing.
+const SCREENSHOT_HOOKS: [&str; 6] = [
+    "TROMMEL_SCREENSHOT",
+    "TROMMEL_WIZARD_SCREENSHOT",
+    "TROMMEL_TUNE_SCREENSHOT",
+    "TROMMEL_INSTALL_SCREENSHOT",
+    "TROMMEL_PRESET_SCREENSHOT",
+    "TROMMEL_LIBRARY_SCREENSHOT",
+];
+
+fn screenshot_requested() -> bool {
+    SCREENSHOT_HOOKS
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+}
+
 pub fn run() -> anyhow::Result<()> {
     // Both screenshot modes run a private instance so they can capture a window
     // even when a normal Trommel instance is open.
-    let screenshot = std::env::var_os("TROMMEL_SCREENSHOT").is_some()
-        || std::env::var_os("TROMMEL_WIZARD_SCREENSHOT").is_some()
-        || std::env::var_os("TROMMEL_TUNE_SCREENSHOT").is_some()
-        || std::env::var_os("TROMMEL_INSTALL_SCREENSHOT").is_some()
-        || std::env::var_os("TROMMEL_PRESET_SCREENSHOT").is_some();
+    let screenshot = screenshot_requested();
     let app_id = if screenshot {
         format!("io.github.nayvok.Trommel.Screenshot{}", std::process::id())
     } else {
@@ -6614,4 +6630,32 @@ where
         .save_to_png(path)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SCREENSHOT_HOOKS;
+    use std::collections::BTreeSet;
+
+    /// Every `TROMMEL_*_SCREENSHOT` literal handled in this file must also be
+    /// in [`SCREENSHOT_HOOKS`]. A capture that is missing there runs under the
+    /// normal application id, so GApplication may hand the request to an
+    /// already running Trommel window instead of rendering a private one.
+    #[test]
+    fn screenshot_hooks_cover_every_capture() {
+        let source = include_str!("gui.rs");
+        let mut found = BTreeSet::new();
+        for token in
+            source.split(|c: char| !(c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()))
+        {
+            if token.starts_with("TROMMEL_") && token.ends_with("_SCREENSHOT") {
+                found.insert(token);
+            }
+        }
+        let declared: BTreeSet<&str> = SCREENSHOT_HOOKS.into_iter().collect();
+        assert_eq!(
+            found, declared,
+            "add the screenshot hook to SCREENSHOT_HOOKS in run()"
+        );
+    }
 }

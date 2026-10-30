@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 APP_ID="io.github.nayvok.Trommel"
-VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+VERSION="$(cargo metadata --no-deps --format-version 1 --locked | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
 ARCH="amd64"
 STAGE="$ROOT/dist/${APP_ID}_${VERSION}_${ARCH}"
 rm -rf "$STAGE"
@@ -21,8 +21,14 @@ mkdir -p "$STAGE/DEBIAN" \
     "$STAGE/usr/share/polkit-1/rules.d" \
     "$STAGE/usr/share/trommel"
 
-cargo build --release -p trommeld
-cargo build --release -p trommel --features gui
+# Panic locations and debug strings otherwise embed the builder's absolute
+# checkout and Cargo home. Remap both so a locally built package does not leak
+# /home/<builder> and the CI and local builds carry the same neutral paths.
+CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$ROOT=/build/trommel --remap-path-prefix=$CARGO_HOME_DIR=/build/cargo"
+
+cargo build --release --locked -p trommeld
+cargo build --release --locked -p trommel --features gui
 
 install -m755 target/release/trommel "$STAGE/usr/bin/trommel"
 install -m755 target/release/trommeld "$STAGE/usr/bin/trommeld"

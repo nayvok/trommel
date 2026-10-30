@@ -4,7 +4,7 @@ Trommel is a GTK4/libadwaita control room for a local NVIDIA mining rig. The
 daemon `trommeld` owns the applied configuration, the miner process and the GPU
 snapshot; the GTK app and the CLI are clients.
 
-This directory documents the shipped 0.6.x code. If a document and the source
+This directory documents the shipped 0.8.x code. If a document and the source
 disagree, the source is right — fix the document in the same change that fixes
 the code.
 
@@ -37,7 +37,7 @@ in English only, matching the source strings and the catalogue fields.
 | [agents.md](agents.md) | The CLI/JSON/MCP surface and the safety rules for external agents | A command, JSON field or MCP tool changes |
 | [user-guide.md](user-guide.md) | Everyday operation from install to troubleshooting | User-visible behaviour changes |
 | [miners.md](miners.md) | Catalogue fields, option descriptors, driver branches | The catalogue or argument builder changes |
-| [packaging.md](packaging.md) | Release formats, deb layout, CI workflows | Packaging or release automation changes |
+| [packaging.md](packaging.md) | Release formats, deb layout, CI workflows, release checklist | Packaging or release automation changes |
 | [security.md](security.md) | Trust boundaries, helper, downloads, redaction | A privileged path or a security-relevant behaviour changes |
 | [i18n.md](i18n.md) | The runtime translation helper and the gettext plan | Localisation mechanics change |
 | [roadmap.md](roadmap.md) | What shipped and what is next | A release ships or a plan is adopted |
@@ -63,5 +63,5 @@ ADRs. Do not rewrite them to match the present; add a new entry or ADR.
 5. **Legacy paths are transitional.** The only code that may mention the former
    product name is the one-time config migration (`paths::legacy_config_path`)
    and the historical changelog.
-6. **Every relative link must resolve.** CI does not check markdown links yet;
-   `scripts/check-docs.sh` does (run it before a documentation commit).
+6. **Every relative link must resolve.** `scripts/check-docs.sh` runs in CI on
+   every pull request and release; run it before a documentation commit.

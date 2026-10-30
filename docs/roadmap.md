@@ -1,13 +1,13 @@
 # Roadmap
 
-Current release: **0.7.0** (29.10.2026). Shipped behaviour is documented in
+Current release: **0.8.0** (30.10.2026). Shipped behaviour is documented in
 [user-guide.md](user-guide.md) and [architecture.md](architecture.md); this page
 only describes direction. Anything not shipped is explicitly in the future
 sections — the README and guides do not describe it.
 
 ## Block plan
 
-The 0.4–0.7 work is split into blocks. A block is one branch, one scope freeze
+The 0.4–0.8 work is split into blocks. A block is one branch, one scope freeze
 and one verified release; later blocks are not started until the previous one is
 green. Status is updated in the same commit as the code.
 
@@ -18,11 +18,71 @@ green. Status is updated in the same commit as the code.
 | **B2** | Per-GPU participation: exclude a card from the active miner without a second process, catalogue capabilities for device selection | **Done in 0.5.0** |
 | **B3** | Merge the Presets and Miners pages into one preset-centred flow (miner library dialog) | **Done in 0.6.0** |
 | **B4** | Miner version manager: install/update/remove with the affected presets shown, rollback | **Done in 0.7.0** |
-| **B5** | Release hardening after B1–B4 (packaging/test matrix review; scope defined when B4 closes) | Not started |
+| **B5** | Release hardening after B1–B4: CI/test matrix, packaging install/upgrade/remove, release bundle verification, MSRV and documentation truth | **Done in 0.8.0** |
 
-B3 is complete in 0.6.0 and B4 in 0.7.0; B5 is not started. Multi-miner/multi-job
+B3 is complete in 0.6.0, B4 in 0.7.0 and B5 in 0.8.0. Multi-miner/multi-job
 remains a separate product decision under
 [ADR 0005](adr/0005-one-active-session.md).
+
+## Shipped in 0.8.x — release hardening (B5)
+
+Scope frozen on 30.10.2026 and shipped in 0.8.0. Every item is backed by a
+concrete gap in the 0.7.0 tree; anything not listed here stayed out of B5.
+
+Evidence for the freeze:
+
+- CI built `trommeld` and the GUI but never the CLI-only `trommel` target,
+  although the CLI-only build is a stated invariant; `cargo test --workspace`
+  never enables the `gui` feature, so GUI unit tests cannot run; the release
+  workflow skipped `./scripts/test-mcp.sh`; packaging was built only by the
+  manual `package.yml` or at tag time.
+- `scripts/test-deb.sh` asserted 9 of the 13 paths documented in
+  [packaging.md](packaging.md) and never installed the package;
+  `scripts/release-bundle.sh` wrote `SHA256SUMS` from `*.deb` only while the
+  docs promised all assets, so `trommel-install.sh` had no checksum entry; a
+  local build embedded `/home/<builder>` paths in the binaries; nothing checked
+  the tag against the workspace version or the bundle before publishing.
+- The e2e failure annotation showed 5 artifacts while the harness writes 19
+  `.out` files plus `state/trommel/daemon.log` and `miner.log`;
+  `scripts/atspi-bus.sh` returned success when the registry binary was missing;
+  `check-no-secrets.sh` did not look for personal paths;
+  `TROMMEL_LIBRARY_SCREENSHOT` was missing from the `NON_UNIQUE` list in
+  `crates/cli/src/gui.rs`, so the library screenshot could attach to a normal
+  running instance; the declared `rust-version = "1.80"` was lower than the
+  locked dependencies (1.89) and the GUI dependencies (1.92).
+- [README.md](README.md) of the docs said “0.6.x” and “CI does not check
+  markdown links yet”, `development.md` said “The 0.5 roadmap”, and
+  [verification.md](verification.md) implied that the release workflow ran the
+  UI smoke tests.
+
+The frozen scope, now shipped:
+
+1. **Test matrix.** Build the CLI-only target; run `cargo test -p trommel
+   --features gui`; add a pinned MSRV job (Rust 1.92); run
+   `ui-smoke.sh` and `first-run-smoke.sh` headlessly under Xvfb with a private
+   AT-SPI bus on pull requests and in the release workflow; run MCP and the
+   packaging checks in the release workflow.
+2. **Packaging.** Build and validate the `.deb` in CI on pull requests; assert
+   the complete documented layout, file modes and maintainer scripts; add an
+   install/upgrade/remove test; make the package build path-neutral.
+3. **Release.** Add `scripts/check-version.sh` and
+   `scripts/verify-release-bundle.sh`, include `trommel-install.sh` in
+   `SHA256SUMS`, guard the tag/version in the release workflow, and add a
+   concrete release checklist to [packaging.md](packaging.md).
+4. **Harness and security.** One shared `scripts/e2e-diagnostics.sh` (all
+   harness logs, uploaded as an artifact on failure); `atspi-bus.sh` fails
+   closed when the registry is unavailable; `check-no-secrets.sh` rejects
+   personal home paths; the library screenshot hook joins the private-instance
+   list.
+5. **Documentation.** Correct the stale version, roadmap, MSRV and CI claims;
+   document the headless UI harness and the manual checks that still need a
+   real rig.
+
+Deliberately not in B5: the “Next” items (download progress, custom pool
+adapters, gettext, RPM spec validation, signed catalogue), the “Later” items,
+any config/schema change, a UI redesign or screenshot regeneration, new
+product features, RPM/AppImage/Flatpak artifacts, multi-miner and any weakening
+of an existing check to get a green run.
 
 ## Shipped in 0.7.x
 

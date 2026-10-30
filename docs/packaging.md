@@ -17,8 +17,9 @@ tested. The reasoning is recorded in [ADR 0003](adr/0003-packaging.md).
 
 ## Release assets
 
-A tag `vX.Y.Z` triggers `.github/workflows/release.yml`. The workflow runs
-secrets/format/clippy/tests/e2e/polkit/asset validation, builds the bundle and
+A tag `vX.Y.Z` triggers `.github/workflows/release.yml`. The workflow runs the
+full CI matrix (including the headless UI smokes and the MSRV check), verifies
+that the tag matches the workspace version, builds and verifies the bundle, and
 publishes:
 
 ```
@@ -27,15 +28,20 @@ trommel_amd64.deb            stable alias for releases/latest/download
 trommel_X.Y.Z_amd64.deb.sha256
 trommel_amd64.deb.sha256
 trommel-install.sh           verifies the SHA-256, then apt installs
-SHA256SUMS                   all assets
+SHA256SUMS                   checksums for both debs and trommel-install.sh
 ```
+
+The `.sha256` sidecars are per-file checksums; `SHA256SUMS` covers the two
+packages and the installer, which is the set a user downloads.
 
 Locally the same bundle is produced by:
 
 ```bash
-./scripts/package-deb.sh     # dist/trommel_X.Y.Z_amd64.deb + stable alias + .sha256
-./scripts/release-bundle.sh  # dist/release/* with the same naming as CI
-./scripts/test-deb.sh        # layout validation (dpkg-deb -c)
+./scripts/package-deb.sh            # dist/trommel_X.Y.Z_amd64.deb + alias + .sha256
+./scripts/release-bundle.sh         # dist/release/*, then verifies it
+./scripts/test-deb.sh               # full layout validation
+./scripts/test-deb-install.sh       # install/upgrade/remove (root, disposable container)
+./scripts/verify-release-bundle.sh  # assets, sidecars and SHA256SUMS
 ```
 
 Users install with:
@@ -69,6 +75,12 @@ bash trommel-install.sh
 Dependencies: GTK4, libadwaita, glib, `libglib2.0-bin`, pkexec/polkit, user
 D-Bus and systemd; NVIDIA and GNOME Shell are recommendations. The package is
 built and tested on Ubuntu 26.04.
+
+`scripts/test-deb.sh` asserts this layout (every path, the helper mode, the
+maintainer scripts and the polkit annotation) and rejects a package whose
+binaries still contain a builder home path. `scripts/test-deb-install.sh`
+installs, upgrades and removes the package in a disposable root container. Both
+run in CI.
 
 Maintainer scripts:
 
@@ -105,13 +117,54 @@ refuses to remove the helper while a miner is still running.
 
 | Workflow | Trigger | Checks |
 | --- | --- | --- |
-| `ci.yml` | push to `main`, pull request | secrets, docs links, fmt, clippy with `gui`, tests, e2e, MCP, release build, desktop/metainfo validation |
-| `package.yml` | manual | builds the `.deb` and validates its layout |
-| `release.yml` | tag `v*` | everything in CI plus polkit check, release bundle and GitHub Release upload |
+| `ci.yml` | push to `main`, pull request | secrets, docs links, fmt, clippy with `gui`, tests, GUI-feature tests, CLI-only build, e2e, MCP, release build, desktop/metainfo validation, package layout + install/upgrade/remove, MSRV |
+| `ui.yml` | called by `ci.yml` and `release.yml` | headless `ui-smoke.sh` and `first-run-smoke.sh` under Xvfb with a private AT-SPI bus |
+| `package.yml` | manual | builds the `.deb` and validates its layout (the same check runs on every pull request) |
+| `release.yml` | tag `v*` | the CI matrix plus polkit check, tag/version check, release bundle verification, install/upgrade/remove, GitHub Release upload |
 
 ## Versioning
 
 One version for the whole workspace (`Cargo.toml` `[workspace.package]
-version`). The release workflow derives the asset name from it. Also update
-`CHANGELOG.md` and the metainfo `<release>` entry. The full checklist is in
-[development.md](development.md#release-checklist).
+version`). `./scripts/check-version.sh [vX.Y.Z]` checks it against
+`Cargo.lock`, `CHANGELOG.md`, the metainfo `<release>` and, when given, the tag
+and `HEAD`; the release workflow runs it before building. Also update the
+`CHANGELOG.md` and metainfo entries. The full checklist is below.
+
+## Release checklist
+
+Run from the repository root with a clean working tree.
+
+1. **Version.** Bump `version` in `Cargo.toml`; add a dated `CHANGELOG.md`
+   entry and a metainfo `<release>` entry. Build once so `Cargo.lock` picks up
+   the workspace version, then `./scripts/check-version.sh` must pass.
+2. **Matrix.** `cargo fmt --all -- --check`, `cargo clippy --workspace
+   --all-targets --features trommel/gui -- -D warnings`, `cargo test
+   --workspace`, `cargo test -p trommel --features gui`, `cargo build -p
+   trommel`, `cargo build -p trommel --features gui`, `cargo build -p
+   trommeld`, `./scripts/test-oc-helper.sh`, `./scripts/e2e.sh`,
+   `./scripts/test-mcp.sh`, `./scripts/ui-smoke.sh`,
+   `./scripts/first-run-smoke.sh`, `./scripts/check-docs.sh`,
+   `./scripts/check-no-secrets.sh`, `./scripts/check-polkit.sh`,
+   `desktop-file-validate data/io.github.nayvok.Trommel.desktop` and
+   `appstreamcli validate --explain data/io.github.nayvok.Trommel.metainfo.xml`.
+3. **Package.** `./scripts/package-deb.sh`, `./scripts/test-deb.sh` and
+   `./scripts/test-deb-install.sh` (root in a disposable container).
+4. **Bundle.** `./scripts/release-bundle.sh` builds `dist/release` and verifies
+   it; `(cd dist/release && sha256sum -c SHA256SUMS)` must pass.
+5. **Commit and tag.** Commit everything, tag the **last** commit with an
+   annotated `vX.Y.Z`, push the branch and the tag. Do not tag an intermediate
+   commit. If the release workflow fails, fix on the branch, move the tag to the
+   new last commit and push it again; delete the remote tag only if the release
+   was not published and that is agreed.
+6. **Watch the workflow.** The release workflow re-runs the matrix (including
+   the headless UI smokes and the MSRV), verifies the tag/version and the
+   bundle, and publishes only if they pass.
+7. **Verify the published release.** Download every asset into one directory and
+   run `./scripts/verify-release-bundle.sh <dir>`; check the release page for
+   the `.deb`, both `.sha256` sidecars, `trommel-install.sh` and `SHA256SUMS`,
+   and that `releases/latest/download/trommel_amd64.deb` resolves. Install once
+   from a clean machine.
+
+The interactive matrix in [verification.md](verification.md) is the
+real-desktop gate; the headless UI job proves the click path but not the
+compositor or the driver.
