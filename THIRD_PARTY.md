@@ -10,6 +10,7 @@ releases; their licenses and developer fees are set by their authors.
 | OneZeroMiner | GPU miner (catalogue) | Freeware; 1% on PearlHash |
 | GTK4 / libadwaita | UI | LGPL |
 | zbus, tokio, serde, ureq, toml, sha2, tar, flate2, zip | Rust dependencies | See Cargo.lock and crates.io |
+| ksni | StatusNotifierItem/DBusMenu tray | Unlicense (public domain); see crates.io |
 
 PearlHash and the pools listed in `resources/catalog/pools.toml` are external
 services. Their fees and APIs can change; verify them before mining.

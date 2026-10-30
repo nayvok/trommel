@@ -11,8 +11,7 @@ BIN_DIR="$HOME/.local/bin"
 UNIT_DIR="$HOME/.config/systemd/user"
 DBUS_DIR="$HOME/.local/share/dbus-1/services"
 APP_DIR="$HOME/.local/share/applications"
-ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
-SYM_ICON_DIR="$HOME/.local/share/icons/hicolor/symbolic/apps"
+ICON_ROOT="$HOME/.local/share/icons/hicolor"
 METAINFO_DIR="$HOME/.local/share/metainfo"
 HELPER_DIR="/usr/libexec/trommel"
 APP_ID="io.github.nayvok.Trommel"
@@ -96,11 +95,16 @@ systemctl --user restart trommeld.service
 ok "trommeld is $([ "$(systemctl --user is-active trommeld.service)" = active ] && echo active || echo inactive)"
 
 say "Installing desktop entry, icons and metadata"
-mkdir -p "$APP_DIR" "$ICON_DIR" "$SYM_ICON_DIR" "$METAINFO_DIR"
+mkdir -p "$APP_DIR" "$ICON_ROOT/scalable/apps" "$ICON_ROOT/symbolic/apps" "$METAINFO_DIR"
 install -m644 "$ROOT/data/$APP_ID.desktop" "$APP_DIR/$APP_ID.desktop"
 install -m644 "$ROOT/data/$APP_ID.metainfo.xml" "$METAINFO_DIR/$APP_ID.metainfo.xml"
-install -m644 "$ROOT/data/icons/$APP_ID.svg" "$ICON_DIR/$APP_ID.svg"
-install -m644 "$ROOT/data/icons/$APP_ID-symbolic.svg" "$SYM_ICON_DIR/$APP_ID-symbolic.svg"
+install -m644 "$ROOT/data/icons/$APP_ID.svg" "$ICON_ROOT/scalable/apps/$APP_ID.svg"
+install -m644 "$ROOT/data/icons/$APP_ID-tray.svg" "$ICON_ROOT/scalable/apps/$APP_ID-tray.svg"
+install -m644 "$ROOT/data/icons/$APP_ID-symbolic.svg" "$ICON_ROOT/symbolic/apps/$APP_ID-symbolic.svg"
+while IFS= read -r -d '' icon; do
+    rel="${icon#"$ROOT/data/icons/hicolor/"}"
+    install -Dm644 "$icon" "$ICON_ROOT/$rel"
+done < <(find "$ROOT/data/icons/hicolor" -type f -print0)
 command -v update-desktop-database >/dev/null && update-desktop-database -q "$APP_DIR" || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 ok "application menu entry installed"

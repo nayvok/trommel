@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <title>Trommel — screening drum</title>
+  <desc>Optically adjusted 24-pixel tray icon. A front-facing circular drum, two short feet and one angular gold nugget within the lower opening. No mesh, rear hoop or overlapping rings. Every color variant shares identical geometry.</desc>
+  <g fill="#2e3436" fill-rule="evenodd">
+    <path d="M6 19H9V23H6ZM15 19H18V23H15Z"/>
+    <path d="M22 11A10 10 0 1 1 2 11A10 10 0 1 1 22 11ZM19 11A7 7 0 1 0 5 11A7 7 0 1 0 19 11Z"/>
+    <path fill="#2e3436" d="M10 11H14L15 13L12 16L9 13Z"/>
+  </g>
+</svg>

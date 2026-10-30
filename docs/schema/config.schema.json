@@ -294,6 +294,11 @@
         "notifications": {
           "type": "boolean"
         },
+        "tray_monochrome": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the monochrome symbolic icon in the status tray"
+        },
         "language": {
           "enum": [
             "system",

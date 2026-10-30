@@ -8,7 +8,7 @@ needs a real rig. Run the commands from the repository root; see
 
 | Command | Covers |
 | --- | --- |
-| `cargo test --workspace` | Config defaults/migration/diff/warnings, miner argument rendering, documented device flags and per-driver device lists, device-capability refusal, participation status/warnings, fee handling, catalogue parsing, `nvidia-smi` parsing, OC argument validation, supervisor/state/status helpers, D-Bus helpers, hashrate formatting, download/path safety, miner version manager (usage, update plan, blocked removal, managed-file deletion, single-preset pin, verify without a fabricated checksum) |
+| `cargo test --workspace` | Config defaults/migration/diff/warnings (including `tray_monochrome` and its live diff), miner argument rendering, documented device flags and per-driver device lists, device-capability refusal, participation status/warnings, fee handling, catalogue parsing, `nvidia-smi` parsing, OC argument validation, supervisor/state/status helpers, D-Bus helpers, tray menu/header/icon/action unit tests, hashrate formatting, download/path safety, miner version manager (usage, update plan, blocked removal, managed-file deletion, single-preset pin, verify without a fabricated checksum) |
 | `cargo test -p trommel --features gui` | GUI-feature unit tests; the screenshot-hook test proves every `TROMMEL_*_SCREENSHOT` capture runs as a private instance |
 | `cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings` | Lints in all crates including GUI code |
 | `cargo fmt --check` | Formatting |
@@ -21,8 +21,8 @@ needs a real rig. Run the commands from the repository root; see
 | `./scripts/check-polkit.sh` | Polkit action id and helper path match the code |
 | `./scripts/check-no-secrets.sh` | No wallet-like strings or personal home paths in tracked files; secret markers in tracked code and scripts (`/home/user` is the only placeholder) |
 | `./scripts/check-docs.sh` | Relative markdown links resolve; removed docs are not referenced; docs are reachable from the index |
-| `./scripts/package-deb.sh` + `./scripts/test-deb.sh` | Package builds; every path documented in [packaging.md](packaging.md) exists with the right mode, the maintainer scripts and polkit annotation are present, and the binaries contain no builder home path |
-| `./scripts/test-deb-install.sh` | Install/upgrade/remove in a disposable root container: `postinst` writes the per-user rule, an upgrade keeps it, remove/purge deletes it, and the user config survives all three |
+| `./scripts/package-deb.sh` + `./scripts/test-deb.sh` | Package builds; every icon path documented in [packaging.md](packaging.md) exists, the maintainer scripts and polkit annotation are present, and the binaries contain no builder home path |
+| `./scripts/test-deb-install.sh` | Install/upgrade/remove in a disposable root container: `postinst` writes the per-user rule and enables `trommeld.service` at login, an upgrade keeps both, remove/purge deletes them, and the user config survives all three |
 | `./scripts/check-version.sh` | Workspace version matches `Cargo.toml`, `Cargo.lock`, `CHANGELOG.md` and the metainfo release, and a supplied tag (or a `refs/tags/*` build) is annotated, names it and sits on HEAD |
 | `./scripts/verify-release-bundle.sh` | The bundle has exactly the documented assets, both sidecars verify, `SHA256SUMS` covers the debs and `trommel-install.sh`, and the stable alias equals the versioned package |
 | Asset validation | `desktop-file-validate`, `appstreamcli validate` |
@@ -59,6 +59,11 @@ not a claim that CI covers it.
 | Menu | Open log, About, Quit | Opens the log/about, quits with `Ctrl+Q` |
 | Window | resize to ~400 px | No clipping; GPU value bubbles and action buttons readable; the header switcher falls back to the title and the bar at the bottom |
 | Notifications | A crash/error or an overheat event with **Behavior → Notifications** on | A desktop notification appears from `trommeld`; no shell extension is installed |
+| Tray — GNOME | StatusNotifierItem host (Ubuntu AppIndicator extension) with `trommeld` running | Icon appears in the panel; menu has status header, Start/Stop, Show window and Quit; mono/colour switch changes the icon |
+| Tray — KDE | Plasma 6 system tray with `trommeld` running | Same menu and actions through native SNI support |
+| Tray — no host | Disable the AppIndicator extension / use a session without a watcher | No tray, no crash; GUI, miner and D-Bus work normally |
+| Tray — actions | Start/Stop, Show window, Quit while mining | Toggle uses the existing busy/polkit flow; Show window launches/presents the GUI; Quit stops only our miner, restores stock, closes an open window and leaves no daemon |
+| Tray — login | Fresh install, then log out/in | Background service and tray start by default; **Start Trommel at login** off survives logout/reboot; `systemctl --user is-enabled trommeld.service` matches the switch |
 | Installer | `install.sh`, `.deb` postinst, release installer | Binaries, helper, rule, units, no password prompt for the installing user; the `.deb` install/upgrade/remove path is automated by `test-deb-install.sh` |
 | Real rig | polkit prompt-free, 300 W/1620/810, start/stop, restore dialog | OC applied, ~125 TH/s, power read back, stock restore; an ignored memory lock stops the miner with a named error |
 | Error paths | missing helper, missing miner, external miner, failed restore, cancelled auth | Start aborts or explains; snapshot kept on failed restore; no silent success; a 180 s auth dialog is not killed |
@@ -103,6 +108,10 @@ accepted the restore.
   font stack are not comparable; regenerate them locally.
 - **Real pool API.** The pool is external and rate-limited; the cache/backoff
   path is unit-tested, the live JSON is not.
+- **Tray rendering and theming.** CI cannot prove that a panel renders the
+  StatusNotifierItem, recolours the symbolic icon or shows menu icons; check it
+  manually on GNOME (AppIndicator extension) and KDE Plasma in light and dark
+  themes.
 - **Real SIGKILL/restart during a polkit prompt.** The helper lease is covered
   with the fake helper; a real `pkexec` dialog + daemon SIGKILL needs a desktop
   session and is checked manually with `nvidia-smi` before/after.

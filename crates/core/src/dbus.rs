@@ -416,18 +416,7 @@ impl Engine {
     }
 
     async fn open_app(&self) -> zbus::fdo::Result<()> {
-        let app = std::process::Command::new("gtk-launch")
-            .arg(crate::APP_ID)
-            .spawn();
-        match app {
-            Ok(_) => Ok(()),
-            Err(_) => {
-                let fallback = std::process::Command::new("trommel").arg("gui").spawn();
-                fallback
-                    .map(|_| ())
-                    .map_err(|e| zbus::fdo::Error::Failed(format!("cannot open app: {e}")))
-            }
-        }
+        launch_gui().map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     async fn quit(&self) -> zbus::fdo::Result<()> {
@@ -458,6 +447,10 @@ impl Engine {
         summary: &str,
         body: &str,
     ) -> zbus::Result<()>;
+
+    /// The tray asked the desktop client to close before the daemon exits.
+    #[zbus(signal)]
+    async fn quit_requested(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 impl Engine {
@@ -471,6 +464,46 @@ impl Engine {
         body: &str,
     ) -> zbus::Result<()> {
         Self::notification(emitter, summary, body).await
+    }
+
+    pub async fn emit_quit_requested(emitter: &SignalEmitter<'_>) -> zbus::Result<()> {
+        Self::quit_requested(emitter).await
+    }
+
+    /// Start or stop mining from the tray. The D-Bus `Toggle` method and the
+    /// tray share the same supervisor path and busy guard.
+    pub async fn tray_toggle(&self) -> anyhow::Result<bool> {
+        let running = self.running_flag();
+        if running {
+            self.stop()
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        } else {
+            self.start()
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        }
+        Ok(!running)
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.oc_busy.load(Ordering::Relaxed)
+    }
+}
+
+/// Open the GTK app, presenting the running single instance when there is one.
+pub fn launch_gui() -> anyhow::Result<()> {
+    match std::process::Command::new("gtk-launch")
+        .arg(crate::APP_ID)
+        .spawn()
+    {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            let fallback = std::process::Command::new("trommel").arg("gui").spawn();
+            fallback
+                .map(|_| ())
+                .map_err(|e| anyhow::anyhow!("cannot open app: {e}"))
+        }
     }
 }
 
@@ -570,6 +603,9 @@ pub trait Miner {
 
     #[zbus(signal)]
     fn notification(&self, summary: &str, body: &str) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn quit_requested(&self) -> zbus::Result<()>;
 
     #[zbus(property)]
     fn running(&self) -> zbus::Result<bool>;

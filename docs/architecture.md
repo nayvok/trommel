@@ -18,6 +18,7 @@ central rule; every other design decision follows from it.
 │ trommeld (user service, Type=dbus)                               │
 │  Engine: applied Config · Supervisor · last Status               │
 │  loops: status refresher · 1 s supervisor tick                   │
+│  tray: StatusNotifierItem on the session bus                     │
 └───────┬──────────────────────┬───────────────────────┬───────────┘
         │ spawn (args vector)  │ pkexec                 │ HTTPS
         ▼                      ▼                       ▼
@@ -37,7 +38,7 @@ subcommand opens the GUI when built with `--features gui`.
 
 | Process | User | Responsibility | Never does |
 | --- | --- | --- | --- |
-| `trommeld` | desktop user | Owns config, miner child, snapshot, status; serves D-Bus | Runs as root, edits the helper, downloads without a user action |
+| `trommeld` | desktop user | Owns config, miner child, snapshot, status; serves D-Bus; hosts the SNI tray | Runs as root, edits the helper, downloads without a user action |
 | `trommel` (GUI/CLI) | desktop user | Draft editing, display, command dispatch | Calls `nvidia-smi`, spawns/kills the miner, writes state |
 | `trommel guard` | desktop user | Watches the daemon PID/start time, runs emergency-stop after a crash | Touches GPUs directly, runs as root, survives a graceful disarm |
 | `trommel emergency-stop` | desktop user | Idempotent teardown: stop **our** miner, restore the snapshot | Kills an external miner, restores a stale-boot snapshot |
@@ -54,7 +55,9 @@ dialog is not killed; the per-user rule removes the prompt entirely. A missing
 rule therefore costs one authentication, not a silent failure.
 
 The daemon runs in the user session (`PartOf=graphical-session.target`) and is
-D-Bus activated on demand. It does **not** keep mining across its own restart:
+both enabled at login (so the tray is present) and D-Bus activated on demand.
+The tray does not imply mining: it starts in the stopped state. It does **not**
+keep mining across its own restart:
 on start-up it stops an orphaned miner from the previous session, restores an
 applied snapshot and leaves mining stopped (startup recovery). Adoption no
 longer resumes mining; see [ADR 0006](adr/0006-failure-policy.md).
@@ -112,7 +115,7 @@ Config
 ├── pools: { id -> CustomPool }               (reserved for future endpoints)
 └── behavior: auto_restart, restart_delay_s, poll_interval_s,
               restore_stock_on_stop, start_mining_on_login, notifications,
-              language, appearance, simple_mode
+              tray_monochrome, language, appearance, simple_mode
 ```
 
 `GpuTuning` uses `Option` values as the source of truth: `None` means “do not
@@ -294,7 +297,9 @@ CLI help on purpose: it is an operator/automation command, not a normal Stop.
 ### Shutdown, lost session bus and guard
 
 On SIGTERM/SIGINT the daemon calls `Supervisor::shutdown(&cfg)` (force restore,
-20 s helper timeout), disarms the guard and exits. Restore comes first and the
+20 s helper timeout), disarms the guard and exits. The tray's **Quit** joins the
+same path after emitting `QuitRequested`; it first asks an open GUI to close,
+then stops only our miner, restores stock and exits with status 0. Restore comes first and the
 guard stays armed during the shutdown window: if the daemon is SIGKILLed
 mid-restore, the guard runs the same idempotent emergency-stop and the OC flock
 serializes the two. Disarming first would leave a killed daemon with applied
@@ -477,6 +482,39 @@ body (`… 95 °C (card #1, limit 90 °C)`), so a two-GPU rig alerts on whicheve
 card is actually hot. Both paths use the same localised summary and body. The
 daemon is the only
 long-lived process, so it owns this path; there is no shell extension.
+
+## Tray
+
+`trommeld` hosts a freedesktop **StatusNotifierItem** tray (see
+[ADR 0008](adr/0008-tray.md)). It lives in the
+daemon on purpose: the icon exists without an open GTK window, survives a GUI
+crash and can start/stop the miner directly. The GTK app remains a short-lived
+client.
+
+The menu is built by `ksni` over `org.kde.StatusNotifierItem` and
+`com.canonical.dbusmenu`; the panel renders it. It contains a disabled status
+header (`Mining stopped` / `Mining · <preset> · <hashrate>`), a separator,
+**Start/Stop mining**, **Show window** and **Quit**:
+
+- **Start/Stop** calls `Engine::tray_toggle`, the same supervisor path and busy
+  guard as the D-Bus `Toggle()` method.
+- **Show window** runs `gtk-launch io.github.nayvok.Trommel` and falls back to
+  `trommel gui`; the single-instance GApplication presents an existing window.
+- **Quit** is a full shutdown: the daemon emits `QuitRequested` so an open GUI
+  can close, then runs the normal graceful stop (only our miner, snapshot
+  restore, guard disarm) and exits. `ExecStopPost`/the guard remain as the
+  crash net.
+
+KDE Plasma supports SNI natively. GNOME Shell needs the AppIndicator extension
+(Ubuntu ships `ubuntu-appindicators`); without a watcher the tray simply does not
+appear and every other feature keeps working. Windows would need a different
+platform backend and is not supported. `TROMMEL_NO_TRAY=1` disables the tray for
+tests. The next tray iteration (show/hide, start minimised, dynamic icon) is
+listed in [roadmap.md](roadmap.md#next-not-scheduled).
+
+`behavior.tray_monochrome` (default `true`) selects the symbolic icon that
+follows the panel theme; `false` selects the colour icon. Both are installed in
+hicolor. The change is live and does not restart the miner.
 
 ## Design constraints and trade-offs
 

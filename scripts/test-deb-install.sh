@@ -34,6 +34,7 @@ trap cleanup EXIT
 
 useradd -m -s /bin/bash "$TEST_USER" 2>/dev/null || true
 CONFIG_DIR="/home/$TEST_USER/.config/trommel"
+AUTOSTART_LINK="/home/$TEST_USER/.config/systemd/user/graphical-session.target.wants/trommeld.service"
 mkdir -p "$CONFIG_DIR"
 printf '{"schema_version":3}\n' > "$CONFIG_DIR/config.json"
 chown -R "$TEST_USER:$TEST_USER" "/home/$TEST_USER/.config"
@@ -78,6 +79,9 @@ RULE="$(rule_file)"
 grep -q "subject.user !== \"$TEST_USER\"" "$RULE" 2>/dev/null \
     || fail "per-user polkit rule does not name $TEST_USER"
 [ -f "$CONFIG_DIR/config.json" ] || fail "install removed the user config"
+[ -L "$AUTOSTART_LINK" ] || fail "postinst did not enable trommeld.service at login"
+[ "$(readlink "$AUTOSTART_LINK" 2>/dev/null)" = "/usr/lib/systemd/user/trommeld.service" ] \
+    || fail "autostart link points at the wrong unit"
 
 # A locally built package must not carry the builder's home directory.
 if grep -aq '/home/' /usr/bin/trommel /usr/bin/trommeld; then
@@ -101,23 +105,26 @@ INSTALLED_VERSION="$(dpkg-query -W -f='${Version}' trommel 2>/dev/null || true)"
 grep -q "subject.user !== \"$TEST_USER\"" "$RULE" 2>/dev/null \
     || fail "upgrade rewrote the rule for the wrong user"
 [ -f "$CONFIG_DIR/config.json" ] || fail "upgrade removed the user config"
+[ -L "$AUTOSTART_LINK" ] || fail "upgrade removed the login autostart link"
 
 # --- remove ------------------------------------------------------------------
-apt-get remove -y trommel > "$WORK/remove.log" 2>&1 || {
+SUDO_USER="$TEST_USER" apt-get remove -y trommel > "$WORK/remove.log" 2>&1 || {
     tail -40 "$WORK/remove.log" >&2
     fail "apt-get remove failed"
 }
 [ ! -e /usr/bin/trommel ] || fail "binary left behind after remove"
 [ ! -e "$RULE" ] || fail "per-user polkit rule left behind after remove"
 [ -f "$CONFIG_DIR/config.json" ] || fail "remove deleted the user config"
+[ ! -e "$AUTOSTART_LINK" ] || fail "login autostart link left behind after remove"
 
 # --- purge -------------------------------------------------------------------
-apt-get purge -y trommel > "$WORK/purge.log" 2>&1 || {
+SUDO_USER="$TEST_USER" apt-get purge -y trommel > "$WORK/purge.log" 2>&1 || {
     tail -40 "$WORK/purge.log" >&2
     fail "apt-get purge failed"
 }
 [ ! -e "$RULE" ] || fail "per-user polkit rule left behind after purge"
 [ -f "$CONFIG_DIR/config.json" ] || fail "purge deleted the user config"
+[ ! -e "$AUTOSTART_LINK" ] || fail "login autostart link left behind after purge"
 dpkg-query -W trommel >/dev/null 2>&1 && fail "package is still registered after purge"
 
 if [ "$FAILS" -ne 0 ]; then

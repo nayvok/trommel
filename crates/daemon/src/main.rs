@@ -3,13 +3,17 @@
 //! Owns the miner process, applies the OC profile, polls GPU + miner + pool and
 //! pushes the status document over D-Bus (`io.github.nayvok.Trommel.Daemon`).
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::Notify;
 use trommel_core::dbus::{self, Engine};
 use trommel_core::i18n::tr;
 use trommel_core::status::Status;
 use trommel_core::supervisor::log_line;
 use trommel_core::{paths, OBJECT_PATH};
+
+mod tray;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
@@ -68,12 +72,41 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let (refresh_tx, mut refresh_rx) = tokio::sync::mpsc::channel::<()>(16);
+    let quit = Arc::new(Notify::new());
+
+    // The tray belongs to the daemon: it exists without an open window and
+    // controls the miner through the same Engine path as D-Bus.
+    let tray = if std::env::var_os("TROMMEL_NO_TRAY").is_some() {
+        log_line("tray not started (TROMMEL_NO_TRAY set)");
+        None
+    } else {
+        let cfg = engine.cfg().await;
+        match tray::spawn(
+            engine.clone(),
+            connection.clone(),
+            refresh_tx.clone(),
+            quit.clone(),
+            cfg.behavior.tray_monochrome,
+        )
+        .await
+        {
+            Ok(handle) => {
+                log_line("tray started");
+                Some(handle)
+            }
+            Err(err) => {
+                log_line(&format!("tray not started: {err}"));
+                None
+            }
+        }
+    };
 
     // Status refresher: periodic polling plus on-demand refresh requests.
     let refresher = {
         let engine = engine.clone();
         let iface_ref = iface_ref.clone();
         let connection = connection.clone();
+        let tray = tray.clone();
         tokio::spawn(async move {
             let mut last_json = String::new();
             let mut overheated = false;
@@ -94,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
                     .map(|p| p.default.temp_limit_c)
                     .unwrap_or(90);
                 let notify_enabled = cfg.behavior.notifications;
+                let tray_cfg = cfg.clone();
 
                 let status = match tokio::task::spawn_blocking(move || {
                     Status::collect(&cfg, &state)
@@ -113,6 +147,15 @@ async fn main() -> anyhow::Result<()> {
                     let _ = Engine::emit_status_changed(iface_ref.signal_emitter(), &json).await;
                 }
                 engine.set_status(status.clone()).await;
+                if let Some(tray) = &tray {
+                    tray::sync_with_timeout(
+                        tray,
+                        &status,
+                        tray_cfg.behavior.tray_monochrome,
+                        engine.is_busy(),
+                    )
+                    .await;
+                }
 
                 // Overheat notification, once per episode. The hot card can be
                 // any card: on a two-GPU rig the duty card is often the second
@@ -203,12 +246,20 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    let mut quit_by_tray = false;
     tokio::select! {
         _ = shutdown => {}
+        _ = quit.notified() => {
+            quit_by_tray = true;
+        }
         _ = supervisor_loop => {}
         _ = refresher => {}
     }
 
+    if quit_by_tray {
+        log_line("tray: quit requested");
+        let _ = Engine::emit_quit_requested(iface_ref.signal_emitter()).await;
+    }
     if bus_closed {
         log_line("сессионная шина закрыта; останавливаю майнер и возвращаю сток");
     }
@@ -229,6 +280,9 @@ async fn main() -> anyhow::Result<()> {
                 log_line(&format!("shutdown: emergency-stop failed: {emergency}"));
             }
         }
+    }
+    if let Some(tray) = &tray {
+        tray.shutdown().await;
     }
     trommel_core::guard::disarm_and_stop();
     log_line("сервис остановлен");

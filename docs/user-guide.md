@@ -17,7 +17,9 @@ repository or PPA; upgrades are new release downloads.
 `./install.sh` is the developer path. A working NVIDIA driver and `nvidia-smi`
 are required. The app talks to the daemon over D-Bus; the daemon runs as your
 user, and the narrow GPU helper runs through polkit — without a password for the
-user who installed the package.
+user who installed the package. The background service and tray start at login
+by default; turn off **Settings → Behavior → Start Trommel at login** if you
+prefer to start it on demand.
 
 ## First run: Quick setup
 
@@ -194,10 +196,11 @@ selected.
 ![Settings](images/settings-en-dark.png)
 
 - **Behavior** — restart on crash, restore stock on stop (on by default),
-  notifications, temperature limit and resume temperature (global: they drive
-  the overheat warning and are passed to miners that support a limit), start
-  mining at login, simple mode, poll interval, language (needs an app restart)
-  and appearance.
+  notifications, start Trommel at login (on by default; service and tray, not
+  mining), monochrome tray icon (on by default), temperature limit and resume
+  temperature (global: they drive the overheat warning and are passed to miners
+  that support a limit), start mining at login, simple mode, poll interval,
+  language (needs an app restart) and appearance.
 - **Actions** — **Save and apply**, **Copy diagnostics** (redacted), **Restore
   stock**.
 
@@ -303,6 +306,34 @@ desktop notifications. The daemon sends them through
 `org.freedesktop.Notifications`, so they work on any freedesktop desktop and do
 not need a shell extension. The same events are also emitted as the
 `Notification` D-Bus signal for custom integrations.
+
+## Tray
+
+The background service `trommeld` owns the tray icon, so it is available even
+when the main window is closed. The menu is rendered by the panel and contains a
+status line (`Mining stopped` or `Mining · <preset> · <hashrate>`), a separator,
+**Start mining** / **Stop mining**, **Show window** and **Quit**.
+
+- **Start/Stop** uses the same supervisor and busy guard as the dashboard; it
+  never starts a second miner.
+- **Show window** launches Trommel or brings the existing window to the front.
+- **Quit** stops only Trommel's miner, restores the captured power limit and
+  clocks, asks an open window to close and shuts the daemon down. After Quit no
+  Trommel process is left; start the app again to get the tray back.
+
+KDE Plasma supports the tray natively. GNOME Shell needs the AppIndicator
+extension — Ubuntu ships it as `ubuntu-appindicators`; on other GNOME installs,
+enable “AppIndicator and KStatusNotifierItem Support”. Without a
+StatusNotifierItem host the icon is simply absent and every other feature keeps
+working. Windows is not supported.
+
+The related switches live in **Settings → Behavior**:
+
+- **Use monochrome tray icon** (on by default) follows the panel theme; turn it
+  off for the colour icon. The change applies on the next status refresh.
+- **Start Trommel at login** (on by default) starts the background service and
+  tray at login. It does **not** start mining; **Start mining at login** is a
+  separate switch.
 
 ## Benchmarks
 

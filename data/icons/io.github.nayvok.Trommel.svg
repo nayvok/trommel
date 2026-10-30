@@ -1,30 +1,37 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <!-- Trommel: a tilted screening drum on a simple frame, with gold falling
-       into a tray. GNOME HIG: 128x128 canvas, 2px grid, flat geometry. -->
-  <rect x="4" y="4" width="120" height="120" rx="27" fill="#3584e4"/>
-
-  <!-- frame -->
-  <path d="M35 82 L27 103 H39 L47 82 Z" fill="#865e3c"/>
-  <path d="M87 82 L95 103 H83 L75 82 Z" fill="#865e3c"/>
-  <rect x="30" y="99" width="68" height="5" rx="2.5" fill="#63452c"/>
-
-  <!-- tilted drum -->
-  <g transform="rotate(-14 64 64)">
-    <rect x="24" y="53" width="64" height="34" rx="17" fill="#b5835a"/>
-    <rect x="30" y="55" width="52" height="8" rx="4" fill="#cdab8f"/>
-    <ellipse cx="88" cy="70" rx="10" ry="17" fill="#cdab8f"/>
-    <ellipse cx="88" cy="70" rx="6" ry="11" fill="#3d3846"/>
-    <ellipse cx="88" cy="70" rx="3" ry="7" fill="#241f31"/>
-    <circle cx="38" cy="68" r="2.2" fill="#3d3846"/>
-    <circle cx="48" cy="74" r="2.2" fill="#3d3846"/>
-    <circle cx="58" cy="77" r="2.2" fill="#3d3846"/>
-    <circle cx="68" cy="76" r="2.2" fill="#3d3846"/>
-    <circle cx="77" cy="72" r="2.2" fill="#3d3846"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Trommel — Adwaita</title>
+<desc id="desc">Front-facing teal screening drum, four broad screen bars and one gold nugget. Two mirrored supports have equal width and a shared baseline. Soft shadows stay inside the drum or on the supports. No backplate.</desc>
+<defs>
+  <clipPath id="opening"><circle cx="64" cy="58" r="34"/></clipPath>
+  <clipPath id="supports"><path d="M26 82H38L36 110H20Z"/><path d="M26 82H38L36 110H20Z" transform="translate(128 0) scale(-1 1)"/></clipPath>
+  <linearGradient id="rim" x1="0" y1="12" x2="0" y2="104" gradientUnits="userSpaceOnUse"><stop stop-color="#09a5af"/><stop offset="1" stop-color="#008896"/></linearGradient>
+  <linearGradient id="cavity" x1="0" y1="24" x2="0" y2="92" gradientUnits="userSpaceOnUse"><stop stop-color="#103e47"/><stop offset="1" stop-color="#184b52"/></linearGradient>
+  <linearGradient id="stand" x1="0" y1="82" x2="0" y2="110" gradientUnits="userSpaceOnUse"><stop stop-color="#3d5669"/><stop offset="1" stop-color="#3d5669"/></linearGradient>
+  <filter id="softContact" x="-.12" y="-.12" width="1.24" height="1.24" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation=".65"/></filter>
+  <filter id="softGold" x="-.15" y="-.2" width="1.3" height="1.4" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation=".8"/></filter>
+  <filter id="softScreen" x="-.1" y="-.1" width="1.2" height="1.2" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation=".45"/></filter>
+</defs>
+<!-- Visible edges x18..110, y14..114 are centered on (64,64). -->
+<g transform="translate(0 2)">
+  <g fill="url(#stand)"><path d="M26 82H38L36 110H20Z"/><path d="M26 82H38L36 110H20Z" transform="translate(128 0) scale(-1 1)"/></g>
+  <g fill="#304757"><path d="M20 110H36V111Q36 112 35 112H21Q20 112 20 111Z"/><path d="M20 110H36V111Q36 112 35 112H21Q20 112 20 111Z" transform="translate(128 0) scale(-1 1)"/></g>
+  <!-- The same short contact shadow falls on both supports, never outside them. -->
+  <g clip-path="url(#supports)"><circle cx="64" cy="63" r="46" fill="#092831" opacity=".14" filter="url(#softContact)"/></g>
+  <circle cx="64" cy="60" r="46" fill="#006b79"/>
+  <circle cx="64" cy="58" r="46" fill="url(#rim)"/>
+  <circle cx="64" cy="58" r="34" fill="url(#cavity)"/>
+  <g clip-path="url(#opening)">
+    <path transform="translate(0 1.25)" d="M46 20h7v76h-7Z M75 20h7v76h-7Z M26 42h76v7H26Z M26 72h76v7H26Z" fill="#092831" opacity=".16" filter="url(#softScreen)"/>
+    <path d="M46 20h7v76h-7Z M75 20h7v76h-7Z M26 42h76v7H26Z M26 72h76v7H26Z" fill="#b3cbd0"/>
+    <path transform="translate(0 1.5)" d="m62 58 16 6 10 18-12 12H54L42 82l6-14Z" fill="#061d25" opacity=".19" filter="url(#softGold)"/>
+    <path d="m62 58 16 6 10 18-12 12H54L42 82l6-14Z" fill="#f5b40a"/>
+      <path d="m62 58 16 6-10 14-20-10Z" fill="#ffe37c"/>
+      <path d="m48 68 20 10-14 16-12-12Z" fill="#ffc52c"/>
+      <path d="m78 64 10 18-20-4Z" fill="#f6d32d"/>
+      <path d="m68 78 20 4-12 12H54Z" fill="#e49a00"/>
   </g>
-
-  <!-- gold particles falling into the tray -->
-  <circle cx="83" cy="92" r="4" fill="#f6d32d"/>
-  <circle cx="93" cy="97" r="3" fill="#f5c211"/>
-  <circle cx="73" cy="98" r="2.5" fill="#f6d32d"/>
-  <path d="M64 107 h38" stroke="#f6d32d" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
+  <circle cx="64" cy="58" r="34" fill="none" stroke="#006b79" stroke-width="2"/>
+  <path d="M20 58a44 44 0 0 1 88 0" fill="none" stroke="#ffffff" stroke-width="2" opacity=".24"/>
+  <path d="M20 58a44 44 0 0 0 88 0" fill="none" stroke="#004f60" stroke-width="2" opacity=".17"/>
+</g>
 </svg>

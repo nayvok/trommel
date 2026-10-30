@@ -166,7 +166,7 @@ Every coloured value has a word next to it (“installed”, “not installed”
 | Main window | `AdwApplicationWindow` | app start | Header (view switcher, refresh, menu), three pages, banners |
 | Dashboard | page | view switcher | Hero hashrate, GPU cards, totals, shares, pool, warnings |
 | Presets | page | view switcher | Preset list, miner library entry; rows open the editor |
-| Settings | page | view switcher | Behaviour, appearance, actions |
+| Settings | page | view switcher | Behaviour, tray, appearance, actions |
 | Preset editor | `AdwDialog` | preset row / New preset | One preset: miner, version, pool, wallet, fees, options |
 | Miner library | `AdwDialog` | Presets page / preset editor | Catalogue, installed versions with usage, verify/remove, per-preset version switch, benchmark, install entry |
 | Miner install | `AdwDialog` | Miner library row, editor, wizard | Version pick, HTTPS download, local import |
@@ -176,6 +176,7 @@ Every coloured value has a word next to it (“installed”, “not installed”
 | Quick setup | `AdwDialog` | Quick setup button / Start on a pristine install | Cards → miner → wallet → start |
 | Apply alert | `AdwAlertDialog` | apply while mining | Apply and restart / apply and stop / cancel |
 | Delete-preset alert | `AdwAlertDialog` | preset editor | Destructive confirmation |
+| Tray menu | StatusNotifierItem | panel icon | Status header, Start/Stop, Show window, Quit |
 | About / log / file chooser | platform | menu, installer | Standard surfaces |
 
 ## Screen specifications
@@ -325,9 +326,10 @@ The catalogue is a convenience, not a gate. Never add a second install UI.
 Groups, in order:
 
 1. **Behavior** — restart on crash, restore stock on stop, notifications,
-   temperature limit and resume temperature (global; one miner process gets one
-   temperature policy), start at login, simple mode, poll interval, language
-   (restart required), appearance (immediate).
+   start Trommel at login (systemd, applied immediately), monochrome tray icon
+   (draft), start mining at login, temperature limit and resume temperature
+   (global; one miner process gets one temperature policy), simple mode, poll
+   interval, language (restart required), appearance (immediate).
 2. **Actions** — **Save and apply**, **Copy diagnostics**, **Restore stock**.
    Buttons stay vertically centred in their rows. **Restore stock** asks first:
    snapshot target, or the driver default when it differs; a pre-existing tuned
@@ -469,7 +471,9 @@ two-GPU rig with deterministic XDG directories. Conventions:
 - Widget callbacks mutate the draft only; they never talk to D-Bus directly.
   Settings switches write into the draft as they are toggled, so the global
   unsaved-changes banner and the Settings **Save and apply** button behave the
-  same.
+  same. The one exception is **Start Trommel at login**: it is a systemd user
+  unit property, not config, and is applied immediately (reverting the switch
+  and showing a toast if `systemctl --user` fails).
 - New dialogs are `AdwDialog`, never a separate `GtkWindow`: they inherit the
   window style and use libadwaita's spring presentation instead of the
   compositor's window-open animation. They must be modal, close on `Esc`, and

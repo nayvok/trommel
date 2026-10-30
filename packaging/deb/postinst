@@ -27,4 +27,30 @@ if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
     esac
 fi
 
+# The tray lives in the background service. Enable it for the installing user
+# on the first install so the tray is present after login; an upgrade must not
+# override a later "systemctl --user disable".
+if [ -z "${2:-}" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    case "$SUDO_USER" in
+        *[!a-zA-Z0-9._-]*) ;;
+        *)
+            if getent passwd "$SUDO_USER" >/dev/null 2>&1; then
+                user_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+                user_group=$(id -gn "$SUDO_USER" 2>/dev/null || true)
+                if [ -n "$user_home" ] && [ -n "$user_group" ] && [ -d "$user_home" ]; then
+                    if [ ! -d "$user_home/.config" ]; then
+                        mkdir -p "$user_home/.config"
+                        chown "$SUDO_USER:$user_group" "$user_home/.config"
+                    fi
+                    wants="$user_home/.config/systemd/user/graphical-session.target.wants"
+                    mkdir -p "$wants"
+                    chown -R "$SUDO_USER:$user_group" "$user_home/.config/systemd" 2>/dev/null || true
+                    ln -sfn /usr/lib/systemd/user/trommeld.service "$wants/trommeld.service"
+                    chown -h "$SUDO_USER:$user_group" "$wants/trommeld.service" 2>/dev/null || true
+                fi
+            fi
+            ;;
+    esac
+fi
+
 exit 0

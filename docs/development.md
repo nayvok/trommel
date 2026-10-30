@@ -110,6 +110,7 @@ The GUI reads these environment variables for tests and screenshots:
 | `TROMMEL_OPEN_LIBRARY` | Open the miner library dialog on start |
 | `TROMMEL_OPEN_INSTALL` | Open the miner install dialog on start |
 | `TROMMEL_OPEN_TUNE` | Open the GPU tuning dialog on start |
+| `TROMMEL_AUTOSTART_STATE` | `on`/`off` forces the Settings login-autostart switch (deterministic screenshots) |
 | `TROMMEL_WIZARD_SCREENSHOT`, `TROMMEL_TUNE_SCREENSHOT`, `TROMMEL_PRESET_SCREENSHOT`, `TROMMEL_LIBRARY_SCREENSHOT`, `TROMMEL_INSTALL_SCREENSHOT` | Capture a transient window |
 
 Runtime/test variables used outside the GUI:
@@ -124,6 +125,7 @@ Runtime/test variables used outside the GUI:
 | `TROMMEL_FAKE_MODE` | `ignore_pl`, `ignore_lmc`, `fail_rgc`, … for the fake |
 | `TROMMEL_NO_EXTERNAL_SCAN` | Disable the `/proc` external-miner scan |
 | `TROMMEL_NO_GUARD` | Do not start the guard (deterministic test daemon lifetimes) |
+| `TROMMEL_NO_TRAY` | Do not create the StatusNotifierItem tray (tests and screenshots) |
 | `TROMMEL_MAX_RESTARTS` | Override the consecutive restart budget (default 5) |
 | `TROMMEL_GUARD_BIN` | Path to the `trommel` binary the daemon uses for its guard |
 | `TROMMEL_SKIP_BUILD` | Test scripts reuse an existing build |

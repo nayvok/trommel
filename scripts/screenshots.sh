@@ -136,6 +136,8 @@ export XDG_CACHE_HOME="$WORK/cache"
 # The demo rig is the only miner: do not adopt a real one from the host, and
 # do not leave a guard behind when the screenshot daemon is killed.
 export TROMMEL_NO_EXTERNAL_SCAN=1
+export TROMMEL_NO_TRAY=1
+export TROMMEL_AUTOSTART_STATE=on
 export TROMMEL_NO_GUARD=1
 export TROMMEL_OC_HELPER="$WORK/bin/oc-helper"
 export TROMMEL_OC_LOG="$WORK/oc.log"

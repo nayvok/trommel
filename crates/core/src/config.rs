@@ -257,6 +257,8 @@ pub struct Behavior {
     pub restore_stock_on_stop: bool,
     pub start_mining_on_login: bool,
     pub notifications: bool,
+    /// Use the monochrome symbolic icon in the tray; off selects the colour one.
+    pub tray_monochrome: bool,
     pub language: Language,
     /// Colour scheme of the app window.
     pub appearance: Appearance,
@@ -273,6 +275,7 @@ impl Default for Behavior {
             restore_stock_on_stop: true,
             start_mining_on_login: false,
             notifications: true,
+            tray_monochrome: true,
             language: Language::System,
             appearance: Appearance::System,
             simple_mode: true,
@@ -635,6 +638,12 @@ impl Config {
                 "Изменилась настройка автозапуска",
             ));
         }
+        if self.behavior.tray_monochrome != next.behavior.tray_monochrome {
+            reasons.push(tr(
+                "Tray icon style changed",
+                "Изменился стиль иконки в трее",
+            ));
+        }
         ConfigDiff { class, reasons }
     }
 
@@ -863,6 +872,32 @@ mod tests {
         let cfg: Config = serde_json::from_str(r#"{"schema_version":3}"#).unwrap();
         assert!(cfg.behavior.restore_stock_on_stop);
         assert!(Behavior::default().restore_stock_on_stop);
+    }
+
+    #[test]
+    fn tray_is_monochrome_by_default() {
+        // The symbolic tray icon follows the panel theme; the colour icon is
+        // an explicit opt-in, just like in Telegram/Happ.
+        let cfg: Config = serde_json::from_str(r#"{"schema_version":3}"#).unwrap();
+        assert!(cfg.behavior.tray_monochrome);
+        assert!(Behavior::default().tray_monochrome);
+
+        let colour = Behavior {
+            tray_monochrome: false,
+            ..Behavior::default()
+        };
+        let json = serde_json::to_string(&colour).unwrap();
+        assert!(json.contains(r#""tray_monochrome":false"#));
+    }
+
+    #[test]
+    fn tray_style_change_is_live() {
+        let cfg = Config::default();
+        let mut next = cfg.clone();
+        next.behavior.tray_monochrome = false;
+        let diff = cfg.diff(&next);
+        assert_eq!(diff.class, ChangeClass::Live);
+        assert!(!diff.reasons.is_empty());
     }
 
     #[test]

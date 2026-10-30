@@ -43,7 +43,17 @@ check_path /usr/share/dbus-1/services/io.github.nayvok.Trommel.Daemon.service
 check_path /usr/share/applications/io.github.nayvok.Trommel.desktop
 check_path /usr/share/metainfo/io.github.nayvok.Trommel.metainfo.xml
 check_path /usr/share/icons/hicolor/scalable/apps/io.github.nayvok.Trommel.svg
+check_path /usr/share/icons/hicolor/scalable/apps/io.github.nayvok.Trommel-tray.svg
 check_path /usr/share/icons/hicolor/symbolic/apps/io.github.nayvok.Trommel-symbolic.svg
+for size in 32 48 64 128 256 512; do
+    check_path "/usr/share/icons/hicolor/${size}x${size}/apps/io.github.nayvok.Trommel.png"
+done
+for size in 16 22 24 32; do
+    check_path "/usr/share/icons/hicolor/${size}x${size}/apps/io.github.nayvok.Trommel-tray.png"
+done
+for size in 22 24 32; do
+    check_path "/usr/share/icons/hicolor/${size}x${size}/apps/io.github.nayvok.Trommel-symbolic.svg"
+done
 
 # Control fields and maintainer scripts.
 CONTROL="$(dpkg-deb -f "$DEB")"

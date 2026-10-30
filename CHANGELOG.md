@@ -5,6 +5,23 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- **New Adwaita app icon and tray artwork.** The main icon is installed as a
+  scalable SVG plus 32–512 px PNGs; the tray ships a monochrome symbolic icon and
+  a colour icon at 16–32 px.
+- **Background tray in `trommeld`.** A StatusNotifierItem menu with a status
+  header, Start/Stop mining, Show window and Quit. It works on KDE Plasma
+  natively and on GNOME through the AppIndicator extension, survives a closed
+  GUI and is disabled by `TROMMEL_NO_TRAY=1` in tests.
+- **Tray quit and show-window paths.** Quit stops only Trommel's miner, restores
+  the snapshot, asks an open window to close through `QuitRequested` and exits;
+  Show window launches or presents the GTK app.
+- **Tray settings.** `behavior.tray_monochrome` (default `true`, live) selects
+  the symbolic or colour icon, and **Start Trommel at login** (default on)
+  enables `trommeld.service` through systemd. The Debian package enables it for
+  the installing user on first install; upgrades keep a later opt-out.
+
 ## [0.8.2] - 2026-10-30
 
 ### Fixed

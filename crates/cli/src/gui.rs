@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adw::prelude::*;
+use futures_util::StreamExt;
 use gtk::{gdk, gio, glib};
 
 use trommel_core::catalog::{self, MinerOption, OptionKind};
@@ -54,6 +55,7 @@ enum Ev {
     Applied { message: String, quiet: bool },
     Busy(bool),
     Bench(String),
+    Quit,
 }
 
 fn spawn_worker(emit: Arc<dyn Fn(Ev) + Send + Sync>) -> tokio::sync::mpsc::UnboundedSender<Cmd> {
@@ -200,6 +202,80 @@ async fn connect() -> anyhow::Result<MinerProxy<'static>> {
     MinerProxy::new(&connection).await.map_err(Into::into)
 }
 
+/// Close the window when the tray asks the daemon to quit.
+///
+/// This is a separate connection and thread on purpose: it must not disturb
+/// the GUI worker, and a stopped daemon must not take the GUI down. Only an
+/// explicit `QuitRequested` signal from a running daemon emits `Ev::Quit`;
+/// losing the name owner just reconnects.
+fn spawn_quit_listener(emit: Arc<dyn Fn(Ev) + Send + Sync>) {
+    let _ = std::thread::Builder::new()
+        .name("trommel-quit".into())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    emit(Ev::Error(format!(
+                        "cannot create quit listener runtime: {err}"
+                    )));
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                loop {
+                    let connection = match zbus::Connection::session().await {
+                        Ok(connection) => connection,
+                        Err(_) => {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
+                    };
+                    let bus = match zbus::fdo::DBusProxy::new(&connection).await {
+                        Ok(bus) => bus,
+                        Err(_) => {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
+                    };
+                    let Ok(name) = zbus::names::BusName::try_from(trommel_core::BUS_NAME) else {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    };
+                    if !bus.name_has_owner(name).await.unwrap_or(false) {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                    let proxy = match MinerProxy::new(&connection).await {
+                        Ok(proxy) => proxy,
+                        Err(_) => {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
+                    };
+                    let mut signals = match proxy.receive_quit_requested().await {
+                        Ok(signals) => signals,
+                        Err(_) => {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
+                    };
+                    match signals.next().await {
+                        Some(_) => {
+                            emit(Ev::Quit);
+                            return;
+                        }
+                        None => {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                    }
+                }
+            });
+        });
+}
+
 // ---------------------------------------------------------------- widgets
 
 struct OptionRow {
@@ -232,6 +308,8 @@ struct SettingsWidgets {
     auto_restart: adw::SwitchRow,
     restore_stock: adw::SwitchRow,
     notifications: adw::SwitchRow,
+    start_trommel: adw::SwitchRow,
+    tray_monochrome: adw::SwitchRow,
     start_login: adw::SwitchRow,
     simple_mode: adw::SwitchRow,
     poll: adw::SpinRow,
@@ -539,7 +617,9 @@ fn build_ui(app: &adw::Application) {
     let emit: Arc<dyn Fn(Ev) + Send + Sync> = Arc::new(move |event| {
         let _ = event_tx.send(event);
     });
+    let quit_emit = emit.clone();
     let tx = spawn_worker(emit);
+    spawn_quit_listener(quit_emit);
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
@@ -871,6 +951,7 @@ fn build_ui(app: &adw::Application) {
     connect_signals(&app_state);
     refresh_preset_list(&app_state);
     load_settings(&app_state);
+    load_daemon_autostart(&app_state);
     update_dirty(&app_state);
 
     {
@@ -1076,6 +1157,23 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             "Показывать уведомление при падении, ошибке и перегреве",
         ),
     );
+    let start_trommel = switch_row(
+        &tr("Start Trommel at login", "Запускать Trommel при входе"),
+        &tr(
+            "Run the background service and tray when you log in; mining starts only if enabled separately",
+            "Запускать фоновый сервис и трей при входе; майнинг — только если включён отдельно",
+        ),
+    );
+    let tray_monochrome = switch_row(
+        &tr(
+            "Use monochrome tray icon",
+            "Использовать монохромную иконку в трее",
+        ),
+        &tr(
+            "Follow the panel theme; turn off for the colour icon",
+            "Следовать теме панели; выключите для цветной иконки",
+        ),
+    );
     let start_login = switch_row(
         &tr("Start mining at login", "Запускать майнинг при входе"),
         &tr(
@@ -1129,6 +1227,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
         &auto_restart,
         &restore_stock,
         &notifications,
+        &start_trommel,
+        &tray_monochrome,
         &start_login,
         &simple_mode,
     ] {
@@ -1204,6 +1304,8 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
             auto_restart,
             restore_stock,
             notifications,
+            start_trommel,
+            tray_monochrome,
             start_login,
             simple_mode,
             poll,
@@ -1219,6 +1321,9 @@ fn build_settings_page() -> (adw::PreferencesPage, SettingsWidgets) {
 thread_local! {
     static SAVE_SETTINGS_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
     static STOCK_BUTTON: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
+    /// Set while the autostart switch is loaded, so it does not invoke
+    /// `systemctl` and does not fight the user's stored choice.
+    static DAEMON_AUTOSTART_SYNC: Cell<bool> = const { Cell::new(false) };
 }
 
 // --------------------------------------------------------------- restore
@@ -1481,6 +1586,13 @@ fn connect_signals(app: &Rc<App>) {
             |behavior| behavior.start_mining_on_login,
             |behavior, value| behavior.start_mining_on_login = value,
         );
+        let row = app.settings.tray_monochrome.clone();
+        bind_switch_draft(
+            app,
+            &row,
+            |behavior| behavior.tray_monochrome,
+            |behavior, value| behavior.tray_monochrome = value,
+        );
         let row = app.settings.poll.clone();
         bind_spin_draft(
             app,
@@ -1490,6 +1602,24 @@ fn connect_signals(app: &Rc<App>) {
         );
         let row = app.settings.language.clone();
         bind_language_draft(app, &row);
+    }
+    {
+        // Login autostart is a systemd user-unit property, not part of the
+        // config draft. Apply it immediately and keep the switch honest.
+        let app = app.clone();
+        let row = app.settings.start_trommel.clone();
+        row.connect_notify_local(Some("active"), move |row, _| {
+            if DAEMON_AUTOSTART_SYNC.get() {
+                return;
+            }
+            let enable = row.is_active();
+            if let Err(err) = set_daemon_autostart(enable) {
+                DAEMON_AUTOSTART_SYNC.set(true);
+                row.set_active(!enable);
+                DAEMON_AUTOSTART_SYNC.set(false);
+                show_error_toast(&app, &err.to_string());
+            }
+        });
     }
     {
         // Appearance applies immediately; it is also part of the draft so it
@@ -5219,6 +5349,9 @@ fn load_settings(app: &Rc<App>) {
         .notifications
         .set_active(behavior.notifications);
     app.settings
+        .tray_monochrome
+        .set_active(behavior.tray_monochrome);
+    app.settings
         .start_login
         .set_active(behavior.start_mining_on_login);
     app.settings.simple_mode.set_active(behavior.simple_mode);
@@ -5258,6 +5391,7 @@ fn save_settings(app: &Rc<App>) {
     cfg.behavior.auto_restart = app.settings.auto_restart.is_active();
     cfg.behavior.restore_stock_on_stop = app.settings.restore_stock.is_active();
     cfg.behavior.notifications = app.settings.notifications.is_active();
+    cfg.behavior.tray_monochrome = app.settings.tray_monochrome.is_active();
     cfg.behavior.start_mining_on_login = app.settings.start_login.is_active();
     cfg.behavior.simple_mode = app.settings.simple_mode.is_active();
     cfg.behavior.poll_interval_s = app.settings.poll.value() as u64;
@@ -5274,11 +5408,50 @@ fn save_settings(app: &Rc<App>) {
     let profile = cfg.gpu_profile_mut();
     profile.default.temp_limit_c = app.settings.temp_limit.value() as u32;
     profile.default.temp_resume_c = app.settings.temp_resume.value() as u32;
-    set_autostart_unit(app.settings.start_login.is_active());
+    set_mining_autostart_unit(app.settings.start_login.is_active());
     mark_dirty(app);
 }
 
-fn set_autostart_unit(enable: bool) {
+fn load_daemon_autostart(app: &Rc<App>) {
+    DAEMON_AUTOSTART_SYNC.set(true);
+    app.settings
+        .start_trommel
+        .set_active(daemon_autostart_enabled());
+    DAEMON_AUTOSTART_SYNC.set(false);
+}
+
+fn daemon_autostart_enabled() -> bool {
+    // Deterministic screenshots/tests: the host unit state must not leak into
+    // a private instance's Settings page.
+    match std::env::var("TROMMEL_AUTOSTART_STATE").as_deref() {
+        Ok("on") => return true,
+        Ok("off") => return false,
+        _ => {}
+    }
+    std::process::Command::new("systemctl")
+        .args(["--user", "is-enabled", "--quiet", "trommeld.service"])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn set_daemon_autostart(enable: bool) -> anyhow::Result<()> {
+    let action = if enable { "enable" } else { "disable" };
+    let output = std::process::Command::new("systemctl")
+        .args(["--user", action, "trommeld.service"])
+        .output()
+        .map_err(|err| anyhow::anyhow!("cannot run systemctl: {err}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "systemctl --user {action} trommeld.service failed: {}",
+            stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+fn set_mining_autostart_unit(enable: bool) {
     let action = if enable { "enable" } else { "disable" };
     let _ = std::process::Command::new("systemctl")
         .args(["--user", action, "trommel-autostart.service"])
@@ -5464,6 +5637,11 @@ fn handle_event(app: &Rc<App>, event: Ev) {
                         "Сравнение завершено без победителя",
                     )));
                 }
+            }
+        }
+        Ev::Quit => {
+            if let Some(application) = app.window.application() {
+                application.quit();
             }
         }
     }

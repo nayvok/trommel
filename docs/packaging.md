@@ -70,32 +70,42 @@ bash trommel-install.sh
 /usr/share/applications/io.github.nayvok.Trommel.desktop
 /usr/share/metainfo/io.github.nayvok.Trommel.metainfo.xml
 /usr/share/icons/hicolor/{scalable,symbolic}/apps/io.github.nayvok.Trommel*.svg
+/usr/share/icons/hicolor/<size>/apps/io.github.nayvok.Trommel*.png
 ```
 
 Dependencies: GTK4, libadwaita, glib, pkexec/polkit, user D-Bus and systemd;
-the NVIDIA driver is recommended. GNOME Shell is **not** required or
-recommended: Trommel is a plain GTK4/libadwaita application and its postinst
-does not compile schemas or touch GNOME extensions. The package is built and
-tested on Ubuntu 26.04.
+the NVIDIA driver is recommended. The tray is implemented in-process with
+`ksni` and adds no shared-library or GNOME dependency. GNOME Shell is **not**
+required: the app is a plain GTK4/libadwaita application and its postinst does
+not compile schemas or touch GNOME extensions. The tray does need a
+StatusNotifierItem host — KDE Plasma natively, GNOME through the AppIndicator
+extension (Ubuntu ships `ubuntu-appindicators`); without one the app still runs.
+The package is built and tested on Ubuntu 26.04.
 
-`scripts/test-deb.sh` asserts this layout (every path, the helper mode, the
-maintainer scripts and the polkit annotation) and rejects a package whose
+`scripts/test-deb.sh` asserts this layout (every icon path, the helper mode,
+the maintainer scripts and the polkit annotation) and rejects a package whose
 binaries still contain a builder home path. `scripts/test-deb-install.sh`
-installs, upgrades and removes the package in a disposable root container. Both
-run in CI.
+installs, upgrades and removes the package in a disposable root container,
+including the login autostart symlink. Both run in CI.
 
 Maintainer scripts:
 
 - `postinst` refreshes the desktop/icon caches and writes
   `/etc/polkit-1/rules.d/50-trommel.rules` for `SUDO_USER`, so GPU tuning does
-  not prompt from the user service. It does not compile GLib schemas: Trommel
-  ships no `gschema`, so `libglib2.0-bin` is not a dependency. The shipped
-  `/usr/share` rule is only a local fallback.
+  not prompt from the user service. On the first install it also enables
+  `trommeld.service` for that user (a `graphical-session.target.wants` symlink),
+  so the background service and tray start at login by default. Upgrades do not
+  re-enable it: a user who turned it off in Settings keeps that choice. It does
+  not compile GLib schemas: Trommel ships no `gschema`, so `libglib2.0-bin` is
+  not a dependency. The shipped `/usr/share` rule is only a local fallback.
+- `postrm` removes the generated polkit rule and the login autostart symlink on
+  remove/purge.
 - `prerm` intentionally does not stop the miner.
-- `postrm` removes the generated per-user rule on remove/purge.
 
-The package intentionally does **not** enable the user service: D-Bus
-activation starts the daemon on demand.
+The package enables the user service for the installing user on first install,
+so the tray is present after login. The Settings switch **Start Trommel at
+login** writes the same unit state. D-Bus activation can still start the daemon
+on demand when autostart is off.
 
 ## Developer install
 

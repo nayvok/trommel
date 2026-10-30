@@ -153,6 +153,7 @@ export XDG_DATA_HOME="$WORK/data"
 export XDG_CACHE_HOME="$WORK/cache"
 export TROMMEL_OC_HELPER="$WORK/bin/oc-helper"
 export TROMMEL_NO_EXTERNAL_SCAN=1
+export TROMMEL_NO_TRAY=1
 # Guard and session-bus tests opt in explicitly; the rest needs a predictable
 # daemon lifetime.
 export TROMMEL_NO_GUARD=1

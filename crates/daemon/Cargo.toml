@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 trommel-core = { path = "../core" }
 anyhow.workspace = true
+ksni = "0.3.7"
 serde_json.workspace = true
 tokio.workspace = true
 zbus.workspace = true

@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-gui = ["dep:gtk", "dep:adw"]
+gui = ["dep:gtk", "dep:adw", "dep:futures-util"]
 
 [dependencies]
 trommel-core = { path = "../core" }
@@ -21,3 +21,4 @@ zbus.workspace = true
 clap.workspace = true
 gtk = { package = "gtk4", version = "0.11", optional = true, features = ["v4_22"] }
 adw = { package = "libadwaita", version = "0.9", optional = true, features = ["v1_9", "gtk_v4_22"] }
+futures-util = { version = "0.3", optional = true }

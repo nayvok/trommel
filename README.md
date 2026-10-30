@@ -74,11 +74,17 @@ arguments are hidden until you turn them on.
 - **Agent-friendly** — JSON config, CLI diagnostics, diff/apply commands and an
   optional MCP server for Codex/other agents. The agent proposes; you see the
   diff and approve.
+- **Background tray** — the daemon keeps a StatusNotifierItem menu with a live
+  status line, Start/Stop mining, Show window and Quit. It exists without an open
+  window, uses a monochrome symbolic icon by default (colour is one switch away)
+  and starts at login unless you turn that off.
 - **English and Russian UI**, the desktop GTK theme (Yaru, Adwaita), light and dark colour schemes, GNOME HIG-style widgets.
 
 ## Supported setup
 
 - Linux with GNOME Shell 50 (Ubuntu 26.04 is the tested target), Wayland.
+  The tray also works on KDE Plasma 6; GNOME needs the AppIndicator extension
+  (Ubuntu ships it). The rest of the app is tested on GNOME.
 - NVIDIA GPU + working `nvidia-smi` and driver.
 - For development: Rust 1.92+, `libgtk-4-dev`, `libadwaita-1-dev`, `pkg-config`.
 

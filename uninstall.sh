@@ -40,8 +40,12 @@ say "Removing menu entry, icons and metadata"
 rm -f "$HOME/.local/share/applications/$APP_ID.desktop" \
       "$HOME/.local/share/metainfo/$APP_ID.metainfo.xml" \
       "$HOME/.local/share/icons/hicolor/scalable/apps/$APP_ID.svg" \
+      "$HOME/.local/share/icons/hicolor/scalable/apps/$APP_ID-tray.svg" \
       "$HOME/.local/share/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg" \
       "$HOME/.local/share/glib-2.0/schemas/org.gnome.shell.extensions.trommel.gschema.xml"
+find "$HOME/.local/share/icons/hicolor" -type f \
+      \( -name "$APP_ID.png" -o -name "$APP_ID-tray.png" -o -name "$APP_ID-symbolic.svg" \) \
+      -delete 2>/dev/null || true
 glib-compile-schemas "$HOME/.local/share/glib-2.0/schemas" 2>/dev/null || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 

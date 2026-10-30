@@ -158,6 +158,10 @@ Ordered by expected value, not commitment:
    untested and not released.
 5. **A signed remote catalogue** with a verification story (signature, key
    rotation, offline fallback).
+6. **Tray follow-up.** The basic StatusNotifierItem floor is in the next
+   release: status header, Start/Stop, Show window and Quit, with a monochrome
+   default. The follow-up adds show/hide, start-minimised, a dynamic status
+   icon/tooltip and Happ-style submenus.
 
 ## Later
 
@@ -193,8 +197,9 @@ Architecture decisions are recorded as ADRs:
 [packaging](adr/0003-packaging.md),
 [removing the extension](adr/0004-remove-extension.md),
 [one active session](adr/0005-one-active-session.md),
-[failure policy and emergency restore](adr/0006-failure-policy.md) and
-[per-GPU participation](adr/0007-per-gpu-participation.md).
+[failure policy and emergency restore](adr/0006-failure-policy.md),
+[per-GPU participation](adr/0007-per-gpu-participation.md) and
+[desktop tray in the daemon](adr/0008-tray.md).
 
 B1 implements ADR 0005 (single session, one snapshot) and ADR 0006 (daemon
 ownership, bounded restart, GUI crash is a no-op, emergency restore, startup
