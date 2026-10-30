@@ -37,6 +37,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # check-version.sh proves that the pushed tag is annotated and points
+          # at HEAD, so the tag object must be present in the clone.
+          fetch-depth: 0
+          fetch-tags: true
       - name: Install dependencies
         run: |
           apt-get update
