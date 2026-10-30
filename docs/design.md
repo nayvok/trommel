@@ -277,7 +277,9 @@ Every coloured value has a word next to it (“installed”, “not installed”
   warning) for as long as the library stays open. **Remove** is blocked while a
   preset pins the version: an alert lists those presets and explains that they
   must switch first. An unused version shows a destructive confirmation that
-  names the managed deletion, the untouched presets and the other versions.
+  names the managed deletion, the untouched presets and the other versions. The
+  plan, the removal and the saved config all use the same applied snapshot; a
+  failed save is an error toast and never a success.
 - **Update** is the same install dialog; after a successful install an alert
   lists the affected presets as unchecked checkboxes with **Keep preset
   versions** as the default. Only the selected presets move, and only on the

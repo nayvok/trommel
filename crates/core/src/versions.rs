@@ -546,6 +546,27 @@ pub fn delete_install(
     })
 }
 
+/// Remove a version from one config snapshot and persist the result.
+///
+/// The GUI used to plan against the draft while deleting from the applied
+/// config, then ignore the `save()` error and show a success toast anyway. This
+/// helper makes the snapshot explicit: the operation runs on a clone, the
+/// caller's config is untouched unless `save` succeeds, and the persisted
+/// config is returned so both the draft and the applied copy can be updated
+/// from the same value.
+pub fn remove_and_persist(
+    snapshot: &Config,
+    miner: &str,
+    version: &str,
+    root: &Path,
+    save: impl FnOnce(&Config) -> anyhow::Result<()>,
+) -> anyhow::Result<(Config, RemovalReport)> {
+    let mut next = snapshot.clone();
+    let report = delete_install(&mut next, miner, version, root)?;
+    save(&next)?;
+    Ok((next, report))
+}
+
 /// Move one preset to another **installed** version of its miner.
 ///
 /// Returns `None` when the preset already pins that version. No other preset is
@@ -789,6 +810,52 @@ mod tests {
         assert!(!report.removed_files);
         assert!(Path::new(&install.path).exists());
         assert!(!cfg.install_record_exists("wildrig", "0.51.7"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn remove_and_persist_keeps_the_snapshot_when_save_fails() {
+        let root = temp_root("persist-fail");
+        let mut cfg = Config::default();
+        cfg.add_install(binary(&root, "wildrig", "0.51.7", 0o755));
+        let snapshot = cfg.clone();
+        let err = remove_and_persist(&cfg, "wildrig", "0.51.7", &root, |_| {
+            anyhow::bail!("disk is read-only")
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("read-only"), "{err}");
+        assert_eq!(cfg, snapshot, "the caller's snapshot must not change");
+        assert!(cfg.install_record_exists("wildrig", "0.51.7"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn remove_and_persist_saves_the_same_snapshot_it_deleted_from() {
+        let root = temp_root("persist-ok");
+        let outside = temp_root("persist-ok-outside");
+        let mut cfg = Config::default();
+        // The install lives outside the managed store, so only the record is
+        // removed; the returned config and the saved one must be identical.
+        let mut install = binary(&outside, "wildrig", "0.51.7", 0o755);
+        install.path = outside
+            .join("wildrig")
+            .join("0.51.7")
+            .join("miner")
+            .to_string_lossy()
+            .into_owned();
+        cfg.add_install(install);
+        let mut saved = None;
+        let (next, report) = remove_and_persist(&cfg, "wildrig", "0.51.7", &root, |config| {
+            saved = Some(config.clone());
+            Ok(())
+        })
+        .unwrap();
+        assert!(!report.removed_files);
+        let saved = saved.expect("save must be called");
+        assert_eq!(saved, next, "the saved config must be the removed one");
+        assert!(!next.install_record_exists("wildrig", "0.51.7"));
+        assert!(cfg.install_record_exists("wildrig", "0.51.7"));
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
     }

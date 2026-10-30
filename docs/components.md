@@ -430,7 +430,10 @@ preset except through the two explicit functions at the end.
 - `remove_plan(cfg, miner, version)` / `remove_plan_in(..., root)` — `allowed`,
   `used_by`, `delete_dir` (only managed-store directories). `delete_install()`
   refuses a used version, validates path components, deletes only a directory
-  the record owns and keeps a binary outside the store.
+  the record owns and keeps a binary outside the store. `remove_and_persist()`
+  runs the removal on one config snapshot and calls the caller's `save`; the
+  updated config is returned only after the save succeeds, so the GUI never
+  shows a success toast for a record that is still on disk.
 - `pin_preset(cfg, preset_id, version)` — moves exactly one preset, requires an
   installed executable and returns the change (`None` when already pinned).
   `pin_presets(cfg, ids, miner, version)` does the same for an explicit list and
