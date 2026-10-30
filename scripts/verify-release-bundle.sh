@@ -14,11 +14,25 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 DIR="${1:-$ROOT/dist/release}"
-VERSION="$(cargo metadata --no-deps --format-version 1 --locked | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
 FAILS=0
 fail() { echo "error: $*" >&2; FAILS=$((FAILS + 1)); }
 
 [ -d "$DIR" ] || { echo "missing bundle directory: $DIR" >&2; exit 1; }
+
+# Read the version from the bundle itself, not from this checkout: a downloaded
+# older release must verify from a newer tree. TROMMEL_VERSION pins it when the
+# versioned package is absent and the expected name has to be named explicitly.
+VERSION="${TROMMEL_VERSION:-}"
+if [ -z "$VERSION" ]; then
+    for path in "$DIR"/trommel_*_amd64.deb; do
+        [ -f "$path" ] || continue
+        name="$(basename "$path")"
+        VERSION="${name#trommel_}"
+        VERSION="${VERSION%_amd64.deb}"
+        break
+    done
+fi
+[ -n "$VERSION" ] || { echo "missing versioned package in $DIR" >&2; exit 1; }
 
 VERSIONED="trommel_${VERSION}_amd64.deb"
 ALIAS="trommel_amd64.deb"
