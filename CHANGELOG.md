@@ -35,6 +35,7 @@ Changelog; versions use SemVer.
 
 - **Uptime ticks every second.** The dashboard advances the uptime from the last
   status sample once per second instead of showing it only on the 2–10 s poll.
+  A cached daemon snapshot no longer rewinds the stopwatch between refreshes.
 - **`install.sh` restarts `trommeld` after installing icons** and rewrites the
   per-user unit's `ExecStopPost` path, so the tray resolves the new artwork and
   the emergency-stop hook still runs.

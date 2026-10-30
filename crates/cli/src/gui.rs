@@ -6460,6 +6460,17 @@ fn uptime_since(base: u64, sampled_at: u64, now: u64) -> u64 {
     base.saturating_add(now.saturating_sub(sampled_at))
 }
 
+/// Uptime to paint when a status snapshot arrives.
+///
+/// The daemon refreshes its cached status on `behavior.poll_interval_s`, while
+/// the GUI asks for a status every second. A cached snapshot still carries the
+/// time it was collected (`ts`), so extend its uptime to now; painting
+/// `state.uptime_s` directly rewound the stopwatch to the last daemon sample
+/// and produced 46, 47, 46, 47, 48, 49, 48, 49, 50.
+fn status_uptime(status: &Status, now: u64) -> u64 {
+    uptime_since(status.state.uptime_s, status.ts, now)
+}
+
 /// Repaint only the hero subtitle. Called on every status and once per second
 /// in between, so the uptime is a real clock rather than a poll counter.
 fn render_hero_meta(app: &App, uptime_s: u64) {
@@ -6573,7 +6584,7 @@ fn apply_status(app: &Rc<App>, status: Status) {
         sampled_at: status.ts,
         tick: running && !status.state.external,
     });
-    render_hero_meta(app, status.state.uptime_s);
+    render_hero_meta(app, status_uptime(&status, util::now_unix()));
     app.quick_button.set_visible(
         !running
             && (status.miner_info.id.is_empty()
@@ -6883,8 +6894,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{uptime_since, SCREENSHOT_HOOKS};
+    use super::{status_uptime, uptime_since, SCREENSHOT_HOOKS};
     use std::collections::BTreeSet;
+    use trommel_core::status::Status;
 
     #[test]
     fn uptime_advances_between_status_samples() {
@@ -6893,6 +6905,20 @@ mod tests {
         assert_eq!(uptime_since(42, 1_000, 1_001), 43);
         // A clock that steps backwards must not wrap the stopwatch.
         assert_eq!(uptime_since(42, 1_000, 900), 42);
+    }
+
+    #[test]
+    fn cached_status_does_not_rewind_uptime() {
+        let mut status = Status::default();
+        status.state.running = true;
+        status.state.uptime_s = 46;
+        status.ts = 1_000;
+        // The daemon hands the same cached snapshot to every GUI poll between
+        // two refreshes. Extending its `ts` keeps the stopwatch moving instead
+        // of resetting it to 46 each time.
+        assert_eq!(status_uptime(&status, 1_001), 47);
+        assert_eq!(status_uptime(&status, 1_002), 48);
+        assert_eq!(status_uptime(&status, 900), 46);
     }
 
     /// Every `TROMMEL_*_SCREENSHOT` literal handled in this file must also be
