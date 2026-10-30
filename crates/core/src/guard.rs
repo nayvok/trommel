@@ -211,9 +211,12 @@ pub fn spawn_guard() -> GuardOutcome {
     // alive; a guard that died at startup must not look like a safety net.
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        if guard_ready(load_guard_pid().as_ref(), daemon_pid, daemon_start) {
-            let pid = load_guard_pid().map(|guard| guard.pid).unwrap_or(0);
-            return GuardOutcome::Started(pid);
+        // Read the marker once: re-reading after the check could observe a
+        // guard that already exited and report `Started(0)`.
+        if let Some(guard) = load_guard_pid() {
+            if guard_ready(Some(&guard), daemon_pid, daemon_start) {
+                return GuardOutcome::Started(guard.pid);
+            }
         }
         if let Ok(Some(_)) = child.try_wait() {
             break;
