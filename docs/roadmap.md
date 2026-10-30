@@ -181,9 +181,10 @@ Ordered by expected value, not commitment:
 
 ## Release history note
 
-Releases 0.4.1–0.4.4 were published without git tags; `v0.4.5` is the first tag
-of that line and remains the reference. The history is not rewritten and the old
-commits are not retagged: use the published GitHub releases for those versions.
+The `CHANGELOG.md` entries for 0.4.1–0.4.4 were written before tags and GitHub
+Releases were used; those versions were never tagged or published. `v0.4.5` is
+the first tag of that line. The history is not rewritten and old commits are not
+retagged: the existing tags and published releases are the source of truth.
 
 ## Decision log
 
