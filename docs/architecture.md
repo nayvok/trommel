@@ -512,9 +512,9 @@ platform backend and is not supported. `TROMMEL_NO_TRAY=1` disables the tray for
 tests. The next tray iteration (show/hide, start minimised, dynamic icon) is
 listed in [roadmap.md](roadmap.md#next-not-scheduled).
 
-`behavior.tray_monochrome` (default `true`) selects the symbolic icon that
-follows the panel theme; `false` selects the colour icon. Both are installed in
-hicolor. The change is live and does not restart the miner.
+`behavior.tray_monochrome` (default `true`) selects the monochrome version of
+the tray drum; `false` selects the colour icon. Both are installed in hicolor.
+The change is live and does not restart the miner.
 
 ## Design constraints and trade-offs
 

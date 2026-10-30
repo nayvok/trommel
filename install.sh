@@ -83,7 +83,8 @@ fi
 
 say "Installing the user service"
 mkdir -p "$UNIT_DIR" "$DBUS_DIR"
-sed 's#ExecStart=/usr/bin/trommeld#ExecStart=%h/.local/bin/trommeld#' \
+sed -e 's#ExecStart=/usr/bin/trommeld#ExecStart=%h/.local/bin/trommeld#' \
+    -e 's#/usr/bin/trommel#%h/.local/bin/trommel#g' \
     "$ROOT/systemd/trommeld.service" > "$UNIT_DIR/trommeld.service"
 sed 's#/usr/bin/trommel#%h/.local/bin/trommel#g' \
     "$ROOT/systemd/trommel-autostart.service" > "$UNIT_DIR/trommel-autostart.service"
@@ -91,8 +92,6 @@ install -m644 "$ROOT/systemd/io.github.nayvok.Trommel.Daemon.service" \
     "$DBUS_DIR/io.github.nayvok.Trommel.Daemon.service"
 systemctl --user daemon-reload
 systemctl --user enable trommeld.service
-systemctl --user restart trommeld.service
-ok "trommeld is $([ "$(systemctl --user is-active trommeld.service)" = active ] && echo active || echo inactive)"
 
 say "Installing desktop entry, icons and metadata"
 mkdir -p "$APP_DIR" "$ICON_ROOT/scalable/apps" "$ICON_ROOT/symbolic/apps" "$METAINFO_DIR"
@@ -108,6 +107,11 @@ done < <(find "$ROOT/data/icons/hicolor" -type f -print0)
 command -v update-desktop-database >/dev/null && update-desktop-database -q "$APP_DIR" || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 ok "application menu entry installed"
+
+# Restart after the icons are in place: a tray host resolves the icon when the
+# SNI item appears, so restarting earlier would keep the previous artwork.
+systemctl --user restart trommeld.service
+ok "trommeld is $([ "$(systemctl --user is-active trommeld.service)" = active ] && echo active || echo inactive)"
 
 say "Done"
 cat <<EOF

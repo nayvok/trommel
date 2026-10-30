@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 16 16">
   <title>Trommel — screening drum</title>
-  <desc>Optically adjusted 32-pixel tray icon. A front-facing circular drum, two short feet and one angular gold nugget within the lower opening. No mesh, rear hoop or overlapping rings. Every color variant shares identical geometry.</desc>
-  <g transform="scale(2)" fill="#2e3436" fill-rule="evenodd">
+  <desc>Monochrome version of the colour tray drum: the same circular screen, two feet and one gold nugget in a single light ink. The ink is deliberately light because some tray hosts load a "-symbolic" app icon as an ordinary pixmap and never recolour it.</desc>
+  <g fill="#ffffff" fill-rule="evenodd">
     <path d="M4 11H6V15H4ZM10 11H12V15H10Z"/>
     <path d="M14 7A6 6 0 1 1 2 7A6 6 0 1 1 14 7ZM12 7A4 4 0 1 0 4 7A4 4 0 1 0 12 7Z"/>
-    <path fill="#2e3436" d="M7 7H9L10 8.5L8 10L6 8.5Z"/>
+    <path d="M7 7H9L10 8.5L8 10L6 8.5Z"/>
   </g>
 </svg>

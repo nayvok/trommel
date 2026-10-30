@@ -320,6 +320,21 @@ struct SettingsWidgets {
     diagnostics: gtk::Button,
 }
 
+/// The parts of the hero subtitle that do not tick. Uptime is recomputed from
+/// the last status sample once per second, so a 2–10 s poll interval no longer
+/// makes the clock jump in whole poll steps.
+#[derive(Clone)]
+struct HeroMeta {
+    running: bool,
+    hashrate_known: bool,
+    restarts: u32,
+    source: String,
+    uptime_s: u64,
+    sampled_at: u64,
+    /// External miners have no start time we own; do not invent a stopwatch.
+    tick: bool,
+}
+
 struct App {
     window: adw::ApplicationWindow,
     toast: adw::ToastOverlay,
@@ -338,6 +353,7 @@ struct App {
     hero_hashrate: gtk::Label,
     hero_line: gtk::Label,
     hero_meta: gtk::Label,
+    hero_meta_state: RefCell<Option<HeroMeta>>,
     pill: gtk::Label,
     total_gpus: adw::ActionRow,
     total_power: adw::ActionRow,
@@ -921,6 +937,7 @@ fn build_ui(app: &adw::Application) {
         hero_hashrate,
         hero_line,
         hero_meta,
+        hero_meta_state: RefCell::new(None),
         pill,
         total_gpus,
         total_power,
@@ -959,6 +976,22 @@ fn build_ui(app: &adw::Application) {
         glib::timeout_add_local(Duration::from_millis(60), move || {
             while let Ok(event) = event_rx.try_recv() {
                 handle_event(&app_state, event);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
+    {
+        let app_state = app_state.clone();
+        glib::timeout_add_seconds_local(1, move || {
+            let anchor = app_state
+                .hero_meta_state
+                .borrow()
+                .as_ref()
+                .filter(|meta| meta.tick)
+                .map(|meta| (meta.uptime_s, meta.sampled_at));
+            if let Some((base, sampled_at)) = anchor {
+                render_hero_meta(&app_state, uptime_since(base, sampled_at, util::now_unix()));
             }
             glib::ControlFlow::Continue
         });
@@ -5576,6 +5609,9 @@ fn handle_event(app: &Rc<App>, event: Ev) {
             app.pill.set_text(&tr("offline", "нет связи"));
             app.pill
                 .set_css_classes(&["caption", "trommel-pill", "trommel-pill-offline"]);
+            // Stop the local stopwatch: without a live daemon it would keep
+            // inventing uptime from the last sample.
+            *app.hero_meta_state.borrow_mut() = None;
         }
         Ev::Error(message) => {
             show_error_toast(app, &message);
@@ -6419,6 +6455,39 @@ fn card_tooltip(header: &str, lines: &[String]) -> String {
     }
 }
 
+/// Uptime at `now`, anchored to the daemon's last sample.
+fn uptime_since(base: u64, sampled_at: u64, now: u64) -> u64 {
+    base.saturating_add(now.saturating_sub(sampled_at))
+}
+
+/// Repaint only the hero subtitle. Called on every status and once per second
+/// in between, so the uptime is a real clock rather than a poll counter.
+fn render_hero_meta(app: &App, uptime_s: u64) {
+    let Some(meta) = app.hero_meta_state.borrow().clone() else {
+        return;
+    };
+    if !meta.running {
+        app.hero_meta
+            .set_text(&tr("miner is stopped", "майнер остановлен"));
+    } else if !meta.hashrate_known {
+        app.hero_meta.set_text(&format!(
+            "{} · {}: {}",
+            tr("waiting for miner data", "ожидаю данные от майнера"),
+            tr("uptime", "аптайм"),
+            util::human_duration(uptime_s)
+        ));
+    } else {
+        app.hero_meta.set_text(&format!(
+            "{}: {} · {}: {} · {}",
+            tr("uptime", "аптайм"),
+            util::human_duration(uptime_s),
+            tr("restarts", "перезапусков"),
+            meta.restarts,
+            meta.source
+        ));
+    }
+}
+
 fn apply_status(app: &Rc<App>, status: Status) {
     let running = status.state.running;
     // The sparklines read this rolling window; a fresh status may repeat the
@@ -6495,26 +6564,16 @@ fn apply_status(app: &Rc<App>, status: Status) {
             status.miner_info.total_fee_pct
         ));
     }
-    if !running {
-        app.hero_meta
-            .set_text(&tr("miner is stopped", "майнер остановлен"));
-    } else if hashrate_value.is_none() {
-        app.hero_meta.set_text(&format!(
-            "{} · {}: {}",
-            tr("waiting for miner data", "ожидаю данные от майнера"),
-            tr("uptime", "аптайм"),
-            util::human_duration(status.state.uptime_s)
-        ));
-    } else {
-        app.hero_meta.set_text(&format!(
-            "{}: {} · {}: {} · {}",
-            tr("uptime", "аптайм"),
-            util::human_duration(status.state.uptime_s),
-            tr("restarts", "перезапусков"),
-            status.state.restarts,
-            status.miner.source
-        ));
-    }
+    *app.hero_meta_state.borrow_mut() = Some(HeroMeta {
+        running,
+        hashrate_known: hashrate_value.is_some(),
+        restarts: status.state.restarts,
+        source: status.miner.source.clone(),
+        uptime_s: status.state.uptime_s,
+        sampled_at: status.ts,
+        tick: running && !status.state.external,
+    });
+    render_hero_meta(app, status.state.uptime_s);
     app.quick_button.set_visible(
         !running
             && (status.miner_info.id.is_empty()
@@ -6824,8 +6883,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::SCREENSHOT_HOOKS;
+    use super::{uptime_since, SCREENSHOT_HOOKS};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn uptime_advances_between_status_samples() {
+        assert_eq!(uptime_since(0, 1_000, 1_000), 0);
+        assert_eq!(uptime_since(42, 1_000, 1_003), 45);
+        assert_eq!(uptime_since(42, 1_000, 1_001), 43);
+        // A clock that steps backwards must not wrap the stopwatch.
+        assert_eq!(uptime_since(42, 1_000, 900), 42);
+    }
 
     /// Every `TROMMEL_*_SCREENSHOT` literal handled in this file must also be
     /// in [`SCREENSHOT_HOOKS`]. A capture that is missing there runs under the

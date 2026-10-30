@@ -22,6 +22,23 @@ Changelog; versions use SemVer.
   enables `trommeld.service` through systemd. The Debian package enables it for
   the installing user on first install; upgrades keep a later opt-out.
 
+### Changed
+
+- **The monochrome tray glyph matches the colour drum.** It keeps the same
+  circular screen, feet and nugget, but paints them in one light ink. The old
+  `#2e3436` fill was loaded as an ordinary pixmap by some tray hosts and never
+  recoloured, so it disappeared into a dark panel; the light fill is deliberate.
+- **The Adwaita artwork is 15% larger inside its canvas.** The app icon now has
+  the same optical weight as its dock neighbours without redrawing the drum.
+
+### Fixed
+
+- **Uptime ticks every second.** The dashboard advances the uptime from the last
+  status sample once per second instead of showing it only on the 2–10 s poll.
+- **`install.sh` restarts `trommeld` after installing icons** and rewrites the
+  per-user unit's `ExecStopPost` path, so the tray resolves the new artwork and
+  the emergency-stop hook still runs.
+
 ## [0.8.2] - 2026-10-30
 
 ### Fixed

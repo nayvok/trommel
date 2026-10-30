@@ -11,8 +11,8 @@
   <filter id="softGold" x="-.15" y="-.2" width="1.3" height="1.4" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation=".8"/></filter>
   <filter id="softScreen" x="-.1" y="-.1" width="1.2" height="1.2" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation=".45"/></filter>
 </defs>
-<!-- Visible edges x18..110, y14..114 are centered on (64,64). -->
-<g transform="translate(0 2)">
+<!-- Artwork is scaled 1.15x around (64,64); its visible edges are about x11..117, y6..122. -->
+<g transform="translate(64 64) scale(1.15) translate(-64 -64) translate(0 2)">
   <g fill="url(#stand)"><path d="M26 82H38L36 110H20Z"/><path d="M26 82H38L36 110H20Z" transform="translate(128 0) scale(-1 1)"/></g>
   <g fill="#304757"><path d="M20 110H36V111Q36 112 35 112H21Q20 112 20 111Z"/><path d="M20 110H36V111Q36 112 35 112H21Q20 112 20 111Z" transform="translate(128 0) scale(-1 1)"/></g>
   <!-- The same short contact shadow falls on both supports, never outside them. -->

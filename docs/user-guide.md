@@ -329,8 +329,9 @@ working. Windows is not supported.
 
 The related switches live in **Settings → Behavior**:
 
-- **Use monochrome tray icon** (on by default) follows the panel theme; turn it
-  off for the colour icon. The change applies on the next status refresh.
+- **Use monochrome tray icon** (on by default) draws the same drum in a single
+  colour; turn it off for the colour icon. The change applies on the next status
+  refresh.
 - **Start Trommel at login** (on by default) starts the background service and
   tray at login. It does **not** start mining; **Start mining at login** is a
   separate switch.
