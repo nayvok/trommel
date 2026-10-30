@@ -49,7 +49,7 @@ do not move GTK types into `trommel-core` or the daemon.
 | `cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings` | No new lints, including GUI code | GTK dev libs |
 | `cargo fmt --check` | Formatting | Rust only |
 | `cargo build -p trommel` | The CLI-only build keeps working (no GTK types leak into core/daemon) | Rust only |
-| `./scripts/e2e.sh` | Full CLI lifecycle on a private bus with fake GPU, helper and miner, including per-GPU participation (device arguments, excluded card untouched, restore, refusal), SIGKILL/emergency-stop, startup recovery, helper lease, partial apply, restore retry, custom binary, benchmark external guard, restart budget, guard and lost session bus | Python 3, dbus |
+| `./scripts/e2e.sh` | Full CLI lifecycle on a private bus with fake GPU, helper and miner, including per-GPU participation (device arguments, excluded card untouched, restore, refusal), SIGKILL/emergency-stop, startup recovery, helper lease, partial apply, restore retry, custom binary, benchmark external guard, restart budget, guard, lost session bus and the refused `SetConfig` restart | Python 3, dbus |
 | `./scripts/test-oc-helper.sh` | The real Bash helper against the stateful fake `nvidia-smi` | bash |
 | `./scripts/test-mcp.sh` | MCP protocol, read-only default, write gating, redaction | Python 3 |
 | `./scripts/ui-smoke.sh` | Critical GUI path through AT-SPI (quick setup, start/stop, settings, editor, tuning, install, version manager) | desktop session or Xvfb, `at-spi2-core`; XWayland preferred |
@@ -59,7 +59,7 @@ do not move GTK types into `trommel-core` or the daemon.
 | `./scripts/check-docs.sh` | Relative markdown links resolve; no references to removed docs | none |
 | `./scripts/package-deb.sh` + `./scripts/test-deb.sh` | Package builds; every documented path, mode, maintainer script, polkit annotation and a path-neutral binary are present | dpkg-dev |
 | `./scripts/test-deb-install.sh` | Install, upgrade and remove: per-user rule written/kept/removed, user config preserved | root in a disposable container |
-| `./scripts/check-version.sh` | Workspace version matches `Cargo.lock`, `CHANGELOG.md`, metainfo and the tag | git, python3 |
+| `./scripts/check-version.sh` | Workspace version matches `Cargo.lock`, `CHANGELOG.md` and metainfo; a tag is annotated and sits on HEAD | git, python3 |
 | `./scripts/verify-release-bundle.sh` | Bundle has the expected assets; `SHA256SUMS` covers the debs and installer; sidecars verify | built bundle |
 | Asset validation | `desktop-file-validate`, `appstreamcli validate` | those tools |
 
