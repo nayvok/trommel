@@ -1,17 +1,15 @@
 # Contributing to Trommel
 
-**English** · [Русский](CONTRIBUTING.ru.md)
-
 Thanks for helping. Trommel is a small Rust/GTK project; the most useful
 contributions are miner catalogue entries, packaging tests, GPU reports and
 documentation fixes. Start with the [documentation index](docs/README.md), then
 pick the matching guide:
 
-- code and tests — [docs/development.md](docs/development.md),
-  [docs/components.md](docs/components.md);
+- code and tests — [docs/development.md](docs/development.md) and
+  [docs/architecture.md](docs/architecture.md#modules);
 - screens and copy — [docs/design.md](docs/design.md);
 - catalogue — [docs/miners.md](docs/miners.md);
-- packaging — [docs/packaging.md](docs/packaging.md).
+- packaging — [docs/development.md](docs/development.md#packaging-and-releases).
 
 ## Setup
 
@@ -53,7 +51,7 @@ xvfb-run -a ./scripts/ui-smoke.sh  # same, headless (what CI runs)
 ./scripts/screenshots.sh      # deterministic docs screenshots
 ```
 
-They create their own XDG directories, private D-Bus and a fake `nvidia-smi`;
+They create their own XDG directories, a private D-Bus and a fake `nvidia-smi`;
 see [docs/development.md](docs/development.md#test-harness-isolation). Do not
 weaken that isolation.
 
@@ -67,7 +65,8 @@ weaken that isolation.
 - **GPU/OC**: test on real hardware; report the card model, driver, stock limits
   and what the helper log showed.
 - **Packaging**: `.deb` is the released target; RPM/AppImage/Flatpak need a
-  working integration story first (see [docs/packaging.md](docs/packaging.md)).
+  working integration story first (see
+  [docs/development.md](docs/development.md#formats)).
 - **Docs**: if a document and the code disagree, fix the document in the same
   change. Run `./scripts/check-docs.sh`.
 

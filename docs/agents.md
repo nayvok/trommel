@@ -201,7 +201,7 @@ gdbus call --session --dest io.github.nayvok.Trommel.Daemon \
 
 Methods, properties and signals are listed in
 [architecture.md](architecture.md#status-contract) and
-[components.md](components.md). Always pass an explicit `ApplyConfig` mode.
+[architecture.md](architecture.md#modules). Always pass an explicit `ApplyConfig` mode.
 `SetConfig` is a compatibility wrapper that applies live and refuses a change
 that needs a restart, so a running miner is never restarted silently.
 `Refresh()` is safe to poll; `Status()` returns the last snapshot.

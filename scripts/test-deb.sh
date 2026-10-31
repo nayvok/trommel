@@ -1,7 +1,7 @@
 #!/bin/bash
 # Layout validation for the built Debian package.
 #
-# Asserts every path documented in docs/packaging.md, the file modes that make
+# Asserts every path documented in docs/development.md, the file modes that make
 # the helper and the units work, the maintainer scripts, the polkit action and a
 # path-neutral binary. The install/upgrade/remove behaviour is covered by
 # scripts/test-deb-install.sh.
@@ -30,7 +30,7 @@ check_path() {
     fi
 }
 
-# docs/packaging.md § Debian package layout
+# docs/development.md § Debian package layout
 check_path /usr/bin/trommel -rwxr-xr-x
 check_path /usr/bin/trommeld -rwxr-xr-x
 check_path /usr/libexec/trommel/trommel-oc -rwxr-xr-x

@@ -68,8 +68,84 @@ workspace tests, GUI-feature tests, the CLI-only build, the root helper, e2e,
 MCP, asset validation, the headless UI smokes (`.github/workflows/ui.yml`), the
 MSRV check and a packaging job (layout + install/upgrade/remove) on Ubuntu
 26.04. The release workflow runs the same matrix, verifies the tag/version and
-the release bundle, and then publishes. The interactive matrix in
-[verification.md](verification.md) remains manual because it needs a real rig.
+the release bundle, and then publishes. The manual matrix and the real-rig
+checks below remain manual because they need a desktop session and hardware.
+
+### Manual and real-rig checks
+
+CI proves the headless widget tree, the click path and the fake-rig lifecycle.
+These checks still need a desktop session, a real driver or a real pool. The
+reference rig is an RTX 3080 Ti + RTX 3060 on GNOME 50 / Ubuntu 26.04 / Wayland.
+
+| Surface | Check |
+| --- | --- |
+| Dashboard | Refresh, Start/Stop, participation switch, Tune; Cancel restores the switch and the dirty banner; Start is disabled with every card excluded or without a device flag; the chip and Rig summary show mining/excluded |
+| Layout | One card spans the row; two split it; three or more wrap; stopped hashrate/balance/shares are `—` unless a real zero was reported |
+| Telemetry | Per-card hashrate and `J/TH`/`J/MH` efficiency; an unmapped record is `—`, the total is not divided |
+| Reliability | Watchdog off: one switch, dependent rows hidden; notify: one notification and no PID change; restart: one bounded restart through the normal path; limit stops mining; external miner untouched |
+| History | 1h/24h/7d ranges, card selector, CSV; samples survive a daemon restart; empty state before the first minute; no wallet/pool data |
+| First run | Empty dashboard, Create preset, Start prompt, Tuning unavailable; Cancel an unsaved new preset leaves no artifact |
+| Presets/editor | Row, chevron, New/Use, missing-version Install…; Save/Cancel/Duplicate/Delete; shared library opens from both entries |
+| Miner library | Catalogue, preset usage, installed/missing binaries, recorded checksum only, verify chip, blocked removal listing presets, one-preset version switch with cancel, sequential benchmark |
+| Settings | Switches, temperature limit/resume, Save and apply, Copy diagnostics, Restore stock targets; live apply; redaction |
+| GPU tune | Now row, Cancel, GPU presets (Stock/saved/Save as/Manage), locks, Similar/All, restart/stop alert; Cancel leaves no dirty state |
+| Alerts/errors | Apply and restart/stop/Cancel; delete confirmation; a long daemon error shows Details, selectable text and Copy |
+| Window | ~400 px: no clipping, readable bubbles/actions, header switcher falls back to the title and bottom bar |
+| Tray | GNOME (AppIndicator) and KDE Plasma: status header, Start/Stop, Show window, Quit; mono/colour switch; no host means no tray and no crash; login autostart matches the Settings switch |
+| Installer | `install.sh`, `.deb` postinst, release installer: binaries, helper, rule, units, no password prompt for the installing user |
+| Real rig | polkit prompt-free, e.g. 300 W/1620/810, start/stop, restore; an ignored memory lock stops the miner with a named error |
+| Error paths | Missing helper/miner, external miner, failed restore, cancelled auth: Start aborts or explains, snapshot kept on failed restore, no silent success |
+| Crash/shutdown | `kill -9 trommeld` restores via systemd `ExecStopPost` or the guard; `kill -9 trommel` leaves mining and uptime running; unit restart/logout restores; boot-id mismatch drops a stale snapshot |
+| Bus loss | Kill the session `dbus-daemon`: the daemon restores and exits, the miner is gone |
+
+Fault-tolerance drill on a real rig, once per release:
+
+1. `trommel start`; note `nvidia-smi --query-gpu=power.limit,clocks.mem
+   --format=csv`. Set a non-default limit (e.g. 320 W) so the restore is visible.
+2. `systemctl --user restart trommeld`: the unit stops/restores, the restarted
+   daemon reports stopped, `nvidia-smi` shows the stock limit; start again.
+3. `kill -9 $(pgrep -f target/release/trommeld)` (manual run or a unit without
+   `ExecStopPost`): the guard runs emergency-stop; the miner is gone, the
+   snapshot absent, the stock limit back.
+4. Kill only the GUI (`kill -9 $(pgrep -f 'trommel$')`): `trommel status --json`
+   still reports running, the miner PID is unchanged, no new `oc reset` in
+   `daemon.log`.
+5. Log out or reboot while mining: the unit stop restores; after login the
+   dashboard is stopped. After a reboot the boot-id check drops the snapshot.
+6. Break the restore (a helper that fails `reset`): Stop and emergency-stop
+   return non-zero, `oc-snapshot.json` and `last_error` remain, the UI banner
+   stays. Restore the helper and confirm `trommel emergency-stop` clears it.
+
+Checks that cannot run in CI:
+
+- real GPU snapshot/restore (`--pl`, `--lgc`, `--lmc`, reset) and the driver's
+  read-back;
+- polkit without a password in an active graphical session;
+- Wayland rendering, fonts, theme and screenshots;
+- the live pool API (unit-tested cache/backoff only);
+- StatusNotifierItem rendering and recolouring on GNOME and KDE;
+- a real SIGKILL/restart during a polkit prompt;
+- systemd user-manager stop, logout and reboot;
+- downloading and installing the published release from a clean machine.
+
+Known harness limits:
+
+- `AdwSpinRow` values and some `AdwExpanderRow` fields are not exposed by every
+  AT-SPI build, so the UI smoke changes a profile through the core-lock switch
+  and reports those widgets as an accessibility limitation.
+- `GtkMenuButton` (“Presets” in the tuning dialog) is not always exposed as an
+  action; the smoke uses Cancel/local changes instead of the popover.
+- Device selection is checked against a fake miner; a real heterogeneous rig
+  still needs a benchmark.
+- Native file choosers, the About dialog and a lingering closed dialog are
+  manual.
+- Xvfb proves the widget tree and click path, not the compositor; screenshots
+  need a real display.
+
+Report a regression with `trommel status --json`, `trommel diagnose --json`,
+the daemon journal, `nvidia-smi --query-gpu=name,driver_version,power.limit,power.default_limit
+--format=csv`, the desktop session and the failing command. Redact wallets;
+never include a seed phrase or private key.
 
 ### Test harness isolation
 
@@ -215,7 +291,7 @@ Common causes:
 
 ## Working in blocks
 
-The roadmap is split into B0–B5 ([roadmap.md](roadmap.md#block-plan)). A block
+The roadmap is split into B0–B7 ([roadmap.md](roadmap.md#block-plan)). A block
 is the unit of review and release:
 
 1. **Branch.** `feat/<block>-<topic>` from the current mainline. Do not mix the
@@ -223,32 +299,192 @@ is the unit of review and release:
 2. **Scope freeze.** Write down the block's acceptance criteria (the roadmap row
    and the ADRs it implements). Anything else is a follow-up, not a drive-by.
 3. **Design first.** Update or check the ADR before code; accepted ADRs are not
-   drafts. B1 is governed by [ADR 0005](adr/0005-one-active-session.md) and
-   [ADR 0006](adr/0006-failure-policy.md).
+   drafts. B1 is governed by [ADR 0005](decisions.md#adr-0005) and
+   [ADR 0006](decisions.md#adr-0006).
 4. **Code + tests.** Core logic in `trommel-core` with unit tests; lifecycle
    behaviour in `scripts/e2e.sh` with the fake rig. Crash paths (SIGKILL,
    partial apply, failed restore) need an automated test, not a comment.
-5. **Docs in the same commit.** Architecture, components, security, agents,
-   verification, changelog and the roadmap status. A feature is not done while
-   one of those still describes the old behaviour.
+5. **Docs in the same commit.** Architecture/development/decisions, agents,
+   changelog and the roadmap status. A feature is not done while one of those
+   still describes the old behaviour.
 6. **Screenshots.** Only regenerate them when the UI actually changed; do not
    touch them for daemon/CLI blocks.
 7. **Package and tag.** Bump the workspace version, run
    `./scripts/check-version.sh`, `./scripts/package-deb.sh`,
    `./scripts/test-deb.sh` and `./scripts/test-deb-install.sh`, then follow the
-   [release checklist](packaging.md#release-checklist). Tag `vX.Y.Z` only after
+   [release checklist](#release-checklist). Tag `vX.Y.Z` only after
    the whole matrix is green.
 
 If the session runs out of time, stop after the last green sub-block, record the
 unfinished part in the roadmap and do not start the next block.
 
-## Release checklist
+## Packaging and releases
 
-The canonical checklist lives in [packaging.md](packaging.md#release-checklist):
-it covers the matrix, the package and bundle checks, the annotated tag and the
-post-publish verification. Run both UI smoke suites on a real desktop session
-for a release (headless Xvfb is the CI gate) and regenerate screenshots only if
-the UI changed. Tag `vX.Y.Z` only after the whole matrix is green.
+Trommel is distributed only through GitHub Releases as a Debian package. There
+is no apt repository and no PPA; upgrades are new release downloads.
 
-There is no apt repository and no PPA. Do not publish RPM/AppImage/Flatpak
-artifacts without a tested integration story ([packaging.md](packaging.md)).
+### Formats
+
+| Format | Status | Why |
+| --- | --- | --- |
+| `.deb` | **Released** on GitHub | Needs host `nvidia-smi`, a polkit helper and a systemd user unit |
+| `.rpm` | Template only (`packaging/rpm/trommel.spec.in`) | Needs a Fedora/openSUSE install/upgrade/removal test |
+| AppImage | Deferred | A read-only mount cannot install the daemon, helper or user unit; a portable tarball plus an explicit host-helper installer is the fallback |
+| Flatpak | Deferred | The sandbox lacks `/dev/nvidia*` and `/proc/driver/nvidia`, cannot use the host `nvidia-smi`, the polkit helper or the user unit, and downloads miners at runtime; a GUI-only Flatpak would be a different product |
+
+Do not publish an RPM/AppImage/Flatpak artifact until its integration story is
+tested. The reasoning is in [ADR 0003](decisions.md#adr-0003).
+
+### Release assets
+
+A tag `vX.Y.Z` triggers `.github/workflows/release.yml`. It runs the full CI
+matrix (including the headless UI smokes and MSRV), verifies the tag against the
+workspace version, builds and verifies the bundle, then publishes:
+
+```
+trommel_X.Y.Z_amd64.deb      versioned package
+trommel_amd64.deb            stable alias for releases/latest/download
+trommel_X.Y.Z_amd64.deb.sha256
+trommel_amd64.deb.sha256
+trommel-install.sh           verifies the SHA-256, then apt installs
+SHA256SUMS                   both debs and trommel-install.sh
+```
+
+Locally:
+
+```bash
+./scripts/package-deb.sh            # dist/trommel_X.Y.Z_amd64.deb + alias + .sha256
+./scripts/release-bundle.sh         # dist/release/*, then verifies it
+./scripts/test-deb.sh               # full layout validation
+./scripts/test-deb-install.sh       # install/upgrade/remove (root, disposable container)
+./scripts/verify-release-bundle.sh  # assets, sidecars and SHA256SUMS
+```
+
+Users install with `sudo apt install ./trommel_amd64.deb`, or run the release
+`trommel-install.sh`, which verifies the checksum first. `apt remove trommel`
+keeps the user config.
+
+### Debian package layout
+
+```
+/usr/bin/trommel
+/usr/bin/trommeld
+/usr/libexec/trommel/trommel-oc                  root helper (0755)
+/usr/share/polkit-1/actions/io.github.nayvok.trommel.policy
+/usr/share/polkit-1/rules.d/50-trommel.rules     generic fallback
+/usr/share/trommel/50-trommel.rules.in           per-user template
+/usr/lib/systemd/user/trommeld.service
+/usr/lib/systemd/user/trommel-autostart.service
+/usr/share/dbus-1/services/io.github.nayvok.Trommel.Daemon.service
+/usr/share/applications/io.github.nayvok.Trommel.desktop
+/usr/share/metainfo/io.github.nayvok.Trommel.metainfo.xml
+/usr/share/icons/hicolor/{scalable,symbolic}/apps/io.github.nayvok.Trommel*.svg
+/usr/share/icons/hicolor/<size>/apps/io.github.nayvok.Trommel*.png
+```
+
+Dependencies: GTK4, libadwaita, glib, pkexec/polkit, user D-Bus and systemd;
+the NVIDIA driver is recommended. The tray uses `ksni` in-process and adds no
+GNOME dependency. `postinst` refreshes desktop/icon caches and writes the
+per-user polkit rule for `SUDO_USER`, so GPU tuning does not prompt. On the
+first install it enables `trommeld.service` through a
+`graphical-session.target.wants` symlink; upgrades preserve a user's choice.
+`postrm` removes the rule and the symlink; `prerm` does not stop the miner.
+`scripts/test-deb.sh` asserts every path and mode, the polkit annotation and a
+path-neutral binary; `scripts/test-deb-install.sh` covers
+install/upgrade/remove and config preservation in a disposable root container.
+
+### Developer install
+
+```bash
+./install.sh             # build, install user binaries, helper and service
+./install.sh --no-build  # use target/release
+./install.sh --no-helper # skip the polkit helper (no OC)
+```
+
+`install.sh` installs to `~/.local/bin`, `~/.config/systemd/user`,
+`~/.local/share/{applications,icons,metainfo,dbus-1/services}`, puts the helper
+at `/usr/libexec/trommel/trommel-oc` and installs the per-user polkit rule
+through `scripts/install-polkit-rule.sh`. It restarts `trommeld` so an upgrade
+does not leave the previous process running. Remove with `./uninstall.sh`
+(keeps config) or `./uninstall.sh --purge` (removes config, state and
+benchmarks); it refuses to remove the helper while a miner is running.
+
+### CI workflows
+
+| Workflow | Trigger | Checks |
+| --- | --- | --- |
+| `ci.yml` | push to `main`, pull request | secrets, docs links, fmt, clippy with `gui`, tests, GUI-feature tests, CLI-only build, e2e, MCP, release build, desktop/metainfo validation, package layout + install/upgrade/remove, MSRV |
+| `ui.yml` | called by `ci.yml` and `release.yml` | headless `ui-smoke.sh` and `first-run-smoke.sh` under Xvfb with a private AT-SPI bus |
+| `package.yml` | manual | builds the `.deb` and validates its layout |
+| `release.yml` | tag `v*` | the CI matrix plus polkit check, tag/version check, bundle verification, install/upgrade/remove, GitHub Release upload |
+
+### Versioning
+
+One version for the whole workspace (`Cargo.toml` `[workspace.package]
+version`). `./scripts/check-version.sh [vX.Y.Z]` checks it against `Cargo.lock`,
+`CHANGELOG.md`, the metainfo `<release>` and, for a tag build, that the
+annotated tag names it and points at `HEAD`. Update the changelog and metainfo
+entry with every release.
+
+### Release checklist
+
+Run from a clean tree.
+
+1. **Version.** Bump `version` in `Cargo.toml`; add a dated `CHANGELOG.md` entry
+   and a metainfo `<release>`; bump `Version:` in
+   `packaging/rpm/trommel.spec.in`. Build once so `Cargo.lock` picks up the
+   version, then `./scripts/check-version.sh` must pass.
+2. **Matrix.** `cargo fmt --all -- --check`, clippy with `gui`, workspace tests,
+   GUI-feature tests, the CLI-only and GUI builds, `cargo build -p trommeld`,
+   `./scripts/test-oc-helper.sh`, `./scripts/e2e.sh`, `./scripts/test-mcp.sh`,
+   both UI smokes (real desktop for a release), `./scripts/check-docs.sh`,
+   `./scripts/check-no-secrets.sh`, `./scripts/check-polkit.sh`,
+   `desktop-file-validate` and `appstreamcli validate`. Regenerate screenshots
+   only if the UI changed.
+3. **Package.** `./scripts/package-deb.sh`, `./scripts/test-deb.sh`,
+   `./scripts/test-deb-install.sh` (root, disposable container).
+4. **Bundle.** `./scripts/release-bundle.sh` builds `dist/release` and verifies
+   it; `(cd dist/release && sha256sum -c SHA256SUMS)` must pass.
+5. **Commit and tag.** Commit everything, tag the last commit with an annotated
+   `vX.Y.Z`, push the branch and tag. Do not tag an intermediate commit. If the
+   workflow fails, fix on the branch, move the tag and push again; delete a
+   remote tag only if nothing was published and that is agreed.
+6. **Watch the workflow** re-run the matrix, verify the tag/version and bundle,
+   and publish only if they pass.
+7. **Verify the published release.** Download every asset and run
+   `./scripts/verify-release-bundle.sh <dir>`; check the `.deb`, both `.sha256`
+   sidecars, `trommel-install.sh` and `SHA256SUMS`, and that
+   `releases/latest/download/trommel_amd64.deb` resolves. Install once from a
+   clean machine.
+
+## Internationalization
+
+English is the source string; Russian is a translation kept in the same call
+site. There is no gettext catalogue yet.
+
+```rust
+use trommel_core::i18n::{tr, tr_ref, set_language, Language};
+
+let text = tr("Start", "Запустить");
+let static_label = tr_ref("System", "Системная");
+set_language(Language::Ru);
+```
+
+- `Language::{System, En, Ru}`; `System` reads `LANGUAGE`, `LANG` or `LC_ALL`
+  and falls back to English unless the value starts with `ru`.
+- `set_language` updates a process-global `AtomicU8`; the GUI calls it at start
+  and the daemon when an applied config changes the language.
+- `tr(en, ru)` returns `String` (safe for `format!`); `tr_ref(en, ru)` borrows a
+  `'static` translation. Never concatenate translated fragments.
+- `behavior.language` takes effect after an app restart (the Settings row says
+  so). The daemon applies it in `ApplyConfig` so notifications/status follow.
+- Catalogue `*_en`/`*_ru` fields are both required; accessors on `MinerDef`,
+  `MinerOption`, `CoinDef` and `PoolDef` choose the language.
+- The GUI, desktop notifications and daemon messages are bilingual. Human CLI
+  output is Russian-only; `--json` is language-neutral and is the stable
+  interface. Some daemon log lines are Russian by design.
+- The gettext migration (planned, not shipped): add `gettext-rs` with
+  `gettext-system`, wrap strings, extract with `xtr`, compile `po/ru.po` to
+  `/usr/share/locale/ru/LC_MESSAGES/trommel.mo`, add `translation
+  type="gettext"` to metainfo, never commit `.mo` files. Until then every new
+  user-visible string is added in both languages.

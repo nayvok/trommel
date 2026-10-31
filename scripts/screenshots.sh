@@ -357,7 +357,6 @@ install_shot dark en "$DOCS/miner-install-en-dark.png"
 tune_shot dark en "$DOCS/gpu-tune-en-dark.png"
 history_shot dark en "$DOCS/history-en-dark.png"
 shot dark ru dashboard "$DOCS/dashboard-ru-dark.png" 1 "" 960
-shot dark ru settings "$DOCS/settings-ru-dark.png"
 shot light en dashboard "$DOCS/dashboard-en-light.png" 1 "" 960
 shot light ru dashboard "$DOCS/dashboard-ru-light.png" 1 "" 960
 echo "done"

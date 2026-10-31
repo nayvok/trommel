@@ -21,9 +21,17 @@ SKIP_DIRS = {
 }
 LEGACY = {
     "ux.md": "replaced by docs/design.md",
-    "ux.ru.md": "replaced by docs/design.ru.md",
+    "ux.ru.md": "removed; only README is Russian",
     "PLAN.md": "removed; direction lives in docs/roadmap.md",
     "extension.md": "removed; the GNOME Shell applet is gone (ADR 0004)",
+    "components.md": "merged into docs/architecture.md#modules",
+    "verification.md": "merged into docs/development.md#manual-and-real-rig-checks",
+    "packaging.md": "merged into docs/development.md#packaging-and-releases",
+    "security.md": "merged into docs/architecture.md#security-model and SECURITY.md",
+    "i18n.md": "merged into docs/development.md#internationalization",
+    "design.ru.md": "removed; only README is Russian",
+    "user-guide.ru.md": "removed; only README is Russian",
+    "CONTRIBUTING.ru.md": "removed; only README is Russian",
 }
 
 try:

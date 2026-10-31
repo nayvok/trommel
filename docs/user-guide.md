@@ -4,8 +4,6 @@ Trommel controls a local NVIDIA rig: it stores presets, installs miners, applies
 power/clocks, starts exactly one miner and restores the stock GPU state when
 mining stops. The daemon keeps working after the window is closed.
 
-Russian: [user-guide.ru.md](user-guide.ru.md).
-
 ## Install
 
 Download the latest `.deb` from GitHub Releases

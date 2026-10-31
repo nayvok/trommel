@@ -3,9 +3,7 @@
 This document is the UX and visual specification for Trommel. It is written for
 whoever adds a screen, a row or a warning: the goal is that new work feels like
 the rest of the app without a design review. The code lives in
-`crates/cli/src/gui.rs`; the component map is in [components.md](components.md).
-
-Russian mirror: [design.ru.md](design.ru.md).
+`crates/cli/src/gui.rs`; the component map is in [architecture.md](architecture.md#modules).
 
 ## Product posture
 
@@ -402,7 +400,6 @@ Rules:
 - A single-GPU dialog has no empty “apply to” section. Deleting a mining preset
   deletes only its own GPU values; saved GPU presets remain.
 
-
 ### History (modal)
 
 - Opened by the calm **History** button in the hero footer; it is a dialog, not
@@ -475,7 +472,7 @@ Rules:
   buttons, dialogs scroll instead of growing beyond the screen.
 - AT-SPI limitations (spin rows may not expose their value) are handled in
   `scripts/ui-smoke.sh` by changing the profile through a switch; see
-  [verification.md](verification.md).
+  [development.md](development.md#manual-and-real-rig-checks).
 
 ## Screenshots
 
@@ -484,7 +481,7 @@ two-GPU rig with deterministic XDG directories. Conventions:
 
 - English dark is the primary set. The dashboard is captured in dark and light
   for both languages, so GitHub can pick the viewer's scheme; the remaining
-  surfaces are English dark plus Russian settings.
+  surfaces are English dark.
 - File naming: `<surface>-<lang>-<scheme>.png`.
 - Use the GUI test hooks (`TROMMEL_SCREENSHOT`, `TROMMEL_OPEN_*`,
   …) instead of hand-cropping.

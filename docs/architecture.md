@@ -60,7 +60,7 @@ The tray does not imply mining: it starts in the stopped state. It does **not**
 keep mining across its own restart:
 on start-up it stops an orphaned miner from the previous session, restores an
 applied snapshot and leaves mining stopped (startup recovery). Adoption no
-longer resumes mining; see [ADR 0006](adr/0006-failure-policy.md).
+longer resumes mining; see [ADR 0006](decisions.md#adr-0006).
 
 Three independent failure nets cover the daemon: systemd (`KillMode=control-group`,
 `TimeoutStopSec=30`, `ExecStopPost=-/usr/bin/trommel emergency-stop
@@ -68,6 +68,63 @@ Three independent failure nets cover the daemon: systemd (`KillMode=control-grou
 runs, and startup recovery on the next daemon start. They all call the same
 idempotent emergency path. The GUI is not part of this chain: killing the window
 is a no-op for mining.
+
+## Security model
+
+Only `trommel-oc` is privileged. Everything else — the GUI, the CLI, the daemon
+and the guard — runs in the user session. Report vulnerabilities privately; the
+policy is in [SECURITY.md](../SECURITY.md).
+
+| Component | Can do | Cannot do |
+| --- | --- | --- |
+| `trommel` GUI/CLI | Edit its draft, call D-Bus, download into the user store | Tune GPUs directly, spawn the supervisor's miner |
+| `trommeld` | Own the miner, call the helper through pkexec, read `nvidia-smi`, scan `/proc` | Run as root, write outside the user's dirs, grant polkit rights, kill an external miner |
+| `trommel guard` | Watch the daemon PID/start time and run emergency-stop after a crash | Touch GPUs directly, run as root |
+| `trommel-oc` (root, via pkexec) | One `nvidia-smi` call per GPU with numeric arguments | Accept paths, shell text, arbitrary commands or another GPU's UUID |
+| Miner binary | Mine, bind a local API port, write its log | Be audited by Trommel beyond the executable/checksum checks |
+| Pool API | Return statistics to the daemon | Control the miner, trigger a config change or see the wallet |
+
+The D-Bus service is a **same-user** interface: any process running as the user
+can call `GetConfig` and read the wallet. This is a normal desktop trust model;
+do not expose the bus name on the system bus or through a socket.
+
+**Root helper.** `trommel-oc` accepts `apply`/`reset`/`status`, validates the
+UUID shape and numeric ranges (50–1000 W, 100–4000 MHz) in both the script and
+`trommel-core::oc`, and invokes `nvidia-smi` with an argument vector — no paths,
+no shell interpolation. It waits for the power limit to read back and fails when
+the driver reports a different value. A 180 s timeout protects an interactive
+polkit prompt. The optional `--lease-pid`/`--lease-start` pair is checked before
+the first mutation, so a helper queued behind a polkit dialog aborts after the
+daemon dies. An advisory `flock` on `oc.lock` serializes apply/restore across
+processes. The package writes a per-user polkit rule for `SUDO_USER`; without
+it, each OC call asks for authentication.
+
+**Downloads.** HTTPS only, 512 MiB limit, optional SHA-256 (a missing digest is
+`verified: false`, never invented), safe single-component `miner`/`version`/
+`binary` names, archive extraction that rejects absolute paths and `..`, staging
+in a temporary directory, and an ELF/`#!` check before the binary is accepted.
+Miner binaries are never run as root and are never committed.
+
+**Wallets, logs and diagnostics.** The config file contains the wallet in clear
+text; the status document and daemon log do not. `Config::redacted()` replaces
+wallets with `<redacted>` for `trommel diagnose --json`, **Copy diagnostics** and
+the MCP read tools. Local history stores timestamps, preset/miner ids, GPU UUIDs,
+power, temperature and shares — no wallet, worker, pool URL or IP — and is never
+uploaded. Test fixtures may only use `prl1test…`; `scripts/check-no-secrets.sh`
+rejects real-looking wallets and personal home paths.
+
+**Network.** The daemon calls the PearlHash account API for the configured
+wallet (60 s cache with backoff); the miner exposes a local HTTP API on
+`127.0.0.1:<api_port>`. Downloads happen only on an explicit install. There is
+no telemetry, analytics, update check or account.
+
+**Limits.** A pre-existing manual clock lock cannot be read back through
+`nvidia-smi`, so Stop resets locks to the driver default. Fan control and
+per-card temperature limits are not available on consumer cards; fan flags are
+passed to the miner. Device selection follows the miner's documented flag and
+the `nvidia-smi` index order; verify a heterogeneous rig with a benchmark.
+Same-user processes can always read the config and call D-Bus — this is not
+multi-user isolation.
 
 ## Crates and dependency direction
 
@@ -89,8 +146,74 @@ The GUI feature is optional: `cargo build -p trommel` produces a CLI-only
 binary, `cargo build -p trommel --features gui` adds GTK4/libadwaita. The
 release packages always build with `gui`.
 
-Per-module responsibilities and key functions are listed in
-[components.md](components.md).
+The module map and the “where to change what” table are below.
+
+## Modules
+
+The component map:
+
+| Component | Path | Role |
+| --- | --- | --- |
+| `trommel-core` | `crates/core/src` | Shared model and logic; no UI, no daemon main |
+| `trommeld` | `crates/daemon/src/main.rs`, `tray.rs` | User D-Bus service, status refresher, supervisor loop, SNI tray |
+| `trommel` CLI | `crates/cli/src/main.rs` | Command-line client, daemon activation, JSON output |
+| `trommel` GUI | `crates/cli/src/gui.rs` | libadwaita application behind `--features gui` |
+| MCP server | `crates/cli/src/mcp.rs` | stdio Model Context Protocol interface |
+| Catalogue | `resources/catalog/*.toml` | Built-in miners, coins and pools |
+| Root helper | `polkit/trommel-oc` | Narrow `nvidia-smi` wrapper run through pkexec |
+| Polkit assets | `polkit/` | Action definition and per-user rule template |
+| systemd units | `systemd/` | D-Bus activation, user service, start-at-login |
+| Desktop assets | `data/` | Desktop entry, metainfo, icons |
+| Installer and packaging | `install.sh`, `uninstall.sh`, `packaging/`, `scripts/*deb*` | Developer install and Debian package |
+| Test harness | `scripts/e2e.sh`, `ui-smoke.sh`, `first-run-smoke.sh`, `test-mcp.sh` | Automated verification |
+
+`crates/core/src/lib.rs` declares the shared constants (`BUS_NAME`,
+`OBJECT_PATH`, `APP_ID`, `VERSION`) and these modules:
+
+| Module | Responsibility |
+| --- | --- |
+| `config` | `Config`/`Preset`/`GpuProfile`/`MinerInstall`, schema v4 migration, `normalize`, `diff`, warnings, redaction |
+| `catalog` | Parse `resources/catalog/*.toml` once; miner/coin/pool definitions, install status, localized labels |
+| `paths` | XDG config/data/state paths; legacy config migration; test-root override |
+| `nvidia` | One `nvidia-smi` query, parsing, PCI bus ids |
+| `oc` | OC snapshot, helper protocol, apply/restore, lease and file lock |
+| `miners` | `build_args`, option rendering, `device_plan`, per-GPU participation |
+| `supervisor` | Spawn/tick/stop/restart, crash detection, external-miner scan |
+| `watchdog` | Hashrate health state machine (notify/restart/stop) |
+| `history` | One JSONL sample per minute, retention, range load, CSV |
+| `state` | Atomic `state.json`, PID ownership by `miner_path` |
+| `emergency` | Idempotent teardown: stop our miner, restore the snapshot |
+| `guard` | Independent supervisor for manual runs |
+| `status` | The status document (contract v5) |
+| `dbus` | Daemon service and client proxy |
+| `pool` | PearlHash account API, cache and backoff |
+| `minerapi` | Local miner API parsers, per-card hashrate and PCI mapping |
+| `bench` | A/B benchmark and report |
+| `download` | HTTPS install/import, path and archive safety |
+| `versions` | Install registry, verify, usage checks, delete |
+| `diagnostics`, `i18n`, `util` | Redacted bundle, `tr(en, ru)` helper, formatting/time helpers |
+
+`trommeld` wires `Engine` to D-Bus, runs the status refresher and the 1 s
+supervisor loop, appends history, sends notifications and hosts the tray.
+`trommel` is the clap CLI; the GUI feature is optional and additive. The GTK app
+keeps a draft and never calls `nvidia-smi`; the daemon owns the applied config,
+the miner, the snapshot and the status.
+
+### Where to change what
+
+| Change | Touch |
+| --- | --- |
+| Add a miner/version/option | `resources/catalog/miners.toml`, tests in `crates/core/src/miners.rs`, [miners.md](miners.md) |
+| Change miner arguments | `crates/core/src/miners.rs` (`build_args`/`append_options`) and its tests |
+| Change GPU apply/restore | `crates/core/src/oc.rs`, `polkit/trommel-oc`, `scripts/e2e.sh` |
+| Change per-GPU participation | `crates/core/src/miners.rs` (`device_plan`), catalogue `device_flag`, `supervisor.rs`, `status.rs`, GUI cards, [ADR 0007](decisions.md#adr-0007) |
+| Change the config model | `crates/core/src/config.rs`, `docs/schema/*.json`, migration/normalize tests |
+| Add a D-Bus method | `crates/core/src/dbus.rs`, CLI/MCP callers, this document |
+| Add a status field | `crates/core/src/status.rs`, GUI rendering, CLI/MCP output |
+| Add a GUI page/dialog | `crates/cli/src/gui.rs`, [design.md](design.md), screenshots, UI smoke |
+| Add a CLI command | `crates/cli/src/main.rs`, [agents.md](agents.md), [user-guide.md](user-guide.md) |
+| Add an MCP tool | `crates/cli/src/mcp.rs`, `scripts/test-mcp.sh`, [agents.md](agents.md) |
+| Change packaging | `packaging/`, `scripts/package-deb.sh`, `.github/workflows/`, [development.md](development.md#packaging-and-releases) |
 
 ## Configuration model (schema v4)
 
@@ -130,7 +253,7 @@ deletes only its own values, never the saved templates.
 touch”, `Some` means “apply”. `enabled` decides whether the card participates in
 the **mining session**: `false` excludes it from the miner, skips its tuning and
 returns any tuning left over from an earlier restore-off session (see
-[ADR 0007](adr/0007-per-gpu-participation.md)). A fresh preset has no clock
+[ADR 0007](decisions.md#adr-0007)). A fresh preset has no clock
 locks; power limit `None` means driver auto, and `0` in the UI maps to `None`.
 `gpu_preset` is metadata only: it names the template a card follows, never
 changes what is applied, and is ignored by `Config::diff`.
@@ -151,7 +274,7 @@ and moving a preset to another installed version changes only that preset.
 executable and is readable; it echoes a recorded SHA-256 or `null` and never
 hashes a file to invent one. `versions::probe_algorithms` is the explicit
 capability probe (`--list-algorithms` or `--help`) and runs only when asked.
-See [components § versions](components.md#versions--miner-version-manager).
+See [Modules § versions](#modules).
 
 `Config::normalize()` repairs the common broken states on load (dangling active
 preset, missing coin display fields, stale fee override). It deliberately does
@@ -276,7 +399,7 @@ and notifies. After `watchdog_max_restarts` failed restarts it stops, restores
 stock and notifies; it never reboots the rig. An external miner, a benchmark or
 a crash restart in flight is never touched. Pool difficulty is not a signal: the
 watchdog uses the miner's local hashrate. See
-[ADR 0010](adr/0010-hashrate-watchdog.md).
+[ADR 0010](decisions.md#adr-0010).
 
 ### Local history
 
@@ -570,7 +693,7 @@ long-lived process, so it owns this path; there is no shell extension.
 ## Tray
 
 `trommeld` hosts a freedesktop **StatusNotifierItem** tray (see
-[ADR 0008](adr/0008-tray.md)). It lives in the
+[ADR 0008](decisions.md#adr-0008)). It lives in the
 daemon on purpose: the icon exists without an open GTK window, survives a GUI
 crash and can start/stop the miner directly. The GTK app remains a short-lived
 client.
@@ -617,9 +740,9 @@ The change is live and does not restart the miner.
   privileged access.
 - **No Flatpak.** The sandbox conflicts with the host helper, systemd
   unit and runtime binary downloads; see
-  [ADR 0003](adr/0003-packaging.md).
+  [ADR 0003](decisions.md#adr-0003).
 - **Debian first.** One tested distribution beats four untested ones; see
-  [packaging.md](packaging.md).
+  [Development § packaging and releases](development.md#packaging-and-releases).
 
 ## Files and locations
 

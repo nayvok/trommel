@@ -3,7 +3,7 @@
 **English** · [Русский](README.ru.md)
 
 Trommel is a GTK4/libadwaita control room for NVIDIA mining rigs. It manages
-miners, pools, coins, GPU profiles and reusable presets — without turning your
+miners, pools, coins, GPU profiles and reusable presets without turning the
 desktop into a pile of shell scripts.
 
 <picture>
@@ -12,91 +12,72 @@ desktop into a pile of shell scripts.
   <img src="docs/images/dashboard-en-dark.png" alt="Trommel dashboard with two NVIDIA GPUs and the rig totals" width="960">
 </picture>
 
-<sub>Dashboard with two GPUs. The image follows your system colour scheme; the dark
-theme is used here by default.</sub>
+<sub>Dashboard with two GPUs. The image follows the system colour scheme; the
+dark theme is used by default.</sub>
 
 > Trommel is a manager, not a miner. Miner binaries are downloaded separately,
-> only one miner runs at a time, and the app restores the stock power limit and
-> clocks when mining stops.
+> only one miner runs at a time, and the stock power limit and clocks are
+> restored when mining stops.
 
 **Who it is for:** a home PC with one to three NVIDIA cards. It is a local,
-simpler alternative to a full mining OS — not a remote farm dashboard, not an
-OS replacement, and not a wallet. Start with **Simple mode**; advanced miner
-arguments are hidden until you turn them on.
+simpler alternative to a full mining OS — not a remote farm dashboard, not an OS
+replacement and not a wallet. Start with **Simple mode**; advanced miner
+arguments stay hidden until you turn them on.
 
-## Features
+## Key features
 
-- **Multi-GPU dashboard** — per-card temperature, power, fan, clocks and
-  utilization; rig power and the hottest card's temperature for the whole rig,
-  each with a per-card breakdown in its tooltip.
+- **Multi-GPU dashboard** — per-card temperature, power, fan, clocks, load and
+  hashrate, with efficiency when the miner reports it; rig power, the hottest
+  card and each card's series in one calm view.
+- **Presets own the rig** — a preset stores the coin/algorithm, pool, wallet,
+  worker, miner version, miner options and its own per-card participation,
+  power and clock settings. Switching presets switches the whole GPU setup; a
+  new preset starts from stock. Named **GPU presets** save and reuse per-card
+  tuning templates.
 - **Per-GPU participation** — switch a card off to exclude it from the active
-  miner: it is not passed to the miner and is not tuned, and the card is marked
-  `excluded`. WildRig, SRBMiner and OneZero use their documented device flags; a
-  miner without one refuses a partial rig instead of mining on every card.
-- **Presets** — bundle the coin/algorithm (Pearl/pearlhash in the current
-  catalogue), pool, wallet, worker, miner version and miner-specific options.
-  GPU settings are edited on each card's Tune dialog, so switching presets does
-  not re-enter everything.
+  miner. It is not passed to the miner and is not tuned; WildRig, SRBMiner and
+  OneZero use their documented device flags, and a miner without one refuses a
+  partial rig instead of silently mining on every card.
 - **Miner library and version manager** — short description, every installed
-  version with the presets that pin it, binary state, verify/remove actions and
-  a link to the upstream release page. A newer build is installed without
-  touching a preset; you then choose which presets to move. The developer fee is
-  shown as a breakdown (miner + pool = total) in the dashboard and the preset
-  editor.
-- **Miner-dependent settings** — option descriptors come from the selected
-  miner in the catalogue: types, ranges, defaults and CLI flags. Values whose
-  keys no longer exist are dropped when the miner changes.
-- **One install, all presets** — a single install dialog owns the version
-  list (catalogue plus your own imported builds), downloads over HTTPS and
-  imports local binaries. Install a version once; every preset that references
-  it sees it as installed, and missing versions block Start until resolved.
-  Older versions stay installed for rollback, removal of a pinned version is
-  refused, and switching a preset to another installed version changes only that
-  preset.
-- **Preset editor as a dialog** — rows open a modal editor with Save/Cancel,
-  duplicate and a confirmation before deleting; no in-page Back navigation.
-- **Appearance** — System, Light or Dark colour scheme applied immediately and
-  remembered across restarts. Trommel uses libadwaita's own styling and the
-  system GTK theme, so it matches other GNOME apps on the same desktop.
-- **Stock snapshot** — before applying power/clocks, Trommel captures each
-  GPU's current power limit and restores it on stop (on by default). No
-  hardcoded power limit.
-- **Optional clock locks** — core/memory locks are off by default; enable them
-  per card, copy to identical cards or all GPUs. A lower memory lock can save
-  power on some coins and hurt others, so it is an advanced choice.
-- **Per-card tuning** — each dashboard card shows live power, clocks,
-  temperature, fan and load in value bubbles and opens **Tune** for power and
-  clock locks; simple mode hides the clock rows.
-- **Safe apply flow** — if the miner is running and you edit the profile, you
-  choose **Apply and restart** or **Apply and stop**; failures roll back.
-- **Simple mode by default** — ordinary users see power, temperature and Start;
-  advanced miner options and raw arguments are one switch away.
-- **Agent-friendly** — JSON config, CLI diagnostics, diff/apply commands and an
-  optional MCP server for Codex/other agents. The agent proposes; you see the
-  diff and approve.
-- **Background tray** — the daemon keeps a StatusNotifierItem menu with a live
-  status line, Start/Stop mining, Show window and Quit. It exists without an open
-  window, uses a monochrome symbolic icon by default (colour is one switch away)
-  and starts at login unless you turn that off.
-- **English and Russian UI**, the desktop GTK theme (Yaru, Adwaita), light and dark colour schemes, GNOME HIG-style widgets.
+  version with the presets that pin it, verify/remove actions and an upstream
+  link. Installs are global and versioned: a new build never rewrites a preset,
+  older versions stay for rollback, and a version pinned by a preset cannot be
+  removed. The developer fee is shown as a breakdown (miner + pool = total).
+- **Safe by default** — snapshot each card's stock power and clocks before
+  tuning and restore them on Stop. A running miner is never silently restarted:
+  edits require **Apply and restart** or **Apply and stop**. Emergency-stop,
+  the guard and startup recovery cover crashes and a lost session bus.
+- **Hashrate watchdog** — off by default; when enabled it notifies on a
+  sustained low hashrate, and an explicit opt-in can restart the miner through
+  the normal bounded-restart path.
+- **Local history** — the daemon keeps one sample per minute for about eight
+  days and exposes it through the History dialog (1h/24h/7d), a 24h average and
+  CSV export. No wallet, pool URL or telemetry is stored.
+- **Tray and notifications** — a StatusNotifierItem menu with live status,
+  Start/Stop, Show window and Quit, plus desktop notifications for crash, error
+  and overheat events. The daemon keeps mining when the window closes.
+- **Agent-ready** — JSON status and diagnostics, `config diff/apply`, preset
+  export/import and an optional read-only-by-default MCP server. The agent
+  proposes; you see the diff and approve.
+- **Simple mode and bilingual UI** — English and Russian, light and dark colour
+  schemes, and the desktop GTK theme. Simple mode hides miner arguments and
+  advanced clock rows.
 
 ## Supported setup
 
-- Linux with GNOME Shell 50 (Ubuntu 26.04 is the tested target), Wayland.
-  The tray also works on KDE Plasma 6; GNOME needs the AppIndicator extension
-  (Ubuntu ships it). The rest of the app is tested on GNOME.
-- NVIDIA GPU + working `nvidia-smi` and driver.
+- Linux with GNOME Shell 50 (Ubuntu 26.04 is the tested target), Wayland. The
+  tray also works on KDE Plasma 6; GNOME needs the AppIndicator extension
+  (Ubuntu ships it).
+- An NVIDIA GPU with a working driver and `nvidia-smi`.
 - For development: Rust 1.92+, `libgtk-4-dev`, `libadwaita-1-dev`, `pkg-config`.
 
-AMD/Intel, X11-specific paths and non-GNOME desktops are not supported.
+AMD/Intel GPUs, X11-specific paths and other desktops are not supported.
 
 ## Install
 
-### GitHub release (recommended)
-
 Trommel is distributed from **GitHub Releases**; there is no apt repository or
-PPA. Download the latest release from
-<https://github.com/nayvok/trommel/releases/latest> and install the `.deb`:
+PPA. Download the latest `.deb` from
+<https://github.com/nayvok/trommel/releases/latest> and install it:
 
 ```bash
 sudo apt install ./trommel_amd64.deb
@@ -110,134 +91,68 @@ curl -fsSLO https://github.com/nayvok/trommel/releases/latest/download/trommel-i
 bash trommel-install.sh
 ```
 
-The package contains the app, `trommeld`, the polkit helper, desktop entry,
+The package contains the app, `trommeld`, the polkit helper, the desktop entry,
 icons and metainfo. The daemon starts on demand over D-Bus; GPU tuning works
-without a password for the user who ran the install.
+without a password for the user who installed the package. Upgrade by installing
+the new `.deb`; remove with `sudo apt remove trommel`.
 
-Upgrade by installing the new release's `.deb`; remove with
-`sudo apt remove trommel`. The dev install below is for contributors.
-
-### Developer install
+The developer path builds and installs into the user session:
 
 ```bash
 ./install.sh             # build, install and enable the user service
 ./install.sh --no-helper # without the polkit helper (no OC)
 ```
 
-The script installs binaries to `~/.local/bin` and the helper to
-`/usr/libexec/trommel/`. It asks for `sudo` once for the helper and polkit rule.
-
-### Other formats
-
-RPM, AppImage and Flatpak are **not released**. Reasons and the current
-status are documented in [docs/packaging.md](docs/packaging.md). Flatpak cannot
-provide the host `nvidia-smi`/polkit/systemd integration this app needs without
-a broad sandbox; a GUI-only Flatpak would be a different product.
+RPM, AppImage and Flatpak are **not released**; the reasons and current status
+are in [docs/development.md](docs/development.md#formats).
 
 ## First run
 
-A fresh install has **no mining preset**. The dashboard is the first page: it
-shows the detected cards, and its hero explains that a preset is required.
-**Create preset** opens the preset editor; the same path is offered when you
-press **Start** without a preset.
+A fresh install has **no preset**. The dashboard shows the detected cards and
+explains that a preset is required. **Create preset** opens the editor: choose
+the coin, enter the pool endpoint, wallet and worker, install a miner version
+and tune the cards. **Start** snapshots each enabled card, applies power/clocks
+and launches exactly one miner. Stop restores the snapshot.
 
-A preset stores the coin, algorithm, pool address and fee, wallet, miner
-version and its own GPU settings. The editor has no pool dropdown: enter the
-endpoint your pool gave you. A known pool host can suggest its fee and, when it
-documents one, its JSON account API. Choose a miner version and press
-**Install…**; a version newer than the catalogue is allowed, and one install is
-shared by every preset.
-
-GPU participation and tuning belong to the active preset: the card switch on the
-dashboard includes a card in that preset, and **Tune** stores the card's power
-and clocks with the same preset. A new preset starts from stock. Named **GPU
-presets** can be saved per card and reused later.
-
-See the [user guide](docs/user-guide.md#first-run-create-a-preset) for the full
-first-run walkthrough.
+The full walkthrough, including pools, fees, clock locks and troubleshooting, is
+in the [user guide](docs/user-guide.md).
 
 ## CLI
 
 ```bash
-trommel status               # human-readable
-trommel status --json        # contract used by the GUI and CLI
+trommel status [--json]        # human summary or the status contract
 trommel start / stop / toggle
-trommel preset list          # show presets and their total fee
-trommel preset use <id> --restart
-trommel miner list           # catalogue + installed versions and their presets
-trommel miner import wildrig 0.51.8 /path/to/wildrig-multi
-trommel miner install wildrig 0.51.8 https://example.org/miner.tar.gz \
-  --sha256 <hex> --archive tar.gz --binary wildrig-multi
-trommel miner verify         # check every installed binary; --json for agents
-trommel miner remove wildrig 0.51.7 --yes   # only an unused version
+trommel preset list / use <id>
+trommel miner list / install / import / verify / remove
 trommel bench --minutes 3
 trommel diagnose --json > diagnostics.json
 trommel config diff proposed.json
 trommel config apply proposed.json --restart
-trommel mcp                  # read-only MCP server over stdio
+trommel mcp                    # read-only MCP server over stdio
 ```
 
-The daemon is the single source of truth. The GUI can be closed; the miner
-keeps working.
-
-## Fees and miner info
-
-The miner library shows a short description and every installed version; the
-install dialog lists catalogue versions and links to the upstream release page.
-The
-preset editor shows the selected miner's description, install path and fee
-breakdown:
-
-```
-miner 0.00% + pool 1.00% = total 1.00%
-```
-
-A miner fee is editable **only** when the catalogue marks it configurable; the
-UI never pretends a fixed fee can be changed. The pool fee is used for effective
-hashrate calculation and is editable per preset.
-
-## Stock restore and limitations
-
-- Power limit is restored from the snapshot captured before mining.
-- `-lgc`/`-lmc` are reset to the driver default. A pre-existing manual clock
-  lock cannot be read back through `nvidia-smi`; this is documented in the UI.
-- Fan control on consumer cards is not available through `nvidia-smi`; fan
-  flags are passed to the miner when supported and disappear with the process.
-- On reboot the snapshot is marked stale and is not used; Start captures a fresh
-  one, and the driver resets GPU settings anyway.
-
-## Notifications
-
-**Behavior → Notifications** turns crash, error and overheat alerts into regular
-desktop notifications. `trommeld` sends them through
-`org.freedesktop.Notifications`, so they work on any freedesktop desktop; the
-same events are also emitted as the `Notification` D-Bus signal for custom
-integrations. No shell extension is installed.
+The daemon is the single source of truth. The GUI can be closed; the miner keeps
+working.
 
 ## Documentation
 
-Start at the [documentation index](docs/README.md). The most used entry points:
-
-- [User guide](docs/user-guide.md) · [Русский](docs/user-guide.ru.md)
-- [Architecture](docs/architecture.md) · [Components](docs/components.md)
-- [Design](docs/design.md) · [Русский](docs/design.ru.md)
-- [Development and test harness](docs/development.md)
-- [Miner catalogue and options](docs/miners.md)
-- [Using Trommel from an external agent](docs/agents.md)
-- [Packaging and releases](docs/packaging.md)
-- [Verification](docs/verification.md)
-- [Security model](docs/security.md)
-- [Roadmap](docs/roadmap.md)
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) / [Русский](CONTRIBUTING.ru.md) and
-[AGENTS.md](AGENTS.md). Feature branches and Conventional Commits are expected.
+- [User guide](docs/user-guide.md) — everyday operation.
+- [Architecture](docs/architecture.md) — processes, modules, D-Bus, lifecycle,
+  config, status contract and security model.
+- [Development](docs/development.md) — build, tests, verification, screenshots,
+  packaging, release and i18n.
+- [Design](docs/design.md) — screens, layout, copy and visual rules.
+- [Miner catalogue](docs/miners.md) — fields, options, driver branches and fees.
+- [External agents](docs/agents.md) — CLI/JSON/MCP surface and safety rules.
+- [Roadmap](docs/roadmap.md) — shipped, implemented on `main`, and next.
+- [Decisions](docs/decisions.md) — architectural decision log.
+- [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) ·
+  [Security](SECURITY.md) · [Third-party components](THIRD_PARTY.md)
 
 ## License
 
 **License is not chosen yet.** The old MIT claim was removed; the AppStream
-metadata currently uses `LicenseRef-proprietary`. Mining binaries are not
+metadata currently uses `LicenseRef-proprietary`. Miner binaries are not
 distributed by this project; their licenses are listed on their upstream pages.
 
 ## Disclaimer
