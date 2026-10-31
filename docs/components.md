@@ -266,8 +266,9 @@ arguments — no shell.
 - `Watchdog::observe(cfg, sample) -> Vec<Action>` — warm-up, stale/no-data,
   low/zero/card-down windows and hysteresis. Notify is the default; restart is
   an explicit opt-in. A scheduled restart is re-checked before it runs.
-- `Watchdog::restart_finished(cfg, success)` — counts the attempt, stops after
-  the limit and returns the notification actions.
+- `Watchdog::restart_finished(success, started_at)` — counts the attempt,
+  records the session it started (its own restart must not reset the budget),
+  stops after the limit and returns the notification actions.
 - `Action::{Notify, Restart, PerformRestart, Stop}` — the daemon executes
   `PerformRestart` through `Supervisor::stop`/`start` and emits the messages;
   the module never spawns a process.

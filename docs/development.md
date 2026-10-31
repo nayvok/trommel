@@ -49,7 +49,7 @@ do not move GTK types into `trommel-core` or the daemon.
 | `cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings` | No new lints, including GUI code | GTK dev libs |
 | `cargo fmt --check` | Formatting | Rust only |
 | `cargo build -p trommel` | The CLI-only build keeps working (no GTK types leak into core/daemon) | Rust only |
-| `./scripts/e2e.sh` | Full CLI lifecycle on a private bus with fake GPU, helper and miner, including per-GPU participation (device arguments, excluded card untouched, restore, refusal), SIGKILL/emergency-stop, startup recovery, helper lease, partial apply, restore retry, custom binary, benchmark external guard, restart budget, guard, lost session bus and the refused `SetConfig` restart | Python 3, dbus |
+| `./scripts/e2e.sh` | Full CLI lifecycle on a private bus with fake GPU, helper and miner, including per-GPU participation (device arguments, excluded card untouched, restore, refusal), SIGKILL/emergency-stop, startup recovery, helper lease, partial apply, restore retry, custom binary, benchmark external guard, restart budget, watchdog restart drill, guard, lost session bus and the refused `SetConfig` restart | Python 3, dbus |
 | `./scripts/test-oc-helper.sh` | The real Bash helper against the stateful fake `nvidia-smi` | bash |
 | `./scripts/test-mcp.sh` | MCP protocol, read-only default, write gating, redaction | Python 3 |
 | `./scripts/ui-smoke.sh` | Critical GUI path through AT-SPI (first-run preset creation, start/stop, settings, editor, tuning, install, version manager) | desktop session or Xvfb, `at-spi2-core`; XWayland preferred |
