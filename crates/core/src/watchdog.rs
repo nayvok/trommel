@@ -151,7 +151,10 @@ impl Watchdog {
         }
 
         let now = sample.now;
-        let window = behavior.watchdog_window_s.max(60);
+        // `Config::normalize` keeps the user-facing window at 60 s or more; the
+        // unsaved `TROMMEL_WATCHDOG_WINDOW_S` test hook may shorten it so the
+        // e2e drill does not have to wait a full minute.
+        let window = behavior.watchdog_window_s.max(1);
         let warmup = warmup_s(window);
         let has_data = sample.source != "no data" && sample.total_hashrate.is_some();
 
@@ -308,9 +311,23 @@ impl Watchdog {
     }
 
     /// The daemon executed (or failed to execute) `PerformRestart`.
-    pub fn restart_finished(&mut self, cfg: &Config, success: bool) -> Vec<Action> {
+    ///
+    /// `started_at` is the new session's start time. Recording it here keeps
+    /// the watchdog's own restart from looking like an explicit user Start in
+    /// [`Self::observe`], which would reset the restart budget and let a
+    /// still-degraded miner be restarted forever.
+    pub fn restart_finished(
+        &mut self,
+        cfg: &Config,
+        success: bool,
+        started_at: u64,
+    ) -> Vec<Action> {
         self.restart_count = self.restart_count.saturating_add(1);
         if success {
+            self.last_started_at = started_at;
+            self.no_data_since = None;
+            self.last_no_data_notify = None;
+            self.last_stale_notify = None;
             self.phase = Phase::Warmup;
             return vec![Action::Notify(tr(
                 "Watchdog restarted the miner; waiting for the warm-up",
@@ -486,6 +503,19 @@ mod tests {
     }
 
     #[test]
+    fn the_test_hook_can_shorten_the_window() {
+        let mut watchdog = Watchdog::default();
+        let mut cfg = cfg(WatchdogAction::Notify);
+        cfg.behavior.watchdog_window_s = 2;
+        assert!(watchdog.observe(&cfg, &sample(1_000, 50.0)).is_empty());
+        let actions = watchdog.observe(&cfg, &sample(1_002, 50.0));
+        assert!(
+            matches!(actions.as_slice(), [Action::Notify(_)]),
+            "{actions:?}"
+        );
+    }
+
+    #[test]
     fn recovery_before_the_window_cancels_the_alert() {
         let mut watchdog = Watchdog::default();
         let cfg = cfg(WatchdogAction::Notify);
@@ -514,7 +544,7 @@ mod tests {
             watchdog.observe(&cfg, &sample(1_062, 50.0)).as_slice(),
             [Action::PerformRestart { attempt: 1 }]
         ));
-        let actions = watchdog.restart_finished(&cfg, true);
+        let actions = watchdog.restart_finished(&cfg, true, 1_063);
         assert!(
             matches!(actions.as_slice(), [Action::Notify(_)]),
             "{actions:?}"
@@ -529,7 +559,7 @@ mod tests {
         assert!(watchdog.observe(&cfg, &sample(1_000, 50.0)).is_empty());
         let actions = watchdog.observe(&cfg, &sample(1_060, 50.0));
         assert!(matches!(actions[0], Action::Restart { attempt: 1, .. }));
-        let actions = watchdog.restart_finished(&cfg, false);
+        let actions = watchdog.restart_finished(&cfg, false, 0);
         assert!(
             matches!(actions.as_slice(), [Action::Stop(_)]),
             "{actions:?}"
@@ -593,19 +623,62 @@ mod tests {
     }
 
     #[test]
-    fn explicit_start_resets_the_restart_count() {
+    fn a_watchdog_restart_keeps_the_budget() {
         let mut watchdog = Watchdog::default();
         let mut cfg = cfg(WatchdogAction::Restart);
-        cfg.behavior.watchdog_max_restarts = 2;
+        cfg.behavior.watchdog_max_restarts = 1;
         assert!(watchdog.observe(&cfg, &sample(1_000, 50.0)).is_empty());
         assert!(matches!(
             watchdog.observe(&cfg, &sample(1_060, 50.0))[0],
             Action::Restart { attempt: 1, .. }
         ));
-        let mut restarted = sample(1_100, 50.0);
-        restarted.started_at = 2;
-        restarted.uptime_s = 0;
-        watchdog.restart_finished(&cfg, true);
-        assert!(watchdog.observe(&cfg, &restarted).is_empty());
+        assert!(matches!(
+            watchdog.observe(&cfg, &sample(1_062, 50.0))[0],
+            Action::PerformRestart { attempt: 1 }
+        ));
+        // The daemon stopped and started the miner; the new session began at
+        // 1_063. That started_at change is the watchdog's own restart, not an
+        // explicit user Start, so it must not hand out a fresh budget.
+        watchdog.restart_finished(&cfg, true, 1_063);
+        let mut degraded = sample(1_100, 50.0);
+        degraded.started_at = 1_063;
+        degraded.uptime_s = 102;
+        assert!(watchdog.observe(&cfg, &degraded).is_empty());
+        let mut later = sample(1_165, 50.0);
+        later.started_at = 1_063;
+        later.uptime_s = 167;
+        let actions = watchdog.observe(&cfg, &later);
+        assert!(
+            matches!(actions.as_slice(), [Action::Stop(_)]),
+            "{actions:?}"
+        );
+    }
+
+    #[test]
+    fn an_explicit_start_resets_the_restart_count() {
+        let mut watchdog = Watchdog::default();
+        let mut cfg = cfg(WatchdogAction::Restart);
+        cfg.behavior.watchdog_max_restarts = 1;
+        assert!(watchdog.observe(&cfg, &sample(1_000, 50.0)).is_empty());
+        assert!(matches!(
+            watchdog.observe(&cfg, &sample(1_060, 50.0))[0],
+            Action::Restart { attempt: 1, .. }
+        ));
+        watchdog.restart_finished(&cfg, true, 1_063);
+        // The user stopped and started the miner before the next healthy
+        // window: a started_at the watchdog did not initiate resets the
+        // budget, so one more restart is allowed.
+        let mut started = sample(1_200, 50.0);
+        started.started_at = 1_500;
+        started.uptime_s = 300;
+        assert!(watchdog.observe(&cfg, &started).is_empty());
+        let mut low = sample(1_260, 50.0);
+        low.started_at = 1_500;
+        low.uptime_s = 360;
+        let actions = watchdog.observe(&cfg, &low);
+        assert!(
+            matches!(actions.as_slice(), [Action::Restart { attempt: 1, .. }]),
+            "{actions:?}"
+        );
     }
 }

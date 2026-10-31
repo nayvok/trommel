@@ -213,9 +213,10 @@ impl Engine {
                     } else {
                         crate::supervisor::log_line("watchdog restart completed");
                     }
+                    let started_at = inner.sup.state.started_at.unwrap_or(0);
                     self.running
                         .store(inner.sup.is_running(), Ordering::Relaxed);
-                    for next in inner.watchdog.restart_finished(&cfg, success) {
+                    for next in inner.watchdog.restart_finished(&cfg, success, started_at) {
                         match next {
                             watchdog::Action::Stop(message) => {
                                 let _ = tokio::task::block_in_place(|| inner.sup.stop(&cfg));
