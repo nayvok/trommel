@@ -5,6 +5,31 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+### Fixed — dashboard truth before B7 telemetry
+
+- **A missing pool API no longer looks like a zero balance.** The Pool balance
+  row shows `—` with a calm explanation when the pool has no documented account
+  API, has not answered yet, or was never configured; only a real API value can
+  render `0.000`. The pool/shares group is hidden when no preset exists.
+- **The hero no longer repeats the preset.** It now carries coin, pool and fee;
+  the preset name lives once in the Active preset row. That row also carries the
+  rig power, hottest temperature and stock/tuned state with per-card tooltips —
+  the totals widgets existed but were never added to the layout.
+- **Unknown hashrate and shares are `—`, not fake zeros.** A running miner that
+  has not reported yet no longer shows `0 TH/s`; a real zero from the miner or
+  pool is still shown as `0`.
+- **Only power and temperature keep sparklines.** Core, memory, fan and load
+  remain live values, but four extra graphs per card were noise without a
+  trend; the six-bubble grid keeps its shape and height.
+- **The preset editor is grouped.** Summary, Coin and pool, Wallet, Miner, GPU
+  and Advanced replace one flat form; the algorithm of a known coin is
+  read-only, and Simple mode hides the whole Advanced group.
+- **GPU preset management has one entry.** Rename/delete lives in
+  Settings → GPU; the Tune menu only selects a saved preset or offers Save as.
+- **The apply alert lists the reasons.** It shows the already localised
+  `ConfigDiff` class/reasons and explains exactly what restarts; it never
+  invents old→new values the diff does not carry.
+
 ### Added — preset-scoped GPU settings and schema v4
 
 - **Each mining preset now owns its GPU settings.** The shared `gpu_profiles`
