@@ -406,6 +406,17 @@ pub enum Appearance {
     Dark,
 }
 
+/// What the hashrate watchdog does after a sustained low reading.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WatchdogAction {
+    /// Safe default: notify, never touch the running miner.
+    #[default]
+    Notify,
+    /// Explicit opt-in: stop and start the miner (same supervisor path).
+    Restart,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Behavior {
@@ -425,6 +436,15 @@ pub struct Behavior {
     /// Global temperature policy passed to miners that support the flag.
     pub temp_limit_c: u32,
     pub temp_resume_c: u32,
+    /// Hashrate watchdog. Off by default; notify-only when enabled.
+    pub watchdog_enabled: bool,
+    /// Percentage of the preset's expected hashrate considered healthy.
+    pub watchdog_threshold_pct: u32,
+    /// How long the hashrate must stay low before an action.
+    pub watchdog_window_s: u64,
+    pub watchdog_action: WatchdogAction,
+    /// Consecutive restarts before stopping and notifying.
+    pub watchdog_max_restarts: u32,
 }
 
 impl Default for Behavior {
@@ -442,6 +462,11 @@ impl Default for Behavior {
             simple_mode: true,
             temp_limit_c: 85,
             temp_resume_c: 65,
+            watchdog_enabled: false,
+            watchdog_threshold_pct: 80,
+            watchdog_window_s: 300,
+            watchdog_action: WatchdogAction::Notify,
+            watchdog_max_restarts: 3,
         }
     }
 }
@@ -557,6 +582,9 @@ impl Config {
         for preset in self.presets.values_mut() {
             preset.normalize();
         }
+        self.behavior.watchdog_threshold_pct = self.behavior.watchdog_threshold_pct.clamp(10, 100);
+        self.behavior.watchdog_window_s = self.behavior.watchdog_window_s.clamp(60, 3600);
+        self.behavior.watchdog_max_restarts = self.behavior.watchdog_max_restarts.clamp(1, 10);
         self
     }
 
@@ -764,6 +792,17 @@ impl Config {
             reasons.push(tr(
                 "Tray icon style changed",
                 "Изменился стиль иконки в трее",
+            ));
+        }
+        if self.behavior.watchdog_enabled != next.behavior.watchdog_enabled
+            || self.behavior.watchdog_threshold_pct != next.behavior.watchdog_threshold_pct
+            || self.behavior.watchdog_window_s != next.behavior.watchdog_window_s
+            || self.behavior.watchdog_action != next.behavior.watchdog_action
+            || self.behavior.watchdog_max_restarts != next.behavior.watchdog_max_restarts
+        {
+            reasons.push(tr(
+                "Hashrate watchdog settings changed",
+                "Изменились настройки сторожа хешрейта",
             ));
         }
         ConfigDiff { class, reasons }
@@ -1150,7 +1189,7 @@ mod tests {
 
     #[test]
     fn appearance_is_optional_and_lowercase() {
-        let cfg: Config = serde_json::from_str(r#"{"behavior":{"language":"en"}}"#).unwrap();
+        let cfg = serde_json::from_str::<Config>(r#"{"behavior":{"language":"en"}}"#).unwrap();
         assert_eq!(cfg.behavior.appearance, Appearance::System);
         let dark = Behavior {
             appearance: Appearance::Dark,
@@ -1162,14 +1201,14 @@ mod tests {
 
     #[test]
     fn restore_stock_is_on_by_default() {
-        let cfg: Config = serde_json::from_str(r#"{"schema_version":4}"#).unwrap();
+        let cfg = serde_json::from_str::<Config>(r#"{"schema_version":4}"#).unwrap();
         assert!(cfg.behavior.restore_stock_on_stop);
         assert!(Behavior::default().restore_stock_on_stop);
     }
 
     #[test]
     fn tray_is_monochrome_by_default() {
-        let cfg: Config = serde_json::from_str(r#"{"schema_version":4}"#).unwrap();
+        let cfg = serde_json::from_str::<Config>(r#"{"schema_version":4}"#).unwrap();
         assert!(cfg.behavior.tray_monochrome);
         assert!(Behavior::default().tray_monochrome);
 
@@ -1509,5 +1548,42 @@ mod tests {
     fn coin_is_filtered_by_miner_algorithms() {
         let miner = crate::catalog::miner("wildrig").unwrap();
         assert!(miner.supports_algo("pearlhash"));
+    }
+
+    #[test]
+    fn watchdog_defaults_are_conservative() {
+        let cfg = serde_json::from_str::<Config>(r#"{"schema_version":4,"behavior":{}}"#).unwrap();
+        assert!(!cfg.behavior.watchdog_enabled);
+        assert_eq!(cfg.behavior.watchdog_action, WatchdogAction::Notify);
+        assert_eq!(cfg.behavior.watchdog_threshold_pct, 80);
+        assert_eq!(cfg.behavior.watchdog_window_s, 300);
+        assert_eq!(cfg.behavior.watchdog_max_restarts, 3);
+    }
+
+    #[test]
+    fn watchdog_settings_are_clamped_and_a_v4_file_needs_no_migration() {
+        let cfg = serde_json::from_str::<Config>(
+            r#"{"schema_version":4,"behavior":{"watchdog_enabled":true,
+                "watchdog_threshold_pct":0,"watchdog_window_s":5,
+                "watchdog_max_restarts":0,"watchdog_action":"restart"}}"#,
+        )
+        .unwrap()
+        .normalize();
+        assert_eq!(cfg.schema_version, 4);
+        assert!(cfg.behavior.watchdog_enabled);
+        assert_eq!(cfg.behavior.watchdog_action, WatchdogAction::Restart);
+        assert_eq!(cfg.behavior.watchdog_threshold_pct, 10);
+        assert_eq!(cfg.behavior.watchdog_window_s, 60);
+        assert_eq!(cfg.behavior.watchdog_max_restarts, 1);
+    }
+
+    #[test]
+    fn watchdog_change_is_live_not_restart_required() {
+        let a = Config::default();
+        let mut b = a.clone();
+        b.behavior.watchdog_enabled = true;
+        let diff = a.diff(&b);
+        assert_eq!(diff.class, ChangeClass::Live);
+        assert_eq!(diff.reasons.len(), 1, "{:?}", diff.reasons);
     }
 }

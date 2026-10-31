@@ -372,6 +372,26 @@ fn efficiency_view(
     (Some(efficiency), legacy, unit_name)
 }
 
+/// Warn once when the watchdog is enabled but the preset cannot supply the
+/// percentage baseline; the zero/stale/card checks still run.
+fn watchdog_warning(cfg: &Config) -> Option<String> {
+    if !cfg.behavior.watchdog_enabled {
+        return None;
+    }
+    if cfg
+        .preset()
+        .and_then(|preset| preset.expected_hashrate)
+        .filter(|value| *value > 0.0)
+        .is_some()
+    {
+        return None;
+    }
+    Some(tr(
+        "The hashrate watchdog is on, but the preset has no expected hashrate; only 0 H/s, a missing card and stale data are checked",
+        "Сторож хешрейта включён, но в пресете не задан ожидаемый хешрейт; проверяются только 0 H/s, выпавшая карта и устаревшие данные",
+    ))
+}
+
 /// One calm status warning for per-card data the mapping could not prove.
 fn mapping_warning(report: &crate::minerapi::GpuMappingReport) -> Option<String> {
     if !report.unmapped_devices.is_empty() || !report.ambiguous_buses.is_empty() {
@@ -611,6 +631,9 @@ impl Status {
                 "{} {error}",
                 tr("Pool API error:", "Ошибка API пула:")
             ));
+        }
+        if let Some(warning) = watchdog_warning(cfg) {
+            warnings.push(warning);
         }
         if oc.needs_restore {
             warnings.push(tr(
@@ -1022,6 +1045,18 @@ mod tests {
         assert_eq!(legacy, None);
         assert!(unit.is_empty());
         assert_eq!(participating_power(&cfg, &gpus), Some(300.0));
+    }
+
+    #[test]
+    fn watchdog_without_expected_hashrate_is_explained_once() {
+        let mut cfg = config_with_preset();
+        cfg.behavior.watchdog_enabled = true;
+        cfg.preset_mut().unwrap().expected_hashrate = None;
+        assert!(watchdog_warning(&cfg).is_some());
+        cfg.preset_mut().unwrap().expected_hashrate = Some(125.0e12);
+        assert!(watchdog_warning(&cfg).is_none());
+        cfg.behavior.watchdog_enabled = false;
+        assert!(watchdog_warning(&cfg).is_none());
     }
 
     #[test]

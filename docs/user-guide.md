@@ -217,6 +217,12 @@ selected.
   temperature (global: they drive the overheat warning and are passed to miners
   that support a limit), start mining at login, simple mode, poll interval,
   language (needs an app restart) and appearance.
+- **Reliability** — the optional hashrate watchdog. It is off by default.
+  When enabled it only notifies; **Restart the miner** is a separate explicit
+  choice. Set the minimum percentage of the preset's expected hashrate, the
+  window in minutes and, for restart, the limit. A false alarm can come from a
+  thermal throttle, a driver glitch or a stalled miner API; the watchdog never
+  reboots the rig and never touches an external miner.
 - **GPU** — global temperature limit/resume and **GPU presets**, the single
   place to rename or delete saved per-card tuning templates.
 - **Actions** — **Save and apply**, **Copy diagnostics** (redacted), **Restore

@@ -115,7 +115,9 @@ Config
 └── behavior: auto_restart, restart_delay_s, poll_interval_s,
               restore_stock_on_stop, start_mining_on_login, notifications,
               tray_monochrome, language, appearance, simple_mode,
-              temp_limit_c, temp_resume_c
+              temp_limit_c, temp_resume_c,
+              watchdog_enabled, watchdog_threshold_pct, watchdog_window_s,
+              watchdog_action, watchdog_max_restarts
 ```
 
 GPU power, clocks and participation live **inside the mining preset**
@@ -249,6 +251,32 @@ explicit Start. Before the scheduled spawn, the supervisor rescans `/proc` for
 an external miner: if the user started one during the backoff, the restart is
 cancelled, the snapshot is restored and an `Error` names the PID instead of
 leaving two miners on the rig.
+
+### Hashrate watchdog
+
+`trommeld` also runs a watchdog in the supervisor loop (ADR 0010). It is off by
+default. When `behavior.watchdog_enabled` is on, it inspects the last `Status`
+every second and reacts to a running miner it owns:
+
+- `Low` — total hashrate below `watchdog_threshold_pct` of
+  `preset.expected_hashrate` for `watchdog_window_s` (default 80 %, 300 s);
+- `Zero` — the miner reports 0 H/s for the window;
+- `CardDown` — a participating card mapped by B7.1 reports 0 H/s or is missing
+  from the per-card data while other cards report;
+- `Stale` — the status sample is older than `max(3 × poll, 90 s)`, or the miner
+  reports no data for the window; this is notification-only.
+
+A warm-up of `min(window_s, 120)` seconds after every start and restart prevents
+false positives while the miner loads. One healthy sample clears a low episode.
+With `watchdog_action = "notify"` (default) the daemon only emits the existing
+`Notification` signal/desktop notification. With `"restart"` it waits the
+existing exponential `restart_delay_s`, then calls `Supervisor::stop` +
+`Supervisor::start` (snapshot/restore, device plan, external scan, busy guard)
+and notifies. After `watchdog_max_restarts` failed restarts it stops, restores
+stock and notifies; it never reboots the rig. An external miner, a benchmark or
+a crash restart in flight is never touched. Pool difficulty is not a signal: the
+watchdog uses the miner's local hashrate. See
+[ADR 0010](adr/0010-hashrate-watchdog.md).
 
 ### Apply while mining
 
@@ -486,8 +514,10 @@ stopped correctly.
   the engine lock for 5 s and otherwise leaves the teardown to `ExecStopPost` /
   the guard instead of waiting for a polkit dialog.
 - The daemon runs two async loops: the status refresher (poll interval, or an
-  on-demand refresh after supervisor events) and the 1 s supervisor tick. A
-  third select arm watches SIGTERM/SIGINT and `connection.closed()`.
+  on-demand refresh after supervisor events) and the 1 s supervisor tick; the
+  same tick evaluates the hashrate watchdog against the last status and may run
+  its opt-in Stop/Start through the supervisor. A third select arm watches
+  SIGTERM/SIGINT and `connection.closed()`.
 - The guard is a separate process, not a thread: it must survive a `SIGKILL` of
   the daemon. It is started with `setsid` and writes `guard.pid`; shutdown writes
   `guard.disarm` with the exact daemon PID/start time before restoring, so a

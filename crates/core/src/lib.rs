@@ -24,6 +24,7 @@ pub mod status;
 pub mod supervisor;
 pub mod util;
 pub mod versions;
+pub mod watchdog;
 
 /// D-Bus name used by the daemon (also the systemd/dbus-activation name).
 pub const BUS_NAME: &str = "io.github.nayvok.Trommel.Daemon";

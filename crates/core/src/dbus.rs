@@ -17,12 +17,14 @@ use crate::oc::{self, RestoreMode};
 use crate::state::State;
 use crate::status::Status;
 use crate::supervisor::{Event, Supervisor};
+use crate::watchdog::{self, Watchdog, WatchdogGpu, WatchdogSample};
 
 pub struct Inner {
     pub cfg: Config,
     pub sup: Supervisor,
     pub status: Status,
     pub last_report: Option<BenchReport>,
+    pub watchdog: Watchdog,
 }
 
 #[derive(Clone)]
@@ -77,6 +79,7 @@ impl Engine {
                 sup,
                 status,
                 last_report: None,
+                watchdog: Watchdog::default(),
             })),
             running,
             oc_busy: Arc::new(AtomicBool::new(false)),
@@ -138,6 +141,102 @@ impl Engine {
 
     pub async fn status_json(&self) -> String {
         self.inner.lock().await.status.to_json()
+    }
+
+    /// Evaluate the hashrate watchdog and execute its opt-in restart/stop
+    /// actions through the existing supervisor. Notifications are returned for
+    /// the daemon loop to emit; the watchdog itself never spawns a process.
+    pub async fn watchdog_tick(&self) -> Vec<watchdog::Action> {
+        let mut inner = self.inner.lock().await;
+        let mut cfg = inner.cfg.clone();
+        if let Ok(value) = std::env::var("TROMMEL_WATCHDOG_WINDOW_S") {
+            if let Ok(seconds) = value.parse::<u64>() {
+                cfg.behavior.watchdog_window_s = seconds.clamp(1, 3600);
+            }
+        }
+        let status = inner.status.clone();
+        let state = inner.sup.state.clone();
+        let sample = WatchdogSample {
+            running: status.state.running,
+            owned: inner.sup.owns_miner(),
+            external: state.external,
+            busy: self.oc_busy.load(Ordering::Acquire),
+            restart_scheduled: inner.sup.restart_pending(),
+            uptime_s: state.uptime_s(),
+            started_at: state.started_at.unwrap_or(0),
+            status_ts: status.ts,
+            now: crate::util::now_unix(),
+            poll_interval_s: cfg.behavior.poll_interval_s,
+            expected_hashrate: cfg
+                .preset()
+                .and_then(|preset| preset.expected_hashrate)
+                .filter(|value| *value > 0.0),
+            total_hashrate: status.total.hashrate.or_else(|| status.miner.primary()),
+            source: status.miner.source.clone(),
+            per_gpu: status
+                .participation
+                .iter()
+                .filter(|card| card.enabled)
+                .map(|card| WatchdogGpu {
+                    index: card.index,
+                    enabled: card.enabled,
+                    hashrate: status
+                        .miner
+                        .gpus
+                        .iter()
+                        .find(|record| {
+                            record.uuid.as_deref() == Some(card.uuid.as_str())
+                                || (record.uuid.is_none() && record.index == Some(card.index))
+                        })
+                        .and_then(|record| {
+                            record
+                                .hashrate_10s
+                                .or(record.hashrate_60s)
+                                .or(record.hashrate_15m)
+                        }),
+                })
+                .collect(),
+        };
+        let mut actions = inner.watchdog.observe(&cfg, &sample);
+        let mut executed = Vec::new();
+        for action in actions.drain(..) {
+            match action {
+                watchdog::Action::PerformRestart { attempt } => {
+                    let _ = attempt;
+                    let result = tokio::task::block_in_place(|| {
+                        inner.sup.stop(&cfg)?;
+                        inner.sup.start(&cfg)
+                    });
+                    let success = result.is_ok();
+                    if let Err(err) = &result {
+                        crate::supervisor::log_line(&format!("watchdog restart failed: {err}"));
+                    } else {
+                        crate::supervisor::log_line("watchdog restart completed");
+                    }
+                    let started_at = inner.sup.state.started_at.unwrap_or(0);
+                    self.running
+                        .store(inner.sup.is_running(), Ordering::Relaxed);
+                    for next in inner.watchdog.restart_finished(&cfg, success, started_at) {
+                        match next {
+                            watchdog::Action::Stop(message) => {
+                                let _ = tokio::task::block_in_place(|| inner.sup.stop(&cfg));
+                                self.running.store(false, Ordering::Relaxed);
+                                executed.push(watchdog::Action::Notify(message));
+                            }
+                            other => executed.push(other),
+                        }
+                    }
+                }
+                watchdog::Action::Stop(message) => {
+                    let _ = tokio::task::block_in_place(|| inner.sup.stop(&cfg));
+                    self.running.store(false, Ordering::Relaxed);
+                    crate::supervisor::log_line("watchdog stopped mining after its restart limit");
+                    executed.push(watchdog::Action::Notify(message));
+                }
+                other => executed.push(other),
+            }
+        }
+        executed
     }
 }
 

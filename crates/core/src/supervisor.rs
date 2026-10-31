@@ -93,7 +93,7 @@ fn max_restarts() -> u32 {
 }
 
 /// Exponential backoff from `restart_delay_s`, capped at 60 s.
-fn restart_delay_s(cfg: &Config, restart: u32) -> u64 {
+pub fn restart_delay_s(cfg: &Config, restart: u32) -> u64 {
     let base = cfg.behavior.restart_delay_s.max(1);
     let exponent = restart.saturating_sub(1).min(6);
     base.saturating_mul(1u64 << exponent).min(60)
@@ -160,6 +160,11 @@ impl Supervisor {
 
     pub fn is_running(&self) -> bool {
         self.child.is_some() || self.state.running
+    }
+
+    /// A crash restart is waiting for its backoff.
+    pub fn restart_pending(&self) -> bool {
+        self.restart_at.is_some()
     }
 
     /// `true` when the live miner is ours (not an external/legacy process).

@@ -169,6 +169,9 @@ export TROMMEL_FAKE_GPU_STATE="$WORK/gpu-state.json"
 export TROMMEL_FAKE_MODE="$WORK/fake-mode"
 export TROMMEL_OC_TIMEOUT_MS=1500
 export TROMMEL_OC_VERIFY_MS=1000
+# The watchdog drill below should not spend a full configured minute on the
+# degraded reading; the daemon reads this unsaved override on every tick.
+export TROMMEL_WATCHDOG_WINDOW_S=5
 BUS_OUT=$(dbus-daemon --config-file="$WORK/bus.conf" --print-address --print-pid --fork 2>/dev/null)
 export DBUS_SESSION_BUS_ADDRESS="$(printf '%s\n' "$BUS_OUT" | sed -n 1p)"
 BUS_PID="$(printf '%s\n' "$BUS_OUT" | sed -n 2p)"
@@ -268,7 +271,8 @@ print("  running:", s["state"]["running"], "power:", s["total"]["power_w"],
 ' && pass "miner running with per-GPU telemetry and rig efficiency" || fail "running status"
 
 step "SetConfig never restarts a running miner"
-CPID=$("$BIN/trommel" status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"]["miner_pid"])')
+CPID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["miner_pid"])' "$WORK/state/trommel/state.json" 2>/dev/null || true)
+[ -n "$CPID" ] || fail "the harness could not read the running miner PID"
 python3 - "$WORK" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
@@ -289,13 +293,110 @@ if command -v dbus-send >/dev/null 2>&1; then
         fail "SetConfig failed without the restart-required error"
         sed -n '1,3p' "$WORK/setconfig.out"
     fi
-    NEWPID=$("$BIN/trommel" status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"]["miner_pid"])')
-    [ "$CPID" = "$NEWPID" ] \
+    NEWPID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["miner_pid"])' "$WORK/state/trommel/state.json" 2>/dev/null || true)
+    [ -n "$CPID" ] && [ "$CPID" = "$NEWPID" ] \
         && pass "SetConfig left the running miner alone" \
         || fail "SetConfig restarted the miner (pid $CPID -> $NEWPID)"
 else
     echo "  - dbus-send is not installed; SetConfig refusal is not exercised"
 fi
+
+step "The hashrate watchdog restarts a degraded miner"
+# Opt into one restart, then make the fake API report 2 TH/s instead of the
+# 125 TH/s expectation. The watchdog must go through the normal supervisor
+# path: stop/restore, start/snapshot, a new PID and no crash-restart counter.
+WD_OLD="$CPID"
+WD_RESETS_BEFORE=$(grep -c '^reset ' "$WORK/oc.log" 2>/dev/null || true)
+WD_APPLIES_BEFORE=$(grep -c 'apply --gpu' "$WORK/oc.log" 2>/dev/null || true)
+echo low > "$WORK/api-mode"
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+behavior = cfg["behavior"]
+behavior["watchdog_enabled"] = True
+behavior["watchdog_threshold_pct"] = 80
+behavior["watchdog_action"] = "restart"
+behavior["watchdog_max_restarts"] = 1
+path.write_text(json.dumps(cfg, indent=2))
+PY
+if "$BIN/trommel" config apply "$WORK/config/trommel/config.json" > "$WORK/watchdog-apply.out" 2>&1; then
+    pass "watchdog settings applied to the running daemon"
+else
+    fail "watchdog settings were refused"
+    cat "$WORK/watchdog-apply.out"
+fi
+WD_NEW=""
+for _ in $(seq 1 60); do
+    WD_NEW=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("miner_pid") or "")' "$WORK/state/trommel/state.json" 2>/dev/null || true)
+    [ -n "$WD_NEW" ] && [ "$WD_NEW" != "$WD_OLD" ] && break
+    sleep 1
+done
+# The recovered (not degraded) reading is what the rest of the run expects.
+: > "$WORK/api-mode"
+if [ -n "$WD_NEW" ] && [ "$WD_NEW" != "$WD_OLD" ]; then
+    pass "the watchdog restarted the degraded miner (pid $WD_OLD -> $WD_NEW)"
+else
+    fail "the watchdog did not restart the degraded miner"
+fi
+alive "$WD_OLD" \
+    && fail "the old miner survived the watchdog restart" \
+    || pass "the old miner was stopped before the restart"
+alive "$WD_NEW" \
+    && pass "the restarted miner is live" \
+    || fail "the watchdog reported a restart without a live miner"
+WD_RESETS_AFTER=$(grep -c '^reset ' "$WORK/oc.log" 2>/dev/null || true)
+WD_APPLIES_AFTER=$(grep -c 'apply --gpu' "$WORK/oc.log" 2>/dev/null || true)
+[ "$WD_RESETS_AFTER" -gt "$WD_RESETS_BEFORE" ] \
+    && pass "the watchdog restart restored stock before starting" \
+    || fail "the watchdog restart did not restore stock"
+[ "$WD_APPLIES_AFTER" -gt "$WD_APPLIES_BEFORE" ] \
+    && pass "the watchdog restart applied the profile through the normal path" \
+    || fail "the watchdog restart did not apply the profile"
+[ -f "$WORK/state/trommel/oc-snapshot.json" ] \
+    && pass "the restarted session has a fresh snapshot" \
+    || fail "the restarted session has no snapshot"
+grep -q "watchdog restart completed" "$WORK/state/trommel/daemon.log" 2>/dev/null \
+    && pass "the daemon logged the watchdog restart" \
+    || fail "no watchdog restart in the daemon log"
+"$BIN/trommel" status --json 2>/dev/null | python3 -c '
+import json,sys
+s=json.load(sys.stdin)
+assert s["state"]["running"] is True, s["state"]
+assert s["state"]["restarts"] == 0, s["state"]
+' && pass "a watchdog restart is not counted as a crash restart" \
+  || fail "the watchdog restart changed the crash-restart counter"
+if [ "$NOTIFY_STUB" = 1 ]; then
+    grep -q "hashrate watchdog" "$NOTIFY_LOG" 2>/dev/null \
+        && pass "the watchdog notification reached the desktop stub" \
+        || fail "no watchdog desktop notification"
+fi
+for _ in $(seq 1 20); do
+    if "$BIN/trommel" status --json 2>/dev/null | python3 -c '
+import json,sys
+s=json.load(sys.stdin)
+h=s["total"]["hashrate"] or 0
+sys.exit(0 if h > 100e12 else 1)
+'; then break; fi
+    sleep 1
+done
+"$BIN/trommel" status --json 2>/dev/null | python3 -c '
+import json,sys
+s=json.load(sys.stdin)
+assert s["total"]["hashrate"] and s["total"]["hashrate"] > 100e12, s["total"]
+' && pass "hashrate recovered after the watchdog restart" \
+  || fail "hashrate did not recover after the watchdog restart"
+# Leave the rest of the run with the watchdog off: the steps below cover
+# unrelated miner transitions.
+python3 - "$WORK" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]) / "config" / "trommel" / "config.json"
+cfg = json.loads(path.read_text())
+cfg["behavior"]["watchdog_enabled"] = False
+cfg["behavior"]["watchdog_action"] = "notify"
+path.write_text(json.dumps(cfg, indent=2))
+PY
+"$BIN/trommel" config apply "$WORK/config/trommel/config.json" >/dev/null 2>&1
 
 step "Apply and restart while running"
 "$BIN/trommel" preset use second --restart >/dev/null 2>&1

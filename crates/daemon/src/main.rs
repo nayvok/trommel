@@ -206,6 +206,33 @@ async fn main() -> anyhow::Result<()> {
                     let cfg = inner.cfg.clone();
                     tokio::task::block_in_place(|| inner.sup.tick(&cfg))
                 };
+                let watchdog_actions = engine.watchdog_tick().await;
+                for action in &watchdog_actions {
+                    let Some(message) = action.message() else {
+                        continue;
+                    };
+                    log_line(&format!("watchdog: {message}"));
+                }
+                if !watchdog_actions.is_empty() {
+                    let cfg = engine.cfg().await;
+                    if cfg.behavior.notifications {
+                        for action in &watchdog_actions {
+                            let Some(message) = action.message() else {
+                                continue;
+                            };
+                            let summary =
+                                tr("Trommel: hashrate watchdog", "Trommel: сторож хешрейта");
+                            let _ = Engine::emit_notification(
+                                iface_ref.signal_emitter(),
+                                &summary,
+                                message,
+                            )
+                            .await;
+                            dbus::notify_desktop(&connection, &summary, message);
+                        }
+                    }
+                    let _ = refresh_tx.send(()).await;
+                }
                 if events.is_empty() {
                     continue;
                 }
