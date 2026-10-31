@@ -93,6 +93,18 @@ If restore fails, the snapshot is kept and the error is shown.
   selectable and offers **Copy**, so a long daemon error does not disappear in a
   truncated toast.
 
+### History
+
+The **History** button in the hero footer opens a local chart of the rig's
+hashrate for **1h / 24h / 7d**, with an optional per-card series and a one-line
+average/min/max summary. The daemon records one sample per minute and keeps
+about a week; it survives a GUI or daemon restart. **Export CSV…** writes the
+raw samples (one row per GPU) to a file you choose. The hero metadata can show a
+`24h avg`; it is computed from the same local samples. History is stored under
+`~/.local/state/trommel/history/` and is never uploaded.
+
+![History](images/history-en-dark.png)
+
 ### Excluding a GPU
 
 Turn a card's switch off to exclude it from the miner. An excluded card is

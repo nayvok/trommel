@@ -172,6 +172,7 @@ export TROMMEL_OC_VERIFY_MS=1000
 # The watchdog drill below should not spend a full configured minute on the
 # degraded reading; the daemon reads this unsaved override on every tick.
 export TROMMEL_WATCHDOG_WINDOW_S=5
+export TROMMEL_HISTORY_INTERVAL_S=1
 BUS_OUT=$(dbus-daemon --config-file="$WORK/bus.conf" --print-address --print-pid --fork 2>/dev/null)
 export DBUS_SESSION_BUS_ADDRESS="$(printf '%s\n' "$BUS_OUT" | sed -n 1p)"
 BUS_PID="$(printf '%s\n' "$BUS_OUT" | sed -n 2p)"
@@ -269,6 +270,33 @@ assert abs(sum(g["hashrate_10s"] for g in gpus) - s["miner"]["hashrate_10s"]) < 
 print("  running:", s["state"]["running"], "power:", s["total"]["power_w"],
       "efficiency:", s["total"]["efficiency"], s["total"]["efficiency_unit"])
 ' && pass "miner running with per-GPU telemetry and rig efficiency" || fail "running status"
+
+step "Local history"
+sleep 2
+HISTORY_FILE=$(find "$WORK/state/trommel/history" -name 'history-*.jsonl' 2>/dev/null | head -1)
+if [ -n "$HISTORY_FILE" ] && grep -q '"ts"' "$HISTORY_FILE"; then
+    pass "daemon writes a local JSONL sample"
+else
+    fail "local history file is missing"
+fi
+if grep -q 'wallet\|prl1test' "$HISTORY_FILE" 2>/dev/null; then
+    fail "history leaked wallet data"
+else
+    pass "history contains no wallet"
+fi
+if command -v dbus-send >/dev/null 2>&1; then
+    HISTORY_JSON=$(dbus-send --session --print-reply --dest=io.github.nayvok.Trommel.Daemon \
+        /io/github/nayvok/Trommel io.github.nayvok.Trommel.GetHistory \
+        uint64:$(($(date +%s) - 3600)) uint64:$(date +%s) 2>/dev/null)
+    if printf '%s' "$HISTORY_JSON" | grep -q 'ts'; then
+        pass "GetHistory returns samples"
+    else
+        fail "GetHistory returned no samples"
+        printf '%s\n' "$HISTORY_JSON" | sed -n '1,6p'
+    fi
+else
+    echo "  - dbus-send is not installed; GetHistory is not exercised"
+fi
 
 step "SetConfig never restarts a running miner"
 CPID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["miner_pid"])' "$WORK/state/trommel/state.json" 2>/dev/null || true)

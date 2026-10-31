@@ -278,6 +278,25 @@ a crash restart in flight is never touched. Pool difficulty is not a signal: the
 watchdog uses the miner's local hashrate. See
 [ADR 0010](adr/0010-hashrate-watchdog.md).
 
+### Local history
+
+The daemon writes one JSONL sample per minute to
+`~/.local/state/trommel/history/history-YYYYMMDD.jsonl` (UTC daily files). A
+sample keeps `ts`, running/external flags, preset id, miner id, total/mining
+power, hashrate, shares, source and the mapped per-GPU hashrate/power/temp/fan.
+It never contains a wallet, worker, pool URL, IP or any network telemetry.
+Daily files make retention a prune of files older than eight days; append is one
+short line, corruption is skipped per line, duplicate timestamps are
+deduplicated on read, and a clock that steps backwards does not overwrite a
+newer sample. The writer is a `history::Writer` owned by the status loop; the
+GUI never writes state.
+
+`GetHistory(since, until)` reads the files in a blocking task and returns the
+sorted, deduplicated JSON array (range ≤ 8 days). The GUI uses it for the
+History dialog and a cached 24-hour average in the hero; the CLI/status
+document is not enlarged on every poll. History is local-only and is not
+uploaded anywhere.
+
 ### Apply while mining
 
 `ApplyConfig(json, mode)` with `mode`:
@@ -616,6 +635,7 @@ The change is live and does not restart the miner.
 | `~/.local/state/trommel/daemon.log` | Daemon event log |
 | `~/.local/state/trommel/oc-snapshot.json` | Per-boot stock snapshot |
 | `~/.local/state/trommel/bench/bench-<ts>.json` | A/B benchmark reports |
+| `~/.local/state/trommel/history/history-YYYYMMDD.jsonl` | One daemon-owned local sample per minute; 8-day retention |
 | `~/.local/share/trommel/miners/<id>/<version>/` | Installed miner binaries |
 | `/usr/libexec/trommel/trommel-oc` | Root helper |
 | `/usr/share/polkit-1/actions/io.github.nayvok.trommel.policy` | Polkit action |

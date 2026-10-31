@@ -95,6 +95,11 @@ pub fn bench_dir() -> PathBuf {
     state_dir().join("bench")
 }
 
+/// Daily JSONL history files (`history-YYYYMMDD.jsonl`).
+pub fn history_dir() -> PathBuf {
+    state_dir().join("history")
+}
+
 pub fn home() -> PathBuf {
     match std::env::var_os("HOME") {
         Some(v) if !v.is_empty() => PathBuf::from(v),
@@ -107,5 +112,6 @@ pub fn ensure_dirs() -> std::io::Result<()> {
     std::fs::create_dir_all(config_dir())?;
     std::fs::create_dir_all(state_dir())?;
     std::fs::create_dir_all(bench_dir())?;
+    std::fs::create_dir_all(history_dir())?;
     Ok(())
 }

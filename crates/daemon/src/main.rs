@@ -101,6 +101,16 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Daemon-owned local history: one sample per interval, kept across GUI and
+    // daemon restarts. The test hook lets e2e see a sample without waiting a
+    // minute.
+    let history_interval = std::env::var("TROMMEL_HISTORY_INTERVAL_S")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(trommel_core::history::DEFAULT_INTERVAL_S);
+    let mut history_writer =
+        trommel_core::history::Writer::new(paths::history_dir(), history_interval);
+
     // Status refresher: periodic polling plus on-demand refresh requests.
     let refresher = {
         let engine = engine.clone();
@@ -138,6 +148,9 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
 
+                if let Err(err) = history_writer.record(&status) {
+                    log_line(&format!("history sample was not written: {err}"));
+                }
                 let json = status.to_json();
                 if json != last_json {
                     last_json = json.clone();

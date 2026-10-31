@@ -20,15 +20,27 @@ use trommel_core::config::{
     Preset, WatchdogAction,
 };
 use trommel_core::dbus::MinerProxy;
+use trommel_core::history::{self, HistorySample};
 use trommel_core::i18n::{self, tr};
 use trommel_core::nvidia::GpuStats;
 use trommel_core::status::Status;
 use trommel_core::util;
 use trommel_core::versions;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryPurpose {
+    Hero,
+    Dialog,
+}
+
 enum Cmd {
     Refresh,
+    History {
+        since: u64,
+        until: u64,
+        purpose: HistoryPurpose,
+        quiet: bool,
+    },
     Toggle,
     Apply {
         json: String,
@@ -52,10 +64,21 @@ enum Cmd {
 #[derive(Debug)]
 enum Ev {
     Status(String),
+    History {
+        json: String,
+        purpose: HistoryPurpose,
+    },
+    HistoryError {
+        message: String,
+        purpose: HistoryPurpose,
+    },
     Config(String),
     ServiceDown(String),
     Error(String),
-    Applied { message: String, quiet: bool },
+    Applied {
+        message: String,
+        quiet: bool,
+    },
     Busy(bool),
     Bench(String),
     Quit,
@@ -111,6 +134,16 @@ fn spawn_worker(emit: Arc<dyn Fn(Ev) + Send + Sync>) -> tokio::sync::mpsc::Unbou
                                 Cmd::Refresh => {
                                     if let Ok(json) = client.refresh().await { emit(Ev::Status(json)); }
                                     if let Ok(cfg) = client.get_config().await { emit(Ev::Config(cfg)); }
+                                }
+                                Cmd::History { since, until, purpose, quiet } => {
+                                    match client.get_history(since, until).await {
+                                        Ok(json) => emit(Ev::History { json, purpose }),
+                                        Err(err) => {
+                                            if !quiet {
+                                                emit(Ev::HistoryError { message: err.to_string(), purpose });
+                                            }
+                                        }
+                                    }
                                 }
                                 Cmd::Toggle => {
                                     emit(Ev::Busy(true));
@@ -368,13 +401,17 @@ struct App {
     hero_line: gtk::Label,
     hero_meta: gtk::Label,
     hero_meta_state: RefCell<Option<HeroMeta>>,
+    history_avg_24h: RefCell<Option<String>>,
+    history_last_request: Cell<u64>,
+    history_button: gtk::Button,
+    history_dialog: RefCell<Option<Rc<HistoryDialogState>>>,
     pill: gtk::Label,
     rig_preset: adw::ActionRow,
     rig_edit: gtk::Button,
     gpu_host: gtk::Box,
     gpu_sig: RefCell<String>,
     /// Rolling GPU metrics behind the sparklines in the cards.
-    history: Rc<RefCell<History>>,
+    history: Rc<RefCell<SparkHistory>>,
     sparklines: RefCell<Vec<SparkEntry>>,
     shares_group: adw::PreferencesGroup,
     shares: adw::ActionRow,
@@ -599,12 +636,13 @@ fn set_page_icon(stack: &adw::ViewStack, child: &impl IsA<gtk::Widget>, icon: &s
 /// runs as the single-instance app and can present a normal running window
 /// instead of rendering its own one. The `screenshot_hooks_cover_every_capture`
 /// test enforces the pairing.
-const SCREENSHOT_HOOKS: [&str; 5] = [
+const SCREENSHOT_HOOKS: [&str; 6] = [
     "TROMMEL_SCREENSHOT",
     "TROMMEL_TUNE_SCREENSHOT",
     "TROMMEL_INSTALL_SCREENSHOT",
     "TROMMEL_PRESET_SCREENSHOT",
     "TROMMEL_LIBRARY_SCREENSHOT",
+    "TROMMEL_HISTORY_SCREENSHOT",
 ];
 
 fn screenshot_requested() -> bool {
@@ -841,11 +879,19 @@ fn build_ui(app: &adw::Application) {
         .valign(gtk::Align::Center)
         .visible(false)
         .build();
+    let history_button = gtk::Button::builder()
+        .label(tr("History", "История"))
+        .css_classes(["flat", "pill"])
+        .valign(gtk::Align::Center)
+        .tooltip_text(tr("Open the local history", "Открыть локальную историю"))
+        .sensitive(false)
+        .build();
     let hero_footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     hero_footer.set_margin_top(2);
     hero_meta.set_hexpand(true);
     hero_meta.set_valign(gtk::Align::Center);
     hero_footer.append(&hero_meta);
+    hero_footer.append(&history_button);
     hero_footer.append(&create_button);
     hero_footer.append(&action_button);
     hero.append(&hero_top);
@@ -952,12 +998,16 @@ fn build_ui(app: &adw::Application) {
         hero_line,
         hero_meta,
         hero_meta_state: RefCell::new(None),
+        history_avg_24h: RefCell::new(None),
+        history_last_request: Cell::new(0),
+        history_button: history_button.clone(),
+        history_dialog: RefCell::new(None),
         pill,
         rig_preset: rig_preset.clone(),
         rig_edit: rig_edit.clone(),
         gpu_host,
         gpu_sig: RefCell::new(String::new()),
-        history: Rc::new(RefCell::new(History::default())),
+        history: Rc::new(RefCell::new(SparkHistory::default())),
         sparklines: RefCell::new(Vec::new()),
         shares_group: shares_group.clone(),
         shares: shares.clone(),
@@ -1080,6 +1130,13 @@ fn build_ui(app: &adw::Application) {
                 .map(|item| item.version.clone())
                 .unwrap_or_default();
             miner_install_dialog(&app_state, &id, version, None);
+            glib::ControlFlow::Break
+        });
+    }
+    if std::env::var_os("TROMMEL_OPEN_HISTORY").is_some() {
+        let app_state = app_state.clone();
+        glib::timeout_add_seconds_local(3, move || {
+            history_dialog(&app_state);
             glib::ControlFlow::Break
         });
     }
@@ -1696,6 +1753,11 @@ fn connect_signals(app: &Rc<App>) {
                 new_preset(&app);
             }
         });
+    }
+    {
+        let app = app.clone();
+        let button = app.history_button.clone();
+        button.connect_clicked(move |_| history_dialog(&app));
     }
     {
         let app = app.clone();
@@ -6275,6 +6337,48 @@ fn handle_event(app: &Rc<App>, event: Ev) {
                 apply_status(app, status);
             }
         }
+        Ev::History { json, purpose } => {
+            let Ok(samples) = serde_json::from_str::<Vec<HistorySample>>(&json) else {
+                return;
+            };
+            match purpose {
+                HistoryPurpose::Dialog => {
+                    if let Some(state) = app.history_dialog.borrow().as_ref() {
+                        *state.samples.borrow_mut() = samples;
+                        render_history(app, state);
+                    }
+                }
+                HistoryPurpose::Hero => {
+                    let values: Vec<f64> = samples
+                        .iter()
+                        .filter_map(|sample| sample.total_hashrate)
+                        .filter(|value| *value > 0.0)
+                        .collect();
+                    let text = if values.is_empty() {
+                        None
+                    } else {
+                        let unit = app
+                            .status
+                            .borrow()
+                            .as_ref()
+                            .map(|status| status.coin.hashrate_unit.clone())
+                            .unwrap_or_else(|| "auto".into());
+                        let average = values.iter().sum::<f64>() / values.len() as f64;
+                        format_hashrate_value(Some(average), &unit)
+                            .map(|value| format!("{} {value}", tr("24h avg", "среднее за 24 ч")))
+                    };
+                    *app.history_avg_24h.borrow_mut() = text;
+                    if let Some(status) = app.status.borrow().as_ref() {
+                        render_hero_meta(app, status_uptime(status, util::now_unix()));
+                    }
+                }
+            }
+        }
+        Ev::HistoryError { message, purpose } => {
+            if purpose == HistoryPurpose::Dialog {
+                show_error_toast(app, &message);
+            }
+        }
         Ev::Config(json) => {
             if let Ok(cfg) = serde_json::from_str::<Config>(&json) {
                 let cfg = cfg.normalize();
@@ -6295,6 +6399,8 @@ fn handle_event(app: &Rc<App>, event: Ev) {
                 .set_text(&tr("Service is not running", "Сервис не запущен"));
             app.hero_line.set_tooltip_text(Some(&message));
             app.action_button.set_sensitive(false);
+            app.history_button.set_sensitive(false);
+            *app.history_avg_24h.borrow_mut() = None;
             app.pill.set_text(&tr("offline", "нет связи"));
             app.pill
                 .set_css_classes(&["caption", "trommel-pill", "trommel-pill-offline"]);
@@ -6443,12 +6549,14 @@ fn gpu_miner_hashrate(status: &Status, gpu: &GpuStats) -> Option<f64> {
     })
 }
 
+/// Five-minute GUI-only ring buffer behind the card sparklines; the
+/// daemon-owned long history is `trommel_core::history`.
 #[derive(Default)]
-struct History {
+struct SparkHistory {
     gpus: BTreeMap<String, VecDeque<GpuSample>>,
 }
 
-impl History {
+impl SparkHistory {
     /// Store one status snapshot per GPU. The daemon reports the same `ts`
     /// while its own poll has not advanced, so repeated timestamps replace the
     /// last sample instead of widening the graph with duplicates.
@@ -7329,6 +7437,9 @@ fn render_hero_meta(app: &App, uptime_s: u64) {
         if let Some(efficiency) = &meta.efficiency {
             parts.push(efficiency.clone());
         }
+        if let Some(average) = app.history_avg_24h.borrow().as_ref() {
+            parts.push(average.clone());
+        }
         app.hero_meta.set_text(&parts.join(" · "));
         app.hero_meta.set_tooltip_text(Some(&format!(
             "{}: {}",
@@ -7561,11 +7672,353 @@ fn apply_alert_body(diff: &ConfigDiff, switching_preset: bool) -> String {
     body
 }
 
+/// State shared by the History dialog and its chart/summary widgets.
+struct HistoryDialogState {
+    range_s: Cell<u64>,
+    selected_uuid: RefCell<Option<String>>,
+    samples: RefCell<Vec<HistorySample>>,
+    chart: gtk::DrawingArea,
+    summary: gtk::Label,
+    empty: gtk::Label,
+}
+
+fn downsample(series: &[(u64, f64)], max_points: usize) -> Vec<(u64, f64)> {
+    if series.len() <= max_points || max_points < 2 {
+        return series.to_vec();
+    }
+    let bucket = series.len() as f64 / max_points as f64;
+    let mut out = Vec::with_capacity(max_points);
+    let mut index = 0usize;
+    while index < series.len() {
+        let end = ((index as f64 + bucket).round() as usize).min(series.len());
+        let slice = &series[index..end];
+        let ts = slice[slice.len() - 1].0;
+        let average = slice.iter().map(|(_, value)| value).sum::<f64>() / slice.len() as f64;
+        out.push((ts, average));
+        index = end;
+    }
+    out
+}
+
+fn history_series(state: &HistoryDialogState) -> Vec<(u64, f64)> {
+    let selected = state.selected_uuid.borrow().clone();
+    let samples = state.samples.borrow();
+    let series: Vec<(u64, f64)> = samples
+        .iter()
+        .filter_map(|sample| {
+            if let Some(uuid) = &selected {
+                sample
+                    .gpus
+                    .iter()
+                    .find(|gpu| &gpu.uuid == uuid)
+                    .and_then(|gpu| gpu.hashrate)
+                    .map(|value| (sample.ts, value))
+            } else {
+                sample.total_hashrate.map(|value| (sample.ts, value))
+            }
+        })
+        .collect();
+    downsample(&series, 720)
+}
+
+fn render_history(app: &Rc<App>, state: &Rc<HistoryDialogState>) {
+    let series = history_series(state);
+    let unit = app
+        .status
+        .borrow()
+        .as_ref()
+        .map(|status| status.coin.hashrate_unit.clone())
+        .unwrap_or_else(|| "auto".into());
+    if series.len() < 2 {
+        state.chart.set_visible(false);
+        state.empty.set_visible(true);
+        state.summary.set_text("");
+        return;
+    }
+    state.chart.set_visible(true);
+    state.empty.set_visible(false);
+    let lo = series
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(f64::INFINITY, f64::min);
+    let hi = series
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let avg = series.iter().map(|(_, value)| *value).sum::<f64>() / series.len() as f64;
+    let fmt = |value: f64| format_hashrate_value(Some(value), &unit).unwrap_or_else(|| "—".into());
+    state.summary.set_text(&tr(
+        &format!(
+            "average {} · min {} · max {} · {} samples",
+            fmt(avg),
+            fmt(lo),
+            fmt(hi),
+            series.len()
+        ),
+        &format!(
+            "среднее {} · мин {} · макс {} · {} точек",
+            fmt(avg),
+            fmt(lo),
+            fmt(hi),
+            series.len()
+        ),
+    ));
+    state.chart.queue_draw();
+}
+
+fn request_history(app: &Rc<App>, purpose: HistoryPurpose, range_s: u64) {
+    let now = util::now_unix();
+    let _ = app.tx.send(Cmd::History {
+        since: now.saturating_sub(range_s),
+        until: now,
+        purpose,
+        quiet: purpose == HistoryPurpose::Hero,
+    });
+}
+
+fn export_history_csv(app: &Rc<App>, samples: Vec<HistorySample>) {
+    if samples.is_empty() {
+        app.toast.add_toast(adw::Toast::new(&tr(
+            "There is no history to export",
+            "Истории для экспорта нет",
+        )));
+        return;
+    }
+    let dialog = gtk::FileChooserNative::builder()
+        .title(tr("Export history as CSV", "Экспортировать историю в CSV"))
+        .action(gtk::FileChooserAction::Save)
+        .build();
+    dialog.set_transient_for(Some(&app.window));
+    dialog.set_current_name(&format!(
+        "trommel-history-{}.csv",
+        &util::iso8601_utc(util::now_unix())[0..10]
+    ));
+    let toast = app.toast.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response != gtk::ResponseType::Accept {
+            return;
+        }
+        let Some(path) = dialog.file().and_then(|file| file.path()) else {
+            return;
+        };
+        match std::fs::write(&path, history::to_csv(&samples)) {
+            Ok(()) => toast.add_toast(adw::Toast::new(&tr(
+                &format!("History exported to {}", path.display()),
+                &format!("История экспортирована в {}", path.display()),
+            ))),
+            Err(err) => toast.add_toast(adw::Toast::new(&format!(
+                "{} {err}",
+                tr("Cannot write the CSV:", "Не удалось записать CSV:")
+            ))),
+        }
+    });
+    dialog.show();
+}
+
+fn history_dialog(app: &Rc<App>) {
+    if let Some(state) = app.history_dialog.borrow().as_ref() {
+        state.chart.queue_draw();
+        return;
+    }
+    let dialog = adw::Dialog::builder()
+        .title(tr("History", "История"))
+        .content_width(640)
+        .content_height(560)
+        .build();
+    let header = adw::HeaderBar::new();
+    header.set_show_end_title_buttons(false);
+    let close = gtk::Button::builder()
+        .label(tr("Close", "Закрыть"))
+        .css_classes(["flat", "pill"])
+        .build();
+    let export = gtk::Button::builder()
+        .label(tr("Export CSV…", "Экспорт CSV…"))
+        .css_classes(["suggested-action", "pill"])
+        .build();
+    let footer = dialog_footer();
+    footer.append(&close);
+    footer.append(&dialog_footer_spacer());
+    footer.append(&export);
+
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    body.set_margin_top(12);
+    body.set_margin_bottom(12);
+    body.set_margin_start(12);
+    body.set_margin_end(12);
+    let range_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    range_box.add_css_class("linked");
+    let mut range_group: Option<gtk::ToggleButton> = None;
+    for (label, seconds) in [
+        (tr("1h", "1 ч"), 3_600u64),
+        (tr("24h", "24 ч"), 86_400),
+        (tr("7d", "7 д"), 604_800),
+    ] {
+        let button = gtk::ToggleButton::with_label(&label);
+        if let Some(first) = &range_group {
+            button.set_group(Some(first));
+        } else {
+            range_group = Some(button.clone());
+        }
+        button.set_active(seconds == 86_400);
+        range_box.append(&button);
+    }
+    body.append(&range_box);
+
+    let combo = adw::ComboRow::builder().title(tr("Card", "Карта")).build();
+    body.append(&combo);
+    let chart = gtk::DrawingArea::builder()
+        .height_request(220)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    chart.set_accessible_role(gtk::AccessibleRole::Img);
+    chart.update_property(&[gtk::accessible::Property::Label(&tr(
+        "Hashrate history chart",
+        "График истории хешрейта",
+    ))]);
+    body.append(&chart);
+    let summary = label("", &["caption", "dim-label", "numeric"]);
+    summary.set_wrap(true);
+    body.append(&summary);
+    let empty = label(
+        &tr(
+            "No history yet. Trommel records one sample per minute while the daemon runs.",
+            "Истории пока нет. Trommel пишет одну точку в минуту, пока работает демон.",
+        ),
+        &["dim-label"],
+    );
+    empty.set_wrap(true);
+    empty.set_halign(gtk::Align::Center);
+    empty.set_vexpand(true);
+    empty.set_valign(gtk::Align::Center);
+    body.append(&empty);
+
+    let state = Rc::new(HistoryDialogState {
+        range_s: Cell::new(86_400),
+        selected_uuid: RefCell::new(None),
+        samples: RefCell::new(Vec::new()),
+        chart: chart.clone(),
+        summary: summary.clone(),
+        empty: empty.clone(),
+    });
+    *app.history_dialog.borrow_mut() = Some(state.clone());
+
+    let (card_labels, card_uuids) = {
+        let status = app.status.borrow();
+        let mut labels = vec![tr("All cards", "Все карты").to_string()];
+        let mut uuids: Vec<Option<String>> = vec![None];
+        if let Some(status) = status.as_ref() {
+            for gpu in &status.gpus {
+                labels.push(format!("GPU #{} · {}", gpu.index, gpu.name));
+                uuids.push(Some(gpu.uuid.clone()));
+            }
+        }
+        (labels, uuids)
+    };
+    combo.set_model(Some(&string_list(&card_labels)));
+    {
+        let state = state.clone();
+        let app = app.clone();
+        let uuids = card_uuids.clone();
+        combo.connect_notify_local(Some("selected"), move |combo, _| {
+            *state.selected_uuid.borrow_mut() = uuids
+                .get(combo.selected() as usize)
+                .cloned()
+                .unwrap_or(None);
+            render_history(&app, &state);
+        });
+    }
+    {
+        let state = state.clone();
+        let app = app.clone();
+        let buttons: Vec<gtk::ToggleButton> = range_box
+            .observe_children()
+            .into_iter()
+            .filter_map(|child| {
+                child
+                    .ok()
+                    .and_then(|child| child.downcast::<gtk::ToggleButton>().ok())
+            })
+            .collect();
+        let ranges = [3_600u64, 86_400, 604_800];
+        for (button, seconds) in buttons.into_iter().zip(ranges) {
+            let state = state.clone();
+            let app = app.clone();
+            button.connect_toggled(move |button| {
+                if !button.is_active() {
+                    return;
+                }
+                state.range_s.set(seconds);
+                request_history(&app, HistoryPurpose::Dialog, seconds);
+            });
+        }
+    }
+    {
+        let state = state.clone();
+        let app = app.clone();
+        chart.set_draw_func(move |area, ctx, width, height| {
+            let series = history_series(&state);
+            let _ = &app;
+            if series.len() >= 2 {
+                draw_sparkline(area, ctx, width, height, &series, "accent_bg_color");
+            }
+        });
+    }
+    {
+        let app = app.clone();
+        let state = state.clone();
+        export.connect_clicked(move |_| {
+            export_history_csv(&app, state.samples.borrow().clone());
+        });
+    }
+    {
+        let app = app.clone();
+        let dialog = dialog.clone();
+        close.connect_clicked(move |_| {
+            *app.history_dialog.borrow_mut() = None;
+            dialog.close();
+        });
+    }
+    {
+        let app = app.clone();
+        dialog.connect_closed(move |_| {
+            *app.history_dialog.borrow_mut() = None;
+        });
+    }
+
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&dialog_body(&body, &footer)));
+    dialog.set_child(Some(&toolbar));
+    dialog.present(Some(&app.window));
+    request_history(app, HistoryPurpose::Dialog, 86_400);
+    render_history(app, &state);
+    if let Some(path) = std::env::var_os("TROMMEL_HISTORY_SCREENSHOT") {
+        let path = path.to_string_lossy().into_owned();
+        let capture = app.window.clone();
+        let application = app.window.application();
+        glib::timeout_add_seconds_local(2, move || {
+            if let Some(application) = application.clone() {
+                schedule_screenshot(capture.clone(), path.clone(), application, 0);
+            }
+            glib::ControlFlow::Break
+        });
+    }
+}
+
 fn apply_status(app: &Rc<App>, status: Status) {
     let running = status.state.running;
+    app.history_button.set_sensitive(true);
     // The sparklines read this rolling window; a fresh status may repeat the
     // previous timestamp, in which case `record` replaces the last sample.
     app.history.borrow_mut().record(&status);
+    // The hero 24h average is a cheap local read once a minute; it never goes
+    // through Status and never blocks a poll.
+    let now = util::now_unix();
+    if now.saturating_sub(app.history_last_request.get()) >= 60 {
+        app.history_last_request.set(now);
+        request_history(app, HistoryPurpose::Hero, 86_400);
+    }
     let blocked = start_block_reason(app);
     update_start_sensitivity(app, blocked);
     let action_text = if running {

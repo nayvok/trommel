@@ -90,6 +90,11 @@ do not expose the bus name on the system bus or through a socket.
   `trommel_preset_get` and `trommel_diagnose` tools.
 - The config file contains the wallet in clear text (mode determined by the
   user's umask). Do not commit it or paste it into an issue; use diagnostics.
+- The local history (`~/.local/state/trommel/history/`) records timestamps,
+  preset id, miner id, GPU UUIDs, power/temperature and shares. It deliberately
+  has no wallet, worker, pool URL or IP, is never uploaded and is pruned after
+  about eight days. It is not part of the agent-facing status contract; a local
+  client can read it through `GetHistory`.
 - Test fixtures may only use `prl1test…`; `scripts/check-no-secrets.sh` enforces
   this for tracked files and also rejects personal home paths (`/home/user` is
   the only allowed placeholder).

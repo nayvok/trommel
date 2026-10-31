@@ -312,6 +312,28 @@ impl Engine {
         self.status_json().await
     }
 
+    /// Read the daemon-owned local history. `since`/`until` are Unix seconds;
+    /// the range is bounded so a client cannot ask for the whole disk.
+    async fn get_history(&self, since: u64, until: u64) -> zbus::fdo::Result<String> {
+        if until < since {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "until must not be earlier than since".into(),
+            ));
+        }
+        if until.saturating_sub(since) > crate::history::MAX_RANGE_S {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "history range is limited to 8 days".into(),
+            ));
+        }
+        let samples = tokio::task::spawn_blocking(move || {
+            crate::history::load_range(&crate::paths::history_dir(), since, until)
+        })
+        .await
+        .unwrap_or_default();
+        serde_json::to_string(&samples)
+            .map_err(|err| zbus::fdo::Error::Failed(format!("cannot serialize history: {err}")))
+    }
+
     async fn get_config(&self) -> String {
         let cfg = self.inner.lock().await.cfg.clone();
         serde_json::to_string_pretty(&cfg).unwrap_or_else(|_| "{}".into())
@@ -687,6 +709,7 @@ pub trait Miner {
     fn status(&self) -> zbus::Result<String>;
     fn refresh(&self) -> zbus::Result<String>;
     fn get_config(&self) -> zbus::Result<String>;
+    fn get_history(&self, since: u64, until: u64) -> zbus::Result<String>;
     fn apply_config(&self, json: &str, mode: &str) -> zbus::Result<String>;
     fn set_config(&self, json: &str) -> zbus::Result<()>;
     fn run_benchmark(&self, request: &str) -> zbus::Result<String>;

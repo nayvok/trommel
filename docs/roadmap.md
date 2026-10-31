@@ -23,7 +23,7 @@ green. Status is updated in the same commit as the code.
 | **B7.0** | Dashboard truth and polish: pool balance, hero dedupe, power/temperature sparklines only, grouped preset editor, one GPU-presets entry, apply reasons | **In progress** |
 | **B7.1** | Per-GPU miner telemetry, PCI-bus mapping, honest efficiency units, card hashrate anchor, status contract v5 | **In progress** |
 | **B7.2** | Hashrate watchdog: notify by default, explicit restart opt-in, bounded restarts, ADR 0010 | **In progress** |
-| **B7.3** | Daemon-owned local history, `GetHistory`, 24h average, History dialog and CSV | **Planned** |
+| **B7.3** | Daemon-owned local history, `GetHistory`, 24h average, History dialog and CSV | **In progress** |
 
 B3 is complete in 0.6.0, B4 in 0.7.0 and B5 in 0.8.0. Multi-miner/multi-job
 remains a separate product decision under
