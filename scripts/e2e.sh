@@ -86,11 +86,11 @@ XML
 cat > "$WORK/gpu-state.json" <<'JSON'
 {
   "gpus": [
-    {"index": 0, "uuid": "GPU-11111111-1111-1111-1111-111111111111", "name": "Fake RTX 3080 Ti",
+    {"index": 0, "uuid": "GPU-11111111-1111-1111-1111-111111111111", "pci_bus_id": "00000000:01:00.0", "name": "Fake RTX 3080 Ti",
      "temp": 60, "fan": 65, "draw": 300.0, "power": 350.0, "power_default": 350.0,
      "power_min": 100.0, "power_max": 400.0, "core": 1770, "core_default": 1770,
      "mem": 9501, "mem_default": 9501, "util": 100, "vram": 1000},
-    {"index": 1, "uuid": "GPU-22222222-2222-2222-2222-222222222222", "name": "Fake RTX 3060",
+    {"index": 1, "uuid": "GPU-22222222-2222-2222-2222-222222222222", "pci_bus_id": "00000000:02:00.0", "name": "Fake RTX 3060",
      "temp": 55, "fan": 60, "draw": 130.0, "power": 170.0, "power_default": 170.0,
      "power_min": 60.0, "power_max": 200.0, "core": 1500, "core_default": 1500,
      "mem": 7000, "mem_default": 7000, "util": 99, "vram": 500}
@@ -130,7 +130,7 @@ cfg = {
     "miner":"wildrig","miner_version":"0.51.8",
     "pool_url":"pool.pearlhash.xyz:9000","pool_fee_pct":1.0,"pool_api_url":"",
     "wallet":"prl1testwallet","worker":"e2e",
-    "gpu":gpu,"api_port":0,"expected_hashrate":125e12,
+    "gpu":gpu,"api_port":14028,"expected_hashrate":125e12,
     "miner_options":{"fan_speed":70},"miner_fee_override_pct":None,"miner_fee_pct":0.0,
     "extra_args":"","env":{},"created_at":0,"updated_at":0},
     "second": {
@@ -140,7 +140,7 @@ cfg = {
     "miner":"wildrig","miner_version":"0.51.8",
     "pool_url":"pool.pearlhash.xyz:9000","pool_fee_pct":1.0,"pool_api_url":"",
     "wallet":"prl1testwallet","worker":"e2e2",
-    "gpu":gpu,"api_port":0,"expected_hashrate":125e12,
+    "gpu":gpu,"api_port":14028,"expected_hashrate":125e12,
     "miner_options":{},"miner_fee_override_pct":None,"miner_fee_pct":0.0,
     "extra_args":"","env":{},"created_at":0,"updated_at":0}},
   "gpu_presets": {},
@@ -175,6 +175,7 @@ BUS_PID="$(printf '%s\n' "$BUS_OUT" | sed -n 2p)"
 cleanup() {
     pkill -f "$WORK/bin/wildrig-multi" 2>/dev/null || true
     pkill -f "$WORK/data/trommel/miners" 2>/dev/null || true
+    [ -n "${API_PID:-}" ] && kill "$API_PID" 2>/dev/null || true
     [ -n "${NOTIFY_PID:-}" ] && kill "$NOTIFY_PID" 2>/dev/null || true
     [ -n "${DAEMON_PID:-}" ] && kill "$DAEMON_PID" 2>/dev/null || true
     [ -n "$BUS_PID" ] && kill "$BUS_PID" 2>/dev/null || true
@@ -213,6 +214,13 @@ else
     tail -20 "$WORK/helper-test.out"
 fi
 
+step "Fake miner API"
+python3 "$ROOT/scripts/fixtures/fake-miner-api.py" 14028 "$WORK/gpu-state.json" "$WORK/api-mode" \
+    > "$WORK/miner-api.out" 2>&1 &
+API_PID=$!
+sleep 1
+if kill -0 "$API_PID" 2>/dev/null; then pass "WildRig-shaped API listens on 14028"; else fail "fake miner API did not start"; fi
+
 step "Start daemon"
 start_daemon "$BIN/trommeld"
 sleep 2
@@ -223,7 +231,7 @@ JSON=$("$BIN/trommel" status --json 2>/dev/null)
 echo "$JSON" | python3 -c '
 import json,sys
 s=json.load(sys.stdin)
-assert s["contract_version"]==4
+assert s["contract_version"]==5
 assert len(s["gpus"])==2, s["gpus"]
 assert s["miner_info"]["id"]=="wildrig"
 assert s["miner_info"]["total_fee_pct"]==1.0
@@ -246,8 +254,18 @@ import json,sys
 s=json.load(sys.stdin)
 assert s["state"]["running"] is True, s["state"]
 assert s["total"]["power_w"] == 430.0, s["total"]
-print("  running:", s["state"]["running"], "power:", s["total"]["power_w"])
-' && pass "miner running with aggregated power" || fail "running status"
+assert s["total"]["mining_power_w"] == 430.0, s["total"]
+assert s["total"]["efficiency_unit"] == "J/TH", s["total"]
+assert s["total"]["efficiency"] and 3.0 < s["total"]["efficiency"] < 4.0, s["total"]
+gpus = s["miner"]["gpus"]
+assert len(gpus) == 2, gpus
+assert [g["index"] for g in gpus] == [0, 1], gpus
+assert [g["uuid"] for g in gpus] == ["GPU-11111111-1111-1111-1111-111111111111",
+                                       "GPU-22222222-2222-2222-2222-222222222222"], gpus
+assert abs(sum(g["hashrate_10s"] for g in gpus) - s["miner"]["hashrate_10s"]) < 1e6, gpus
+print("  running:", s["state"]["running"], "power:", s["total"]["power_w"],
+      "efficiency:", s["total"]["efficiency"], s["total"]["efficiency_unit"])
+' && pass "miner running with per-GPU telemetry and rig efficiency" || fail "running status"
 
 step "SetConfig never restarts a running miner"
 CPID=$("$BIN/trommel" status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"]["miner_pid"])')

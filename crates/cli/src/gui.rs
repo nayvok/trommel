@@ -332,6 +332,9 @@ struct HeroMeta {
     hashrate_known: bool,
     restarts: u32,
     source: String,
+    expected: Option<String>,
+    actual: Option<String>,
+    efficiency: Option<String>,
     uptime_s: u64,
     sampled_at: u64,
     /// External miners have no start time we own; do not invent a stopwatch.
@@ -456,6 +459,13 @@ fn install_css() {
         }
         .trommel-gpu-stat-label { font-size: 0.72em; opacity: 0.65; }
         .trommel-gpu-stat-hint { font-size: 0.7em; opacity: 0.5; }
+        .trommel-gpu-hashrate-row { padding: 0 2px; }
+        .trommel-gpu-hashrate {
+            font-size: 1.55em;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            font-feature-settings: "tnum";
+        }
         .trommel-gpu-chip {
             background-color: alpha(@card_fg_color, 0.07);
             border-radius: 999px;
@@ -6157,6 +6167,7 @@ fn handle_event(app: &Rc<App>, event: Ev) {
 /// `index()` must stay in sync with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Metric {
+    Hashrate,
     Power,
     Temp,
 }
@@ -6164,13 +6175,15 @@ enum Metric {
 impl Metric {
     fn index(self) -> usize {
         match self {
-            Self::Power => 0,
-            Self::Temp => 1,
+            Self::Hashrate => 0,
+            Self::Power => 1,
+            Self::Temp => 2,
         }
     }
 
     fn unit(self) -> &'static str {
         match self {
+            Self::Hashrate => "H/s",
             Self::Power => "W",
             Self::Temp => "°C",
         }
@@ -6186,10 +6199,10 @@ impl Metric {
     }
 }
 
-const METRIC_COUNT: usize = 2;
+const METRIC_COUNT: usize = 3;
 /// The only metrics that draw a sparkline on a card, in display order.
 #[cfg(test)]
-const SPARK_METRICS: [Metric; METRIC_COUNT] = [Metric::Power, Metric::Temp];
+const SPARK_METRICS: [Metric; METRIC_COUNT] = [Metric::Hashrate, Metric::Power, Metric::Temp];
 /// How much history a sparkline shows and how many samples it keeps at most
 /// (a 1 s GUI poll over 5 minutes is 300 samples).
 const HISTORY_SECS: u64 = 300;
@@ -6197,6 +6210,27 @@ const HISTORY_MAX: usize = 360;
 const SPARK_HEIGHT: i32 = 24;
 
 type GpuSample = (u64, [Option<f64>; METRIC_COUNT]);
+
+/// Miner-side record for one `nvidia-smi` card. A record without a mapped
+/// index/uuid is ignored: the card shows `—`, never another card's number.
+fn gpu_miner_record<'a>(
+    status: &'a Status,
+    gpu: &GpuStats,
+) -> Option<&'a trommel_core::minerapi::GpuMinerStats> {
+    status.miner.gpus.iter().find(|record| {
+        record.uuid.as_deref() == Some(gpu.uuid.as_str())
+            || (record.uuid.is_none() && record.index == Some(gpu.index))
+    })
+}
+
+fn gpu_miner_hashrate(status: &Status, gpu: &GpuStats) -> Option<f64> {
+    gpu_miner_record(status, gpu).and_then(|record| {
+        record
+            .hashrate_10s
+            .or(record.hashrate_60s)
+            .or(record.hashrate_15m)
+    })
+}
 
 #[derive(Default)]
 struct History {
@@ -6207,10 +6241,15 @@ impl History {
     /// Store one status snapshot per GPU. The daemon reports the same `ts`
     /// while its own poll has not advanced, so repeated timestamps replace the
     /// last sample instead of widening the graph with duplicates.
-    fn record(&mut self, gpus: &[GpuStats], ts: u64) {
-        for gpu in gpus {
+    fn record(&mut self, status: &Status) {
+        let ts = status.ts;
+        for gpu in &status.gpus {
             let samples = self.gpus.entry(gpu.uuid.clone()).or_default();
-            let values = [gpu.power_w, gpu.temp_c.map(f64::from)];
+            let values = [
+                gpu_miner_hashrate(status, gpu),
+                gpu.power_w,
+                gpu.temp_c.map(f64::from),
+            ];
             match samples.back_mut() {
                 Some((last_ts, last)) if *last_ts == ts => *last = values,
                 _ => samples.push_back((ts, values)),
@@ -6467,6 +6506,13 @@ fn spark_tooltip(series: &[(u64, f64)], label: &str, metric: Metric) -> Option<S
         .fold(f64::NEG_INFINITY, f64::max);
     let minutes = (last - first).div_ceil(60).max(1);
     let window = tr(&format!("last {minutes} min"), &format!("за {minutes} мин"));
+    if metric == Metric::Hashrate {
+        return Some(format!(
+            "{label} · {window}: {}–{}",
+            util::format_hashrate(lo),
+            util::format_hashrate(hi)
+        ));
+    }
     Some(format!(
         "{label} · {window}: {lo:.0}–{hi:.0} {}",
         metric.unit()
@@ -6511,6 +6557,71 @@ fn gpu_stat(
         holder.append(&spark);
         box_.append(&holder);
     }
+    box_
+}
+
+/// The per-card hashrate is the card's visual anchor: one large value and its
+/// trend above the six live-value bubbles. It is not a seventh equal bubble.
+fn gpu_hashrate_row(app: &Rc<App>, gpu: &GpuStats, status: &Status) -> gtk::Box {
+    let box_ = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    box_.add_css_class("trommel-gpu-hashrate-row");
+    let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let left = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    left.set_hexpand(true);
+    left.append(&label(
+        &tr("HASHRATE", "ХЕШРЕЙТ"),
+        &["caption", "trommel-hero-caption"],
+    ));
+    let unit = if status.coin.hashrate_unit.is_empty() {
+        "auto"
+    } else {
+        status.coin.hashrate_unit.as_str()
+    };
+    let value = gpu_miner_hashrate(status, gpu);
+    let (value_text, value_class, tip) = match value {
+        Some(value) if value > 0.0 => (
+            format_hashrate_value(Some(value), unit).unwrap_or_else(|| "—".into()),
+            "accent",
+            tr(
+                "Current per-card hashrate reported by the miner",
+                "Текущий хешрейт карты по данным майнера",
+            ),
+        ),
+        Some(_) => (
+            zero_hashrate_text(unit),
+            "trommel-hot",
+            tr(
+                "The miner reports zero hashrate for this card",
+                "Майнер сообщает нулевой хешрейт для этой карты",
+            ),
+        ),
+        None => (
+            "—".to_string(),
+            "dim-label",
+            if status.state.running {
+                tr(
+                    "The miner does not report per-card hashrate for this GPU",
+                    "Майнер не сообщает хешрейт для этой карты",
+                )
+            } else {
+                tr("Miner is stopped", "Майнер остановлен")
+            },
+        ),
+    };
+    let requested = "trommel-gpu-hashrate";
+    let value_label = label(&value_text, &[requested, "numeric", value_class]);
+    value_label.set_tooltip_text(Some(&tip));
+    left.append(&value_label);
+    top.append(&left);
+    if matches!(value, Some(0.0)) {
+        top.append(&gpu_chip(&tr("no hashrate", "нет хешрейта"), "trommel-hot"));
+    }
+    box_.append(&top);
+    let spark = sparkline(app, &gpu.uuid, Metric::Hashrate, value_class, "Hashrate");
+    let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    holder.set_margin_top(4);
+    holder.append(&spark);
+    box_.append(&holder);
     box_
 }
 
@@ -6640,6 +6751,7 @@ fn make_gpu_card(app: &Rc<App>, gpu: &GpuStats, wide: bool, status: &Status) -> 
     }
     header.append(&toggle);
     card.append(&header);
+    card.append(&gpu_hashrate_row(app, gpu, status));
 
     let temp = gpu
         .temp_c
@@ -6985,14 +7097,33 @@ fn render_hero_meta(app: &App, uptime_s: u64) {
             util::human_duration(uptime_s)
         ));
     } else {
-        app.hero_meta.set_text(&format!(
-            "{}: {} · {}: {} · {}",
+        let mut parts = vec![format!(
+            "{}: {}",
             tr("uptime", "аптайм"),
-            util::human_duration(uptime_s),
-            tr("restarts", "перезапусков"),
-            meta.restarts,
+            util::human_duration(uptime_s)
+        )];
+        if meta.restarts > 0 {
+            parts.push(format!(
+                "{}: {}",
+                tr("restarts", "перезапусков"),
+                meta.restarts
+            ));
+        }
+        if let Some(expected) = &meta.expected {
+            parts.push(format!("{} {expected}", tr("expected", "ожидалось")));
+        }
+        if let Some(actual) = &meta.actual {
+            parts.push(format!("{} {actual}", tr("actual", "сейчас")));
+        }
+        if let Some(efficiency) = &meta.efficiency {
+            parts.push(efficiency.clone());
+        }
+        app.hero_meta.set_text(&parts.join(" · "));
+        app.hero_meta.set_tooltip_text(Some(&format!(
+            "{}: {}",
+            tr("Miner data source", "Источник данных майнера"),
             meta.source
-        ));
+        )));
     }
 }
 
@@ -7223,7 +7354,7 @@ fn apply_status(app: &Rc<App>, status: Status) {
     let running = status.state.running;
     // The sparklines read this rolling window; a fresh status may repeat the
     // previous timestamp, in which case `record` replaces the last sample.
-    app.history.borrow_mut().record(&status.gpus, status.ts);
+    app.history.borrow_mut().record(&status);
     let blocked = start_block_reason(app);
     update_start_sensitivity(app, blocked);
     let action_text = if running {
@@ -7310,11 +7441,31 @@ fn apply_status(app: &Rc<App>, status: Status) {
     } else {
         app.hero_line.set_text(&hero_identity(&status));
     }
+    let expected = (status.expected_hashrate > 0.0)
+        .then(|| util::format_hashrate_in(status.expected_hashrate, unit));
+    let actual = hashrate_value.and_then(|value| {
+        let text = format_hashrate_value(Some(value), unit)?;
+        let percent = if status.expected_hashrate > 0.0 {
+            format!(" ({:.0}%)", value / status.expected_hashrate * 100.0)
+        } else {
+            String::new()
+        };
+        Some(format!("{text}{percent}"))
+    });
+    let efficiency = status
+        .total
+        .efficiency
+        .zip(Some(status.total.efficiency_unit.clone()))
+        .filter(|(_, unit)| !unit.is_empty())
+        .map(|(value, unit)| format!("{value:.2} {unit}"));
     *app.hero_meta_state.borrow_mut() = Some(HeroMeta {
         running,
         hashrate_known: hashrate_value.is_some(),
         restarts: status.state.restarts,
         source: status.miner.source.clone(),
+        expected,
+        actual,
+        efficiency,
         uptime_s: status.state.uptime_s,
         sampled_at: status.ts,
         tick: running && !status.state.external,
@@ -7479,14 +7630,15 @@ fn apply_status(app: &Rc<App>, status: Status) {
             .iter()
             .map(|gpu| {
                 format!(
-                    "{}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
+                    "{}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
                     gpu.uuid,
                     gpu.temp_c,
                     gpu.power_w,
                     gpu.core_mhz,
                     gpu.mem_mhz,
                     gpu.util_pct,
-                    gpu.fan_pct
+                    gpu.fan_pct,
+                    gpu_miner_hashrate(&status, gpu)
                 )
             })
             .collect::<Vec<_>>()
@@ -7745,8 +7897,37 @@ mod tests {
     }
 
     #[test]
-    fn only_power_and_temperature_keep_sparklines() {
-        assert_eq!(SPARK_METRICS, [Metric::Power, Metric::Temp]);
+    fn gpu_hashrate_only_uses_a_mapped_record() {
+        use super::gpu_miner_hashrate;
+        use trommel_core::minerapi::GpuMinerStats;
+        use trommel_core::nvidia::GpuStats;
+
+        let gpu = GpuStats {
+            index: 0,
+            uuid: "GPU-0".into(),
+            ..Default::default()
+        };
+        let mut status = Status::default();
+        status.miner.gpus = vec![GpuMinerStats {
+            index: Some(0),
+            uuid: Some("GPU-0".into()),
+            device: "gpu0".into(),
+            hashrate_10s: Some(100.0e12),
+            ..Default::default()
+        }];
+        assert_eq!(gpu_miner_hashrate(&status, &gpu), Some(100.0e12));
+
+        status.miner.gpus[0].index = None;
+        status.miner.gpus[0].uuid = None;
+        assert_eq!(gpu_miner_hashrate(&status, &gpu), None);
+    }
+
+    #[test]
+    fn hashrate_and_the_two_trend_metrics_keep_sparklines() {
+        assert_eq!(
+            SPARK_METRICS,
+            [Metric::Hashrate, Metric::Power, Metric::Temp]
+        );
     }
 
     /// Every `TROMMEL_*_SCREENSHOT` literal handled in this file must also be

@@ -5,6 +5,32 @@ Changelog; versions use SemVer.
 
 ## [Unreleased]
 
+### Added — per-GPU telemetry and honest efficiency (status contract v5)
+
+- **Per-card miner statistics.** The status `miner.gpus[]` now carries the
+  card's own hashrate windows (and accepted/rejected shares where the API
+  documents them). WildRig (`hashrate.threads` + `hwmon.busID`), SRBMiner
+  (`algorithms[].hashrate.gpu.gpuN` + `gpu_devices[].bus_id`) and OneZero
+  (`devices[].bus_id` + parallel `algos[].hashrates[]`) have documented
+  parsers; a miner that does not report per-card data leaves the list empty and
+  the dashboard shows `—`. The total is never divided between cards.
+- **PCI bus mapping.** `nvidia-smi` now records `pci.bus_id`; a miner record is
+  attached to a card only when exactly one card has that bus. Collisions and
+  unknown buses stay unmapped with one calm warning.
+- **Efficiency has a unit.** `total.mining_power_w` covers participating cards
+  only; `total.efficiency` + `total.efficiency_unit` use the coin's display
+  unit (`J/TH`, `J/MH`, …), and the legacy `efficiency_j_per_th` is null
+  outside TH/s. Rig `power_w` still covers every detected card.
+- **Hashrate is the card's anchor.** The GPU card shows the per-card hashrate
+  and its five-minute sparkline above the six value bubbles; power and
+  temperature keep their trends, core/memory/fan/load stay plain values.
+- **Hero expected vs actual.** One metadata line compares the preset's expected
+  hashrate with the actual value and shows efficiency. The preset name stays in
+  the Active preset row.
+- **Benchmark parser fixed.** The A/B benchmark now uses the preset's effective
+  API port and the same driver-aware parser, so a default-port WildRig API is
+  no longer reported as “no hash rate”.
+
 ### Fixed — dashboard truth before B7 telemetry
 
 - **A missing pool API no longer looks like a zero balance.** The Pool balance

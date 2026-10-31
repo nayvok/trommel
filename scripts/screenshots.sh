@@ -25,11 +25,11 @@ chmod +x "$WORK/bin/nvidia-smi" "$WORK/bin/oc-helper"
 cat > "$WORK/gpu-state.json" <<'JSON'
 {
   "gpus": [
-    {"index": 0, "uuid": "GPU-11111111-1111-1111-1111-111111111111", "name": "NVIDIA GeForce RTX 3080 Ti",
+    {"index": 0, "uuid": "GPU-11111111-1111-1111-1111-111111111111", "pci_bus_id": "00000000:01:00.0", "name": "NVIDIA GeForce RTX 3080 Ti",
      "temp": 61, "fan": 68, "draw": 301.4, "power": 350.0, "power_default": 350.0,
      "power_min": 100.0, "power_max": 400.0, "core": 1770, "core_default": 1770,
      "mem": 9501, "mem_default": 9501, "util": 100, "vram": 8472},
-    {"index": 1, "uuid": "GPU-22222222-2222-2222-2222-222222222222", "name": "NVIDIA GeForce RTX 3060",
+    {"index": 1, "uuid": "GPU-22222222-2222-2222-2222-222222222222", "pci_bus_id": "00000000:02:00.0", "name": "NVIDIA GeForce RTX 3060",
      "temp": 55, "fan": 62, "draw": 128.2, "power": 170.0, "power_default": 170.0,
      "power_min": 60.0, "power_max": 200.0, "core": 1500, "core_default": 1500,
      "mem": 7000, "mem_default": 7000, "util": 99, "vram": 4096}
@@ -68,14 +68,14 @@ cfg = {
     "id":"pearl-wildrig","name":"Pearl · WildRig","coin":"pearl","algo":"pearlhash",
     "miner":"wildrig","miner_version":"0.51.8","pool":"pearlhash",
     "pool_url":"pool.pearlhash.xyz:9000","wallet":"prl1testwallet","worker":"3080ti",
-    "gpu_profile":"balanced","api_port":0,"expected_hashrate":125000000000000.0,
+    "gpu_profile":"balanced","api_port":14029,"expected_hashrate":125000000000000.0,
     "miner_options":{"fan_speed":70},"miner_fee_override_pct":None,"miner_fee_pct":0.0,
     "pool_fee_pct":1.0,"extra_args":"","env":{},"created_at":0,"updated_at":0},
    "pearl-backup": {
     "id":"pearl-backup","name":"Pearl backup","coin":"pearl","algo":"pearlhash",
     "miner":"wildrig","miner_version":"0.51.7","pool":"pearlhash",
     "pool_url":"pool.pearlhash.xyz:9000","wallet":"prl1testwallet","worker":"backup",
-    "gpu_profile":"balanced","api_port":0,"expected_hashrate":125000000000000.0,
+    "gpu_profile":"balanced","api_port":14029,"expected_hashrate":125000000000000.0,
     "miner_options":{},"miner_fee_override_pct":None,"miner_fee_pct":0.0,
     "pool_fee_pct":1.0,"extra_args":"","env":{},"created_at":0,"updated_at":0}},
   "gpu_profiles": {"balanced": {"name":"Balanced",
@@ -100,6 +100,7 @@ PY
 
 cleanup() {
   [ -n "${JITTER_PID:-}" ] && kill "$JITTER_PID" 2>/dev/null || true
+  [ -n "${API_PID:-}" ] && kill "$API_PID" 2>/dev/null || true
   [ -n "${DAEMON_PID:-}" ] && kill "$DAEMON_PID" 2>/dev/null || true
   [ -n "${BUS_PID:-}" ] && kill "$BUS_PID" 2>/dev/null || true
   pkill -f "${DEMO_MINER:-/tmp/trommel-screenshot-wildrig-multi}" 2>/dev/null || true
@@ -146,6 +147,11 @@ export TROMMEL_FAKE_MODE="$WORK/fake-mode"
 export TROMMEL_OC_TIMEOUT_MS=1500
 # Verify the clock locks well before the first dashboard capture.
 export TROMMEL_OC_VERIFY_MS=3000
+
+python3 "$ROOT/scripts/fixtures/fake-miner-api.py" 14029 "$WORK/gpu-state.json" \
+    > "$WORK/miner-api.out" 2>&1 &
+API_PID=$!
+sleep 1
 
 setsid "$BIN/trommeld" > "$WORK/daemon.out" 2>&1 < /dev/null &
 DAEMON_PID=$!

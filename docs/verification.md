@@ -8,7 +8,7 @@ needs a real rig. Run the commands from the repository root; see
 
 | Command | Covers |
 | --- | --- |
-| `cargo test --workspace` | Config defaults/migration/diff/warnings (including `tray_monochrome` and its live diff), miner argument rendering, documented device flags and per-driver device lists, device-capability refusal, participation status/warnings, fee handling, catalogue parsing, `nvidia-smi` parsing, OC argument validation, supervisor/state/status helpers, D-Bus helpers, tray menu/header/icon/action unit tests, hashrate formatting, download/path safety, miner version manager (usage, update plan, blocked removal, managed-file deletion, single-preset pin, verify without a fabricated checksum) |
+| `cargo test --workspace` | Config defaults/migration/diff/warnings (including `tray_monochrome` and its live diff), miner argument rendering, documented device flags and per-driver device lists, device-capability refusal, participation status/warnings, fee handling, catalogue parsing, `nvidia-smi` parsing and PCI bus ids, WildRig/SRBMiner/OneZero per-GPU parsers and bus mapping, per-card efficiency units, OC argument validation, supervisor/state/status helpers, D-Bus helpers, tray menu/header/icon/action unit tests, hashrate formatting, download/path safety, miner version manager (usage, update plan, blocked removal, managed-file deletion, single-preset pin, verify without a fabricated checksum) |
 | `cargo test -p trommel --features gui` | GUI-feature unit tests; the screenshot-hook test proves every `TROMMEL_*_SCREENSHOT` capture runs as a private instance |
 | `cargo clippy --workspace --all-targets --features trommel/gui -- -D warnings` | Lints in all crates including GUI code |
 | `cargo fmt --check` | Formatting |
@@ -46,7 +46,8 @@ not a claim that CI covers it.
 | --- | --- | --- |
 | Dashboard | Refresh, Start/Stop, GPU participation switch, Tune | Live status; Cancel in the alert restores the switch and the dirty banner; Start is disabled with every GPU excluded or when the miner cannot select devices; the card chip and Rig summary show mining/excluded |
 | Dashboard layout | one GPU, then two GPUs | One card spans the row with a 3×2 bubble grid; two cards split the row evenly; three or more wrap |
-| Dashboard | stopped state | `0 TH/s`, numeric pool balance, configured endpoint named, no lone dashes |
+| Dashboard | stopped state | hashrate/balance/shares are `—` unless the miner or pool reported a real zero; configured endpoint named; no fake `0.000` |
+| Dashboard | per-GPU telemetry | Live per-card hashrate above each card, total not divided, `—` for an unmapped or unsupported record; expected/actual and `J/TH` or `J/MH` in the hero line |
 | First run | Empty dashboard, Create preset, Start prompt, Cancel an unsaved new preset | No preset is invented; the CTA disappears after one exists |
 | First run | Start without a preset | Explains that a preset is required and offers Create preset; tuning is unavailable |
 | Presets | row, chevron, New preset, Use, missing-version **Install…** | Editor opens; chevron is a real button; Use applies the selection; Install… opens the library focused on the preset |

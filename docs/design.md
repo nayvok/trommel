@@ -92,6 +92,7 @@ Custom CSS lives in `install_css()`:
 | `.trommel-gpu-card-wide` | Single-GPU card: wider padding, fills the dashboard row |
 | `.trommel-gpu-stat` | Live-value bubble inside a dashboard GPU card: tinted, 10 px radius |
 | `.trommel-gpu-stat-value`, `-label`, `-hint` | Big tabular value, small label, muted target/lock hint |
+| `.trommel-gpu-hashrate-row`, `.trommel-gpu-hashrate` | Per-card hashrate anchor above the six bubbles: large tabular value, no extra tile |
 | `.trommel-gpu-title` | Card title weight |
 | `.trommel-gpu-chip` | Stock/tuned/GPU-preset badge and compact live chip (pill, tabular) |
 | `.trommel-pill` + `-running`, `-external`, `-stopped`, `-offline` | Status pill |
@@ -162,7 +163,7 @@ Every coloured value has a word next to it (“installed”, “not installed”
 | Surface | Kind | Opened from | Purpose |
 | --- | --- | --- | --- |
 | Main window | `AdwApplicationWindow` | app start | Header (view switcher, refresh, menu), three pages, banners |
-| Dashboard | page | view switcher | Hero session, active preset context, GPU cards, rig summary, pool and shares, warnings |
+| Dashboard | page | view switcher | Hero session, active preset summary, GPU cards, pool and shares, warnings |
 | Presets | page | view switcher | Preset list, miner library entry; rows open the editor |
 | Settings | page | view switcher | Behaviour, tray, appearance, actions |
 | Preset editor | `AdwDialog` | preset row / New preset | One preset: coin, algorithm, manual pool, wallet, miner version, fees, options |
@@ -183,8 +184,9 @@ Every coloured value has a word next to it (“installed”, “not installed”
 
 - Hero card: a small letter-spaced HASHRATE caption, the large value in the
   active coin's preferred unit, status pill (`mining` / `external` / `stopped` /
-  `offline`), a line `coin · pool · fee`, a separator, and a metadata line with
-  uptime, restarts and the miner data source. The preset name is **not** repeated
+  `offline`), a line `coin · pool · fee`, a separator, and one calm metadata
+  line with uptime, restarts, expected vs actual hashrate and efficiency
+  (`3.42 J/TH`); the miner data source stays in its tooltip. The preset name is **not** repeated
   here: it belongs to the Active preset row. With no preset the hero becomes the
   first-run empty state: “No mining preset”, a short explanation, **Create
   preset**, and the same prompt when Start is pressed. The card is accent-tinted
@@ -197,7 +199,11 @@ Every coloured value has a word next to it (“installed”, “not installed”
   acts on instead of floating in the header.
 - GPU cards: title (name + index), a switch that includes the card in the
   active **mining session** (off = excluded: not passed to the miner, not
-  tuned), six value bubbles (power, temperature, core, memory, fan, load; the
+  tuned), a **hashrate anchor** above the bubbles: a small HASHRATE caption,
+  the card's own value in the coin unit (or `—` when the miner does not report
+  or the record cannot be matched) and its five-minute sparkline. The value is
+  the card's visual anchor, not a seventh equal bubble; a real zero gets a
+  `no hashrate` word next to it. Six value bubbles (power, temperature, core, memory, fan, load; the
   configured target/lock is a small hint and turns hot when the live value
   differs), a **mining**/**excluded** chip, a **stock**/**tuned**/**GPU preset** chip and
   a **Tune** button. The participation chip describes the applied session, not
@@ -205,7 +211,8 @@ Every coloured value has a word next to it (“installed”, “not installed”
   Only **power** and **temperature** keep a sparkline on the bubble floor: the
   metric's last five minutes as a thin accent line over a soft accent wash,
   rounded with the bubble. Core, memory, fan and load are values, not trends;
-  removing their graphs keeps the card quiet and the grid rows stable. The wash
+  removing their graphs keeps the card quiet and the grid rows stable. The
+  hashrate sparkline above uses the same drawing. The wash
   reaches the rounded floor and the plot keeps only a 2 px margin, so the graph
   is grounded in the bubble instead of floating above its bottom edge. The line
   follows the value colour, so a warm or hot bubble also draws warm or hot.
@@ -464,9 +471,9 @@ two-GPU rig with deterministic XDG directories. Conventions:
   (`gpu_sig`) to avoid flicker and lost focus. The signature covers every value
   shown in a bubble, so a clock or fan change is never left stale.
 - Sparkline history is a GUI-side ring buffer (`History`: five minutes per GPU
-  UUID, keyed by metric). It stores power and temperature only; `apply_status`
-  appends one sample per status and `update_sparklines` redraws the registered
-  areas, so a redraw never rebuilds a card.
+  UUID, keyed by metric). It stores per-card hashrate, power and temperature;
+  `apply_status` appends one sample per status and `update_sparklines` redraws
+  the registered areas, so a redraw never rebuilds a card.
 - Widget callbacks mutate the draft only; they never talk to D-Bus directly.
   Settings switches write into the draft as they are toggled, so the global
   unsaved-changes banner and the Settings **Save and apply** button behave the

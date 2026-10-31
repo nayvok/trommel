@@ -164,9 +164,15 @@ pub fn run(cfg: &Config, profiles: &[String], seconds: u64) -> BenchReport {
         let mut samples: Vec<f64> = Vec::new();
         let mut accepted: Option<u64> = None;
 
-        let api_port = bench_cfg.preset().map(|p| p.api_port).unwrap_or(0);
+        let api_port = bench_cfg
+            .preset()
+            .map(|preset| preset.effective_api_port())
+            .unwrap_or(0);
+        let driver = catalog::miner(miner_id)
+            .map(|miner| miner.driver)
+            .unwrap_or_default();
         while started.elapsed() < Duration::from_secs(seconds.saturating_sub(warmup)) {
-            if let Ok(stats) = minerapi::query_api(api_port) {
+            if let Ok(stats) = minerapi::query_api_for(api_port, driver) {
                 if let Some(value) = stats.hashrate_60s.or(stats.hashrate_10s) {
                     samples.push(value);
                 }

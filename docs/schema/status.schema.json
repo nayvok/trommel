@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nayvok/trommel/docs/schema/status.schema.json",
+  "title": "Trommel status contract v5",
+  "type": "object",
+  "required": ["contract_version", "state", "gpus", "participation", "total", "miner", "warnings", "ts"],
+  "properties": {
+    "contract_version": {"const": 5},
+    "state": {
+      "type": "object",
+      "required": ["running", "uptime_s", "restarts"],
+      "properties": {
+        "running": {"type": "boolean"},
+        "uptime_s": {"type": "integer", "minimum": 0},
+        "restarts": {"type": "integer", "minimum": 0},
+        "last_error": {"type": ["string", "null"]},
+        "external": {"type": "boolean"},
+        "preset_id": {"type": "string"},
+        "preset_name": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "gpus": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/gpuStats"}
+    },
+    "participation": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/participation"}
+    },
+    "miner": {"$ref": "#/$defs/minerStats"},
+    "total": {"$ref": "#/$defs/totalView"},
+    "pool": {"type": ["object", "null"], "additionalProperties": true},
+    "coin": {"type": "object", "additionalProperties": true},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "ts": {"type": "integer", "minimum": 0},
+    "ts_iso": {"type": "string"},
+    "version": {"type": "string"}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "gpuStats": {
+      "type": "object",
+      "required": ["index", "uuid", "name"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "uuid": {"type": "string"},
+        "name": {"type": "string"},
+        "temp_c": {"type": ["integer", "null"]},
+        "fan_pct": {"type": ["integer", "null"]},
+        "power_w": {"type": ["number", "null"]},
+        "power_limit_w": {"type": ["number", "null"]},
+        "power_default_w": {"type": ["number", "null"]},
+        "core_mhz": {"type": ["integer", "null"]},
+        "mem_mhz": {"type": ["integer", "null"]},
+        "util_pct": {"type": ["integer", "null"]},
+        "vram_used_mb": {"type": ["integer", "null"]},
+        "pci_bus_id": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "participation": {
+      "type": "object",
+      "required": ["index", "uuid", "name", "enabled", "mining"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "uuid": {"type": "string"},
+        "name": {"type": "string"},
+        "enabled": {"type": "boolean"},
+        "mining": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "gpuMinerStats": {
+      "type": "object",
+      "properties": {
+        "index": {"type": ["integer", "null"], "minimum": 0},
+        "uuid": {"type": ["string", "null"]},
+        "device": {"type": "string"},
+        "bus_id": {"type": ["integer", "null"], "minimum": 0},
+        "hashrate_10s": {"type": ["number", "null"]},
+        "hashrate_60s": {"type": ["number", "null"]},
+        "hashrate_15m": {"type": ["number", "null"]},
+        "accepted": {"type": ["integer", "null"], "minimum": 0},
+        "rejected": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "minerStats": {
+      "type": "object",
+      "required": ["gpus", "source"],
+      "properties": {
+        "hashrate_10s": {"type": ["number", "null"]},
+        "hashrate_60s": {"type": ["number", "null"]},
+        "hashrate_15m": {"type": ["number", "null"]},
+        "accepted": {"type": ["integer", "null"], "minimum": 0},
+        "rejected": {"type": ["integer", "null"], "minimum": 0},
+        "stale": {"type": ["integer", "null"], "minimum": 0},
+        "source": {"type": "string"},
+        "gpus": {"type": "array", "items": {"$ref": "#/$defs/gpuMinerStats"}}
+      },
+      "additionalProperties": true
+    },
+    "totalView": {
+      "type": "object",
+      "required": ["gpus_enabled", "gpus_total"],
+      "properties": {
+        "hashrate": {"type": ["number", "null"]},
+        "power_w": {
+          "type": ["number", "null"],
+          "description": "Whole-rig power.draw over every detected card"
+        },
+        "mining_power_w": {
+          "type": ["number", "null"],
+          "description": "Power of participating cards only; numerator of efficiency"
+        },
+        "efficiency": {"type": ["number", "null"]},
+        "efficiency_unit": {"type": "string"},
+        "efficiency_j_per_th": {
+          "type": ["number", "null"],
+          "description": "Deprecated: only filled when efficiency_unit is J/TH"
+        },
+        "temp_max_c": {"type": ["integer", "null"]},
+        "gpus_enabled": {"type": "integer", "minimum": 0},
+        "gpus_total": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    }
+  }
+}

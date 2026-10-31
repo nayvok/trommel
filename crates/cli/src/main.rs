@@ -932,6 +932,30 @@ fn print_human(status: &Status) {
                 .unwrap_or_else(|| "—".into()),
             status.miner.source,
         );
+        if let (Some(expected), Some(actual)) = (
+            (status.expected_hashrate > 0.0).then_some(status.expected_hashrate),
+            status.total.hashrate,
+        ) {
+            let percent = actual / expected * 100.0;
+            println!(
+                "Ожидание: {} · сейчас {} ({percent:.0}%)",
+                util::format_hashrate_in(expected, &status.coin.hashrate_unit),
+                util::format_hashrate_in(actual, &status.coin.hashrate_unit)
+            );
+        }
+        if let (Some(value), unit) = (
+            status.total.efficiency,
+            status.total.efficiency_unit.as_str(),
+        ) {
+            println!(
+                "Эффект.:  {value:.2} {unit} · участвующие карты {}",
+                status
+                    .total
+                    .mining_power_w
+                    .map(|power| format!("{power:.0} W"))
+                    .unwrap_or_else(|| "—".into())
+            );
+        }
     }
 
     if status.gpus.is_empty() {
@@ -953,9 +977,23 @@ fn print_human(status: &Status) {
                 Some(card) if card.mining => " · майнит",
                 _ => "",
             };
+            let hashrate = status
+                .miner
+                .gpus
+                .iter()
+                .find(|record| record.uuid.as_deref() == Some(gpu.uuid.as_str()))
+                .and_then(|record| {
+                    record
+                        .hashrate_10s
+                        .or(record.hashrate_60s)
+                        .or(record.hashrate_15m)
+                })
+                .map(|value| util::format_hashrate_in(value, &status.coin.hashrate_unit))
+                .unwrap_or_else(|| "—".into());
             println!(
-                "GPU #{}:   {} · {} °C · {} W · вентилятор {}% · {} / {} MHz · {}{}",
+                "GPU #{}:   {} · {} · {} °C · {} W · вентилятор {}% · {} / {} MHz · {}{}",
                 gpu.index,
+                hashrate,
                 gpu.name,
                 gpu.temp_c
                     .map(|v| v.to_string())

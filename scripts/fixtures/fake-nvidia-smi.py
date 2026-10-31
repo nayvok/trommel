@@ -138,6 +138,7 @@ def main():
         "clocks.current.memory": lambda gpu: gpu["mem"],
         "utilization.gpu": lambda gpu: gpu["util"],
         "memory.used": lambda gpu: gpu["vram"],
+        "pci.bus_id": lambda gpu: gpu.get("pci_bus_id", "N/A"),
     }
     for gpu in selected:
         print(

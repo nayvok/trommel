@@ -1,6 +1,6 @@
 # Built-in miner catalogue. Community contributions add entries here.
 #
-# `driver` selects the core argument shape (generic | srbminer | onezero).
+# `driver` selects the core argument shape (wildrig | generic | srbminer | onezero).
 # API and probe fields are data too: adding an integration should not require a
 # Rust branch. Fees are per algorithm because miners charge differently.
 
@@ -16,11 +16,11 @@ supported_algos = ["pearlhash", "kawpow", "nexapow"]
 fee_pct = 0.0
 fee_configurable = false
 fee_flag = ""
-per_gpu_stats = false
+per_gpu_stats = true
 # `-d/--gpu-list` and `--print-devices` are documented in the upstream README.
 per_gpu_devices = true
 device_flag = "--gpu-list"
-driver = "generic"
+driver = "wildrig"
 api_default_port = 4028
 api_port_flag = "--api-port"
 api_worker_flag = "--api-worker-id"

@@ -365,34 +365,48 @@ Benchmarks are sequential by design: one miner at a time is an invariant.
 
 ## Status contract
 
-`Status` (contract version 3) is serialized to JSON and pushed over
+`Status` (contract version 5) is serialized to JSON and pushed over
 `StatusChanged`; `Status()`/`Refresh()` return the same document. It contains:
 
 - `state` — running, uptime, restarts, last error, external flag, preset
   id/name;
 - `miner_info` — catalogue description, version, license, install/verified
   state and the fee breakdown;
-- `gpus[]` and `gpu` — one `GpuStats` per card from `nvidia-smi`;
+- `gpus[]` and `gpu` — one `GpuStats` per card from `nvidia-smi`, including the
+  static `pci_bus_id` used to map miner per-card records;
 - `participation[]` — one entry per detected card with `index`, `uuid`, `name`,
   `enabled` (the applied profile switch) and `mining` (this card is part of the
   running session Trommel owns). It is the machine-readable form of the
   dashboard chip;
-- `total` — aggregate hashrate, power, efficiency (J/TH), max temperature and
-  participating/total GPU counts (`gpus_enabled` / `gpus_total`). Power is
-  `power.draw` summed over every detected card (an idle or excluded card still
-  draws, and a card whose reading is `N/A` is skipped), the temperature is the
-  hottest readable card and the efficiency is that power over the hashrate;
 - `miner` — API/log statistics (`hashrate_10s/60s/15m`, accepted, rejected,
-  stale, source);
-- `pool` — cached pool statistics when mining;
+  stale, source) and `gpus[]`: per-card records with `index`/`uuid` (mapped by
+  unique PCI bus id; `null` when the mapping is ambiguous), the miner-side
+  `device`, `bus_id`, hashrate windows and optional accepted/rejected shares.
+  An empty array means the miner does not report per-card data; the total is
+  never divided between cards;
+- `total` — aggregate hashrate, whole-rig `power_w`, `mining_power_w`,
+  `efficiency` + `efficiency_unit`, max temperature and participating/total GPU
+  counts (`gpus_enabled` / `gpus_total`). `power_w` is `power.draw` summed over
+  every detected card (an idle or excluded card still draws, and a card whose
+  reading is `N/A` is skipped). `mining_power_w` uses participating cards only.
+  `efficiency` is that power over the hashrate in the coin's display unit
+  (`J/TH`, `J/MH`, …), or `null` for an external miner. The legacy
+  `efficiency_j_per_th` is filled only when the unit really is J/TH;
+- `pool` — cached pool statistics when mining; `pool_error` keeps the last
+  failed fetch;
 - `oc` — `applied` (the snapshot was applied), `needs_restore` (applied while
   stopped), snapshot availability, stale-boot flag, restore-on-stop setting,
   last restore error and a first-card summary of the restore/default targets;
-- `warnings` — config warnings plus “lock not honoured” warnings and one
-  “card #N is at T °C (limit L °C)” note while the hottest card is at or above
-  the profile limit;
+- `warnings` — config warnings plus “lock not honoured”, unmatched per-card
+  mapping and one “card #N is at T °C (limit L °C)” note while the hottest card
+  is at or above the profile limit;
 - fees, expected hashrate, temperature limit, timestamp (`ts`, `ts_iso`) and
   app version.
+
+The machine-readable description is
+[status.schema.json](schema/status.schema.json). New fields are additive and
+`serde(default)` so a new client can read an older daemon; external clients
+should compare `contract_version`, not the app version.
 
 The document is display-oriented: it is not an RPC request format and has no
 wallet. Clients and external agents should treat unknown fields as optional and
@@ -451,9 +465,16 @@ stopped correctly.
   block `Status::collect` for tens of seconds. Other pools show configured data
   only.
 - Miner statistics prefer the local HTTP API on `127.0.0.1:<api_port>`; if that
-  fails, the daemon parses the tail of the miner log. The parser is tolerant:
-  it walks the JSON document, matches key names and prefers top-level summaries
-  over per-GPU entries.
+  fails, the daemon parses the tail of the miner log. The parser is
+  driver-aware: WildRig (`hashrate.total[]`, `hashrate.threads[][]`,
+  `hwmon.busID[]`), SRBMiner (`algorithms[].hashrate.gpu.gpuN` +
+  `gpu_devices[].bus_id`) and OneZero (`devices[].bus_id` + parallel
+  `algos[].hashrates[]`) have documented shapes; a custom miner falls back to
+  the tolerant generic parser with total values only. Per-card records are
+  attached to an `nvidia-smi` card only when exactly one card has the same PCI
+  bus number; a collision, a missing bus id or an unknown bus stays unmapped
+  and the dashboard shows `—` with one status warning. The total is never split
+  evenly between cards.
 
 ## Concurrency
 
